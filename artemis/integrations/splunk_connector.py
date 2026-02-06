@@ -19,6 +19,45 @@ except ImportError:
 from artemis.utils.logging_config import ArtemisLogger
 
 
+def parse_splunk_timestamp(time_value: Any) -> datetime:
+    """
+    Parse Splunk timestamp which can be in multiple formats.
+
+    Args:
+        time_value: Timestamp from Splunk (epoch float or ISO string)
+
+    Returns:
+        datetime object
+    """
+    if not time_value:
+        return datetime.utcnow()
+
+    try:
+        # Try parsing as epoch timestamp (float)
+        return datetime.fromtimestamp(float(time_value))
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        # Try parsing as ISO format string
+        # Handle format like '2026-02-06T17:10:58.936+00:00'
+        time_str = str(time_value)
+
+        # Remove timezone suffix for parsing
+        if '+' in time_str:
+            time_str = time_str.split('+')[0]
+        elif time_str.endswith('Z'):
+            time_str = time_str[:-1]
+
+        # Parse the timestamp
+        return datetime.fromisoformat(time_str)
+    except (ValueError, TypeError):
+        pass
+
+    # Fallback to current time
+    return datetime.utcnow()
+
+
 class SplunkConnector:
     """
     Connector for Splunk SIEM integration.
@@ -155,7 +194,7 @@ class SplunkConnector:
                 "protocol": event.get("protocol", "tcp"),
                 "bytes_in": int(event.get("bytes_in", 0)),
                 "bytes_out": int(event.get("bytes_out", 0)),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return connections
@@ -182,7 +221,7 @@ class SplunkConnector:
                 "domain": event.get("domain"),
                 "response_code": event.get("response_code", "NOERROR"),
                 "answer": event.get("answer"),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return dns_queries
@@ -212,7 +251,7 @@ class SplunkConnector:
                 "result": event.get("result", "unknown"),
                 "logon_type": event.get("Logon_Type"),
                 "country": event.get("country"),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return auth_logs
@@ -248,7 +287,7 @@ class SplunkConnector:
                 "process_name": event.get("process_name"),
                 "command_line": event.get("command_line", ""),
                 "parent_process": event.get("parent_process"),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return process_logs
@@ -275,7 +314,7 @@ class SplunkConnector:
                 "hostname": event.get("hostname"),
                 "user": event.get("user"),
                 "command_line": event.get("command_line", ""),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return ps_logs
@@ -307,7 +346,7 @@ class SplunkConnector:
                 "user": event.get("user"),
                 "filename": event.get("filename"),
                 "operation": event.get("operation", "access"),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return file_ops
@@ -336,7 +375,7 @@ class SplunkConnector:
                 "command": event.get("command", ""),
                 "event_type": event.get("event_type"),
                 "creator": event.get("user"),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return tasks
@@ -368,7 +407,7 @@ class SplunkConnector:
                 "key_path": key_path,
                 "value_name": value_name,
                 "value_data": event.get("value_data", ""),
-                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+                "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
         return reg_changes
