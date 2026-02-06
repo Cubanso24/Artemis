@@ -1,0 +1,467 @@
+"""
+Splunk connector for querying security logs.
+
+Integrates with Splunk to pull data for Artemis agents.
+"""
+
+import json
+from typing import Dict, List, Any, Optional
+from datetime import datetime, timedelta
+import logging
+
+try:
+    import splunklib.client as client
+    import splunklib.results as results
+    SPLUNK_AVAILABLE = True
+except ImportError:
+    SPLUNK_AVAILABLE = False
+
+from artemis.utils.logging_config import ArtemisLogger
+
+
+class SplunkConnector:
+    """
+    Connector for Splunk SIEM integration.
+
+    Queries Splunk for security logs and transforms them into
+    the format expected by Artemis hunting agents.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 8089,
+        username: str = "",
+        password: str = "",
+        token: Optional[str] = None,
+        verify_ssl: bool = True
+    ):
+        """
+        Initialize Splunk connector.
+
+        Args:
+            host: Splunk server hostname/IP
+            port: Splunk management port (default 8089)
+            username: Splunk username (if using basic auth)
+            password: Splunk password (if using basic auth)
+            token: Splunk authentication token (preferred)
+            verify_ssl: Whether to verify SSL certificates
+        """
+        if not SPLUNK_AVAILABLE:
+            raise ImportError(
+                "splunk-sdk is not installed. "
+                "Install with: pip install splunk-sdk"
+            )
+
+        self.logger = ArtemisLogger.setup_logger("artemis.integrations.splunk")
+
+        # Connect to Splunk
+        if token:
+            self.service = client.connect(
+                host=host,
+                port=port,
+                token=token,
+                verify=verify_ssl
+            )
+        else:
+            self.service = client.connect(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                verify=verify_ssl
+            )
+
+        self.logger.info(f"Connected to Splunk at {host}:{port}")
+
+    def query(
+        self,
+        search_query: str,
+        earliest_time: str = "-1h",
+        latest_time: str = "now",
+        max_results: int = 10000
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute Splunk search query.
+
+        Args:
+            search_query: SPL (Splunk Processing Language) query
+            earliest_time: Start time (e.g., "-1h", "-24h", "2024-01-01T00:00:00")
+            latest_time: End time (default "now")
+            max_results: Maximum results to return
+
+        Returns:
+            List of events as dictionaries
+        """
+        self.logger.info(f"Executing Splunk query: {search_query[:100]}...")
+
+        # Create search job
+        kwargs = {
+            "earliest_time": earliest_time,
+            "latest_time": latest_time,
+            "max_count": max_results
+        }
+
+        job = self.service.jobs.create(search_query, **kwargs)
+
+        # Wait for job to complete
+        while not job.is_done():
+            import time
+            time.sleep(0.5)
+
+        # Get results
+        events = []
+        for result in results.ResultsReader(job.results()):
+            if isinstance(result, dict):
+                events.append(result)
+
+        self.logger.info(f"Retrieved {len(events)} events from Splunk")
+        return events
+
+    def get_network_connections(
+        self,
+        time_range: str = "-1h",
+        source_filter: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get network connection data for reconnaissance/C2 detection.
+
+        Args:
+            time_range: Time range (e.g., "-1h", "-24h")
+            source_filter: Optional filter for source IPs
+
+        Returns:
+            Network connections in Artemis format
+        """
+        query = '''
+        search index=network OR index=firewall OR index=zeek
+        | eval timestamp=_time
+        | table _time src_ip dest_ip dest_port protocol bytes_in bytes_out
+        | rename src_ip as source_ip, dest_ip as destination_ip, dest_port as destination_port
+        '''
+
+        if source_filter:
+            query += f' | where source_ip="{source_filter}"'
+
+        events = self.query(query, earliest_time=time_range)
+
+        # Transform to Artemis format
+        connections = []
+        for event in events:
+            connections.append({
+                "source_ip": event.get("source_ip"),
+                "destination_ip": event.get("destination_ip"),
+                "destination_port": int(event.get("destination_port", 0)),
+                "protocol": event.get("protocol", "tcp"),
+                "bytes_in": int(event.get("bytes_in", 0)),
+                "bytes_out": int(event.get("bytes_out", 0)),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return connections
+
+    def get_dns_queries(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get DNS query data for reconnaissance/C2 detection.
+
+        Returns:
+            DNS queries in Artemis format
+        """
+        query = '''
+        search index=dns OR sourcetype=bro:dns OR sourcetype=zeek:dns
+        | table _time src_ip query answer rcode
+        | rename src_ip as source_ip, query as domain, rcode as response_code
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        dns_queries = []
+        for event in events:
+            dns_queries.append({
+                "source_ip": event.get("source_ip"),
+                "domain": event.get("domain"),
+                "response_code": event.get("response_code", "NOERROR"),
+                "answer": event.get("answer"),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return dns_queries
+
+    def get_authentication_logs(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get authentication logs for credential access/initial access detection.
+
+        Returns:
+            Authentication events in Artemis format
+        """
+        query = '''
+        search index=windows EventCode=4624 OR EventCode=4625 OR index=linux (sshd OR sudo)
+        | eval result=if(EventCode=4624 OR match(_raw, "Accepted"), "success", "failure")
+        | table _time user src_ip dest_host result Logon_Type country
+        | rename user as username, src_ip as source_ip, dest_host as target_hostname
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        auth_logs = []
+        for event in events:
+            auth_logs.append({
+                "username": event.get("username"),
+                "source_ip": event.get("source_ip"),
+                "target_hostname": event.get("target_hostname"),
+                "result": event.get("result", "unknown"),
+                "logon_type": event.get("Logon_Type"),
+                "country": event.get("country"),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return auth_logs
+
+    def get_process_logs(
+        self,
+        time_range: str = "-1h",
+        hostname_filter: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get process execution logs for execution/persistence detection.
+
+        Returns:
+            Process events in Artemis format
+        """
+        query = '''
+        search index=windows (EventCode=4688 OR EventCode=1) OR index=sysmon EventCode=1
+        | table _time host user Process_Name CommandLine ParentProcessName ParentCommandLine
+        | rename host as hostname, user as user, Process_Name as process_name,
+                 CommandLine as command_line, ParentProcessName as parent_process
+        '''
+
+        if hostname_filter:
+            query += f' | where hostname="{hostname_filter}"'
+
+        events = self.query(query, earliest_time=time_range)
+
+        process_logs = []
+        for event in events:
+            process_logs.append({
+                "hostname": event.get("hostname"),
+                "user": event.get("user"),
+                "process_name": event.get("process_name"),
+                "command_line": event.get("command_line", ""),
+                "parent_process": event.get("parent_process"),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return process_logs
+
+    def get_powershell_logs(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get PowerShell execution logs.
+
+        Returns:
+            PowerShell events in Artemis format
+        """
+        query = '''
+        search index=windows (EventCode=4104 OR source="WinEventLog:Microsoft-Windows-PowerShell/Operational")
+        | table _time host user ScriptBlockText Message
+        | rename host as hostname, ScriptBlockText as command_line
+        | eval command_line=coalesce(command_line, Message)
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        ps_logs = []
+        for event in events:
+            ps_logs.append({
+                "hostname": event.get("hostname"),
+                "user": event.get("user"),
+                "command_line": event.get("command_line", ""),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return ps_logs
+
+    def get_file_operations(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get file operation logs for collection/impact detection.
+
+        Returns:
+            File operations in Artemis format
+        """
+        query = '''
+        search index=windows EventCode=4663 OR index=sysmon EventCode=11
+        | table _time host user Object_Name Access_Mask TargetFilename
+        | rename host as hostname, Object_Name as filename, TargetFilename as filename
+        | eval operation=case(
+            match(Access_Mask, "DELETE"), "delete",
+            match(Access_Mask, "WRITE"), "modify",
+            1=1, "access"
+          )
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        file_ops = []
+        for event in events:
+            file_ops.append({
+                "hostname": event.get("hostname"),
+                "user": event.get("user"),
+                "filename": event.get("filename"),
+                "operation": event.get("operation", "access"),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return file_ops
+
+    def get_scheduled_tasks(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get scheduled task creation events.
+
+        Returns:
+            Scheduled tasks in Artemis format
+        """
+        query = '''
+        search index=windows EventCode=4698
+        | table _time host user TaskName TaskContent
+        | rename host as hostname, TaskName as task_name, TaskContent as command
+        | eval event_type="created"
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        tasks = []
+        for event in events:
+            tasks.append({
+                "hostname": event.get("hostname"),
+                "task_name": event.get("task_name"),
+                "command": event.get("command", ""),
+                "event_type": event.get("event_type"),
+                "creator": event.get("user"),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return tasks
+
+    def get_registry_changes(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+        """
+        Get registry modification events.
+
+        Returns:
+            Registry changes in Artemis format
+        """
+        query = '''
+        search index=windows EventCode=4657 OR index=sysmon EventCode=13
+        | table _time host user Object_Name Details TargetObject
+        | rename host as hostname, Object_Name as key_path, TargetObject as key_path,
+                 Details as value_data
+        '''
+
+        events = self.query(query, earliest_time=time_range)
+
+        reg_changes = []
+        for event in events:
+            key_path = event.get("key_path", "")
+            value_name = key_path.split("\\")[-1] if "\\" in key_path else ""
+
+            reg_changes.append({
+                "hostname": event.get("hostname"),
+                "user": event.get("user"),
+                "key_path": key_path,
+                "value_name": value_name,
+                "value_data": event.get("value_data", ""),
+                "timestamp": datetime.fromtimestamp(float(event.get("_time", 0)))
+            })
+
+        return reg_changes
+
+    def get_all_hunting_data(self, time_range: str = "-1h") -> Dict[str, List]:
+        """
+        Get comprehensive hunting data for all Artemis agents.
+
+        Args:
+            time_range: Time range for data collection
+
+        Returns:
+            Dictionary with all data types
+        """
+        self.logger.info(f"Collecting comprehensive hunting data for {time_range}")
+
+        hunting_data = {
+            "network_connections": self.get_network_connections(time_range),
+            "dns_queries": self.get_dns_queries(time_range),
+            "authentication_logs": self.get_authentication_logs(time_range),
+            "process_logs": self.get_process_logs(time_range),
+            "powershell_logs": self.get_powershell_logs(time_range),
+            "file_operations": self.get_file_operations(time_range),
+            "scheduled_tasks": self.get_scheduled_tasks(time_range),
+            "registry_changes": self.get_registry_changes(time_range)
+        }
+
+        total_events = sum(len(v) for v in hunting_data.values())
+        self.logger.info(f"Collected {total_events} total events from Splunk")
+
+        return hunting_data
+
+    def get_context_data(self) -> Dict[str, Any]:
+        """
+        Get network state context data from Splunk.
+
+        Returns:
+            Context data for NetworkState
+        """
+        # Get last 24 hours of alerts
+        alert_query = '''
+        search index=notable OR index=alerts earliest=-24h
+        | stats count as alerts_24h
+        '''
+
+        # Get last 7 days of alerts
+        alert_query_7d = '''
+        search index=notable OR index=alerts earliest=-7d
+        | stats count as alerts_7d
+        '''
+
+        # Get traffic metrics
+        traffic_query = '''
+        search index=network earliest=-1h
+        | stats sum(bytes_in) as bytes_in, sum(bytes_out) as bytes_out,
+                dc(dest_ip) as unique_destinations, count as connections
+        '''
+
+        alerts_24h = self.query(alert_query)
+        alerts_7d = self.query(alert_query_7d)
+        traffic = self.query(traffic_query)
+
+        context = {
+            "alerts": {
+                "alerts_24h": int(alerts_24h[0].get("alerts_24h", 0)) if alerts_24h else 0,
+                "alerts_7d": int(alerts_7d[0].get("alerts_7d", 0)) if alerts_7d else 0,
+                "incident_types": [],
+                "fp_rate": 0.1,  # Would calculate from historical data
+                "mttd": 300,
+                "mttr": 1800
+            },
+            "network_traffic": {
+                "bytes_in": int(traffic[0].get("bytes_in", 0)) if traffic else 0,
+                "bytes_out": int(traffic[0].get("bytes_out", 0)) if traffic else 0,
+                "connections": int(traffic[0].get("connections", 0)) if traffic else 0,
+                "unique_destinations": int(traffic[0].get("unique_destinations", 0)) if traffic else 0,
+                "dns_queries": 0,  # Would query separately
+                "failed_connections": 0
+            },
+            "threat_intelligence": {
+                "campaigns": [],
+                "industry_threats": [],
+                "ioc_matches": 0,
+                "threat_actor_ttps": {},
+                "risk_score": 0.5
+            },
+            "assets": {
+                "critical_assets": [],
+                "high_value_targets": [],
+                "active_users": 100,  # Would query from authentication logs
+                "privileged_sessions": 5,
+                "business_critical": []
+            }
+        }
+
+        return context

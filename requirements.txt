@@ -1,1 +1,13 @@
+# Core dependencies
 numpy>=1.20.0
+
+# Data source integrations
+splunk-sdk>=1.7.0              # Splunk integration
+scapy>=2.5.0                   # PCAP analysis
+requests>=2.28.0               # HTTP requests for APIs
+
+# Optional dependencies for enhanced functionality
+# Uncomment if needed:
+# pyshark>=0.5.3               # Alternative PCAP parser
+# elasticsearch>=8.0.0         # Elasticsearch integration
+# python-logstash>=0.4.8       # Logstash integration
