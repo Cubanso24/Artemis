@@ -172,11 +172,12 @@ class SplunkConnector:
         Returns:
             Network connections in Artemis format
         """
+        # Use Zeek field names: id.orig_h, id.resp_h, id.resp_p, orig_bytes, resp_bytes
         query = '''
         search index=zeek_conn OR index=suricata
         | eval timestamp=_time
-        | table _time src_ip dest_ip dest_port protocol bytes_in bytes_out
-        | rename src_ip as source_ip, dest_ip as destination_ip, dest_port as destination_port
+        | table _time id.orig_h id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
+        | rename "id.orig_h" as source_ip, "id.resp_h" as destination_ip, "id.resp_p" as destination_port, proto as protocol, orig_bytes as bytes_in, resp_bytes as bytes_out
         '''
 
         if source_filter:
@@ -190,10 +191,11 @@ class SplunkConnector:
             connections.append({
                 "source_ip": event.get("source_ip"),
                 "destination_ip": event.get("destination_ip"),
-                "destination_port": int(event.get("destination_port", 0)),
+                "destination_port": int(event.get("destination_port", 0)) if event.get("destination_port") else 0,
                 "protocol": event.get("protocol", "tcp"),
-                "bytes_in": int(event.get("bytes_in", 0)),
-                "bytes_out": int(event.get("bytes_out", 0)),
+                "bytes_in": int(event.get("bytes_in", 0)) if event.get("bytes_in") else 0,
+                "bytes_out": int(event.get("bytes_out", 0)) if event.get("bytes_out") else 0,
+                "conn_state": event.get("conn_state", ""),
                 "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
@@ -206,10 +208,11 @@ class SplunkConnector:
         Returns:
             DNS queries in Artemis format
         """
+        # Use Zeek DNS field names: id.orig_h, query, answers, rcode_name
         query = '''
         search index=zeek_dns
-        | table _time src_ip query answer rcode
-        | rename src_ip as source_ip, query as domain, rcode as response_code
+        | table _time id.orig_h query answers rcode_name
+        | rename "id.orig_h" as source_ip, rcode_name as response_code, answers as answer
         '''
 
         events = self.query(query, earliest_time=time_range)
@@ -218,7 +221,7 @@ class SplunkConnector:
         for event in events:
             dns_queries.append({
                 "source_ip": event.get("source_ip"),
-                "domain": event.get("domain"),
+                "domain": event.get("query"),
                 "response_code": event.get("response_code", "NOERROR"),
                 "answer": event.get("answer"),
                 "timestamp": parse_splunk_timestamp(event.get("_time"))
