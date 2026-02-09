@@ -451,13 +451,15 @@ class HuntManager:
                 await progress_callback({'stage': 'collect', 'message': 'Collecting network data...', 'progress': 30})
 
             # Collect data
+            logger.info(f"About to start data collection for time_range={time_range}")
             hunting_data = await asyncio.get_event_loop().run_in_executor(
                 self.executor,
                 self.pipeline.collect_hunting_data,
                 time_range
             )
+            logger.info(f"Data collection completed, got {sum(len(v) for v in hunting_data.values() if isinstance(v, list))} events")
 
-            total_events = sum(len(v) for v in hunting_data.values())
+            total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
 
             if progress_callback:
                 await progress_callback({

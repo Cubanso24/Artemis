@@ -116,13 +116,17 @@ class DataPipeline:
         Returns:
             Comprehensive hunting data dictionary
         """
+        import sys
+        print(f"[DATA_PIPELINE] collect_hunting_data() called with time_range={time_range}", file=sys.stderr, flush=True)
         self.logger.info(f"Collecting hunting data for time range: {time_range}")
 
         hunting_data = {}
 
         # Collect from Splunk (if available)
         if self.splunk:
+            print(f"[DATA_PIPELINE] Splunk connector available, calling _collect_from_splunk()", file=sys.stderr, flush=True)
             splunk_data = self._collect_from_splunk(time_range)
+            print(f"[DATA_PIPELINE] Got {sum(len(v) for v in splunk_data.values() if isinstance(v, list))} events from Splunk", file=sys.stderr, flush=True)
             hunting_data.update(splunk_data)
 
         # Collect from Security Onion
