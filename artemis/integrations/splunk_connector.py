@@ -173,7 +173,7 @@ class SplunkConnector:
             Network connections in Artemis format
         """
         query = '''
-        search index=network OR index=firewall OR index=zeek
+        search index=zeek_conn OR index=suricata
         | eval timestamp=_time
         | table _time src_ip dest_ip dest_port protocol bytes_in bytes_out
         | rename src_ip as source_ip, dest_ip as destination_ip, dest_port as destination_port
@@ -207,7 +207,7 @@ class SplunkConnector:
             DNS queries in Artemis format
         """
         query = '''
-        search index=dns OR sourcetype=bro:dns OR sourcetype=zeek:dns
+        search index=zeek_dns
         | table _time src_ip query answer rcode
         | rename src_ip as source_ip, query as domain, rcode as response_code
         '''
@@ -234,8 +234,8 @@ class SplunkConnector:
             Authentication events in Artemis format
         """
         query = '''
-        search index=windows EventCode=4624 OR EventCode=4625 OR index=linux (sshd OR sudo)
-        | eval result=if(EventCode=4624 OR match(_raw, "Accepted"), "success", "failure")
+        search index=security_win EventCode=4624 OR EventCode=4625
+        | eval result=if(EventCode=4624, "success", "failure")
         | table _time user src_ip dest_host result Logon_Type country
         | rename user as username, src_ip as source_ip, dest_host as target_hostname
         '''
@@ -268,7 +268,7 @@ class SplunkConnector:
             Process events in Artemis format
         """
         query = '''
-        search index=windows (EventCode=4688 OR EventCode=1) OR index=sysmon EventCode=1
+        search index=sysmon_win EventCode=1 OR index=security_win EventCode=4688
         | table _time host user Process_Name CommandLine ParentProcessName ParentCommandLine
         | rename host as hostname, user as user, Process_Name as process_name,
                  CommandLine as command_line, ParentProcessName as parent_process
@@ -300,7 +300,7 @@ class SplunkConnector:
             PowerShell events in Artemis format
         """
         query = '''
-        search index=windows (EventCode=4104 OR source="WinEventLog:Microsoft-Windows-PowerShell/Operational")
+        search index=powershell_win EventCode=4104
         | table _time host user ScriptBlockText Message
         | rename host as hostname, ScriptBlockText as command_line
         | eval command_line=coalesce(command_line, Message)
@@ -327,7 +327,7 @@ class SplunkConnector:
             File operations in Artemis format
         """
         query = '''
-        search index=windows EventCode=4663 OR index=sysmon EventCode=11
+        search index=security_win EventCode=4663 OR index=sysmon_win EventCode=11
         | table _time host user Object_Name Access_Mask TargetFilename
         | rename host as hostname, Object_Name as filename, TargetFilename as filename
         | eval operation=case(
@@ -359,7 +359,7 @@ class SplunkConnector:
             Scheduled tasks in Artemis format
         """
         query = '''
-        search index=windows EventCode=4698
+        search index=security_win EventCode=4698
         | table _time host user TaskName TaskContent
         | rename host as hostname, TaskName as task_name, TaskContent as command
         | eval event_type="created"
@@ -388,7 +388,7 @@ class SplunkConnector:
             Registry changes in Artemis format
         """
         query = '''
-        search index=windows EventCode=4657 OR index=sysmon EventCode=13
+        search index=security_win EventCode=4657 OR index=sysmon_win EventCode=13
         | table _time host user Object_Name Details TargetObject
         | rename host as hostname, Object_Name as key_path, TargetObject as key_path,
                  Details as value_data
