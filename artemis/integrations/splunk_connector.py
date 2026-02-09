@@ -188,17 +188,24 @@ class SplunkConnector:
         events = self.query(query, earliest_time=time_range)
 
         # Transform to Artemis format
+        # Note: spath returns multi-valued fields as lists, so we take first element
         connections = []
         for event in events:
+            # Helper to extract first value from list or return the value
+            def get_first(value, default=""):
+                if isinstance(value, list) and len(value) > 0:
+                    return value[0]
+                return value if value else default
+
             connections.append({
-                "source_ip": event.get("source_ip"),
-                "destination_ip": event.get("destination_ip"),
-                "destination_port": int(event.get("destination_port", 0)) if event.get("destination_port") else 0,
-                "protocol": event.get("protocol", "tcp"),
-                "bytes_in": int(event.get("bytes_in", 0)) if event.get("bytes_in") else 0,
-                "bytes_out": int(event.get("bytes_out", 0)) if event.get("bytes_out") else 0,
-                "conn_state": event.get("conn_state", ""),
-                "timestamp": parse_splunk_timestamp(event.get("_time"))
+                "source_ip": get_first(event.get("source_ip")),
+                "destination_ip": get_first(event.get("destination_ip")),
+                "destination_port": int(get_first(event.get("destination_port"), 0)),
+                "protocol": get_first(event.get("protocol"), "tcp"),
+                "bytes_in": int(get_first(event.get("bytes_in"), 0)),
+                "bytes_out": int(get_first(event.get("bytes_out"), 0)),
+                "conn_state": get_first(event.get("conn_state"), ""),
+                "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
             })
 
         return connections
@@ -222,13 +229,20 @@ class SplunkConnector:
 
         events = self.query(query, earliest_time=time_range)
 
+        # Note: spath returns multi-valued fields as lists, so we take first element
         dns_queries = []
         for event in events:
+            # Helper to extract first value from list or return the value
+            def get_first(value, default=""):
+                if isinstance(value, list) and len(value) > 0:
+                    return value[0]
+                return value if value else default
+
             dns_queries.append({
-                "source_ip": event.get("source_ip"),
-                "domain": event.get("query"),
-                "response_code": event.get("response_code", "NOERROR"),
-                "timestamp": parse_splunk_timestamp(event.get("_time"))
+                "source_ip": get_first(event.get("source_ip")),
+                "domain": get_first(event.get("query")),
+                "response_code": get_first(event.get("response_code"), "NOERROR"),
+                "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
             })
 
         return dns_queries
