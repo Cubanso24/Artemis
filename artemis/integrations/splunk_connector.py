@@ -146,10 +146,18 @@ class SplunkConnector:
 
         job = self.service.jobs.create(search_query, **kwargs)
 
-        # Wait for job to complete
+        # Wait for job to complete with timeout
+        import time
+        start_time = time.time()
+        timeout = 600  # 10 minute timeout per job
+
         while not job.is_done():
-            import time
+            if time.time() - start_time > timeout:
+                self.logger.error(f"Query timed out after {timeout} seconds")
+                raise TimeoutError(f"Splunk query exceeded {timeout} second timeout")
             time.sleep(0.5)
+
+        self.logger.info(f"Job completed in {time.time() - start_time:.1f} seconds, retrieving results...")
 
         # Get ALL results using pagination
         events = []
