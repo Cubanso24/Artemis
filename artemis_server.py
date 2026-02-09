@@ -485,11 +485,8 @@ class HuntManager:
             if progress_callback:
                 await progress_callback({'stage': 'finalize', 'message': 'Finalizing results...', 'progress': 90})
 
-            # Process results
-            findings_count = sum(
-                len(r.findings)
-                for r in hunt_result.get('agent_results', {}).values()
-            )
+            # Process results - use total_findings from aggregated assessment
+            findings_count = hunt_result.get('total_findings', 0)
 
             # Prepare database record
             hunt_data = {
@@ -499,26 +496,19 @@ class HuntManager:
                 'mode': mode,
                 'status': 'completed',
                 'total_findings': findings_count,
-                'overall_confidence': hunt_result.get('aggregated_results', {}).get('overall_confidence', 0.0),
+                'overall_confidence': hunt_result.get('final_confidence', 0.0),
                 'description': description,
                 'agent_results': {}
             }
 
-            # Extract findings
-            for agent_name, agent_result in hunt_result.get('agent_results', {}).items():
+            # Extract findings from agent outputs
+            # agent_outputs are already in dict format from to_dict()
+            for agent_output in hunt_result.get('agent_outputs', []):
+                agent_name = agent_output.get('agent_name', 'unknown')
                 hunt_data['agent_results'][agent_name] = {
-                    'findings': [
-                        {
-                            'title': f.title,
-                            'description': f.description,
-                            'severity': f.severity.value,
-                            'confidence': f.confidence,
-                            'mitre_tactics': f.mitre_tactics,
-                            'mitre_techniques': f.mitre_techniques,
-                            'affected_assets': f.affected_assets
-                        }
-                        for f in agent_result.findings
-                    ]
+                    'confidence': agent_output.get('confidence', 0.0),
+                    'severity': agent_output.get('severity', 'low'),
+                    'findings': agent_output.get('findings', [])
                 }
 
             # Update network mapper plugin if enabled
