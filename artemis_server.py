@@ -445,6 +445,17 @@ class HuntManager:
                     ]
                 }
 
+            # Update network mapper plugin if enabled
+            network_mapper = plugin_manager.get_plugin('network_mapper')
+            if network_mapper:
+                try:
+                    network_mapper.execute(
+                        network_connections=hunting_data.get('network_connections', []),
+                        dns_queries=hunting_data.get('dns_queries', [])
+                    )
+                except Exception as e:
+                    logger.warning(f"Network mapper plugin failed: {e}")
+
             # Save to database
             self.db.save_hunt(hunt_id, hunt_data)
 
@@ -577,6 +588,47 @@ async def disable_plugin(plugin_name: str):
     """Disable a plugin."""
     plugin_manager.disable_plugin(plugin_name)
     return {'status': 'disabled'}
+
+
+@app.get("/api/network-graph")
+async def get_network_graph():
+    """Get network topology graph from network mapper plugin."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+
+    if not plugin:
+        return {'error': 'Network mapper plugin not enabled'}, 404
+
+    try:
+        graph_data = plugin.get_network_graph()
+        return graph_data
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+
+@app.get("/api/network-summary")
+async def get_network_summary():
+    """Get network summary statistics."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+
+    if not plugin:
+        return {'error': 'Network mapper plugin not enabled'}, 404
+
+    try:
+        summary = {
+            'total_nodes': len(plugin.nodes),
+            'internal_nodes': sum(1 for n in plugin.nodes.values() if n.is_internal),
+            'external_nodes': sum(1 for n in plugin.nodes.values() if not n.is_internal),
+            'total_services': sum(len(n.services) for n in plugin.nodes.values()),
+            'servers': [n.ip for n in plugin.nodes.values() if 'server' in n.roles][:10],
+            'top_talkers': sorted(
+                [(ip, n.total_connections) for ip, n in plugin.nodes.items()],
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+        }
+        return summary
+    except Exception as e:
+        return {'error': str(e)}, 500
 
 
 @app.websocket("/ws")
