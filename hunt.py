@@ -171,11 +171,11 @@ class HuntAnalyzer:
         hunt_data = {
             "timestamp": self.hunt_timestamp,
             "network_state": {
-                "active_connections": network_state.traffic_metrics.active_connections,
-                "dns_query_rate": network_state.traffic_metrics.dns_query_rate,
-                "total_bytes": network_state.traffic_metrics.total_bytes,
-                "unique_internal_ips": network_state.traffic_metrics.unique_internal_ips,
-                "unique_external_ips": network_state.traffic_metrics.unique_external_ips,
+                "connection_count": network_state.traffic_metrics.connection_count,
+                "dns_queries": network_state.traffic_metrics.dns_queries,
+                "total_bytes": network_state.traffic_metrics.total_bytes_in + network_state.traffic_metrics.total_bytes_out,
+                "unique_destinations": network_state.traffic_metrics.unique_destinations,
+                "failed_connections": network_state.traffic_metrics.failed_connections,
                 "is_business_hours": network_state.time_features.is_business_hours,
             },
             "agent_results": {},
