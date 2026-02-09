@@ -1,10 +1,35 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Artemis Threat Hunting Platform</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252545;
+            --bg-tertiary: #2f2f5f;
+            --text-primary: #eee;
+            --text-secondary: #ccc;
+            --accent-primary: #667eea;
+            --accent-secondary: #764ba2;
+            --border-color: #333;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --info: #17a2b8;
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #e8e8e8;
+            --text-primary: #333;
+            --text-secondary: #666;
+            --border-color: #ddd;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,9 +38,10 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             line-height: 1.6;
+            transition: background 0.3s, color 0.3s;
         }
 
         .container {
@@ -345,9 +371,324 @@
         .log-info {
             color: #17a2b8;
         }
+
+        /* Theme toggle button */
+        .theme-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 1000;
+            transition: all 0.3s;
+        }
+
+        .theme-toggle:hover {
+            background: var(--bg-tertiary);
+        }
+
+        /* Network graph container */
+        #network-graph {
+            width: 100%;
+            height: 600px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 10px;
+        }
+
+        .graph-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .graph-legend {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+            padding: 15px;
+            background: var(--bg-primary);
+            border-radius: 5px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+        }
+
+        /* Search and filter */
+        .search-bar {
+            width: 100%;
+            max-width: 500px;
+            padding: 12px 20px;
+            background: var(--bg-primary);
+            border: 2px solid var(--border-color);
+            border-radius: 25px;
+            color: var(--text-primary);
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+
+        .search-bar:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            padding: 8px 16px;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 20px;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .filter-btn:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .filter-btn.active {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+        }
+
+        /* Copy button */
+        .copy-btn {
+            display: inline-block;
+            padding: 5px 10px;
+            margin-left: 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: var(--accent-primary);
+        }
+
+        .copy-btn.copied {
+            background: var(--success);
+        }
+
+        /* Template selector */
+        .template-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        /* Keyboard shortcuts overlay */
+        .shortcuts-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+
+        .shortcuts-overlay.show {
+            display: flex;
+        }
+
+        .shortcuts-content {
+            background: var(--bg-secondary);
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .shortcut-list {
+            list-style: none;
+            margin-top: 20px;
+        }
+
+        .shortcut-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            margin-bottom: 5px;
+            background: var(--bg-primary);
+            border-radius: 5px;
+        }
+
+        .shortcut-key {
+            display: inline-block;
+            padding: 3px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+            font-family: monospace;
+            font-weight: bold;
+        }
+
+        /* Mobile responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+
+            header h1 {
+                font-size: 1.8em;
+            }
+
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .tabs {
+                flex-wrap: wrap;
+            }
+
+            .tab {
+                padding: 10px 15px;
+                font-size: 14px;
+            }
+
+            #network-graph {
+                height: 400px;
+            }
+
+            .theme-toggle {
+                top: 10px;
+                right: 10px;
+                padding: 8px 15px;
+                font-size: 14px;
+            }
+
+            .graph-controls, .filter-buttons {
+                flex-direction: column;
+            }
+
+            .graph-controls button, .filter-btn {
+                width: 100%;
+            }
+        }
+
+        @media (max-width: 480px) {
+            header h1 {
+                font-size: 1.5em;
+            }
+
+            .stats {
+                grid-template-columns: 1fr;
+            }
+
+            .stat-card h3 {
+                font-size: 2em;
+            }
+        }
+
+        /* Update existing card styles to use variables */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+        }
+
+        .hunt-item, .plugin-card, .finding-item {
+            background: var(--bg-primary);
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            background: var(--bg-primary);
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .tab {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .tab:hover {
+            background: var(--bg-tertiary);
+        }
     </style>
 </head>
 <body>
+    <!-- Theme Toggle -->
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode (T)">
+        <span id="theme-icon">🌙</span>
+    </button>
+
+    <!-- Keyboard Shortcuts Overlay -->
+    <div class="shortcuts-overlay" id="shortcuts-overlay" onclick="if(event.target === this) toggleShortcuts()">
+        <div class="shortcuts-content">
+            <h2>Keyboard Shortcuts</h2>
+            <ul class="shortcut-list">
+                <li class="shortcut-item">
+                    <span>Go to Dashboard</span>
+                    <span class="shortcut-key">D</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>New Hunt</span>
+                    <span class="shortcut-key">N</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Hunt History</span>
+                    <span class="shortcut-key">H</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Network Graph</span>
+                    <span class="shortcut-key">G</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Plugins</span>
+                    <span class="shortcut-key">P</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Live Logs</span>
+                    <span class="shortcut-key">L</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Toggle Theme</span>
+                    <span class="shortcut-key">T</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Show Shortcuts</span>
+                    <span class="shortcut-key">?</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Close Overlay</span>
+                    <span class="shortcut-key">ESC</span>
+                </li>
+            </ul>
+            <button class="btn" onclick="toggleShortcuts()" style="margin-top: 20px; width: 100%;">Close</button>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>🏹 Artemis Threat Hunting Platform</h1>
@@ -377,6 +718,7 @@
             <button class="tab active" onclick="showTab('dashboard')">Dashboard</button>
             <button class="tab" onclick="showTab('new-hunt')">New Hunt</button>
             <button class="tab" onclick="showTab('history')">Hunt History</button>
+            <button class="tab" onclick="showTab('network-graph-tab')">Network Graph</button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
@@ -402,6 +744,16 @@
         <div id="new-hunt" class="tab-content">
             <div class="card">
                 <h2>Configure New Threat Hunt</h2>
+
+                <!-- Hunt Templates -->
+                <div class="template-controls">
+                    <select id="hunt-template" onchange="loadHuntTemplate()">
+                        <option value="">-- Load Hunt Template --</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary" onclick="saveHuntTemplate()">Save as Template</button>
+                    <button type="button" class="btn btn-secondary" onclick="deleteHuntTemplate()">Delete Template</button>
+                </div>
+
                 <form id="hunt-form">
                     <div class="form-group">
                         <label for="time-range">Time Range</label>
@@ -446,6 +798,22 @@
         <div id="history" class="tab-content">
             <div class="card">
                 <h2>Hunt History</h2>
+
+                <!-- Search Bar -->
+                <input type="text" class="search-bar" id="history-search"
+                       placeholder="Search hunts by ID, description, or findings..."
+                       oninput="filterHunts()">
+
+                <!-- Filter Buttons -->
+                <div class="filter-buttons">
+                    <button class="filter-btn active" data-filter="all" onclick="filterBySeverity(this, 'all')">All</button>
+                    <button class="filter-btn" data-filter="critical" onclick="filterBySeverity(this, 'critical')">Critical</button>
+                    <button class="filter-btn" data-filter="high" onclick="filterBySeverity(this, 'high')">High</button>
+                    <button class="filter-btn" data-filter="medium" onclick="filterBySeverity(this, 'medium')">Medium</button>
+                    <button class="filter-btn" data-filter="low" onclick="filterBySeverity(this, 'low')">Low</button>
+                    <button class="filter-btn" data-filter="clean" onclick="filterBySeverity(this, 'clean')">Clean (0 findings)</button>
+                </div>
+
                 <ul id="hunt-history" class="hunt-list">
                     <li>Loading...</li>
                 </ul>
@@ -454,6 +822,52 @@
             <div id="hunt-details" class="card" style="display:none;">
                 <h2>Hunt Details</h2>
                 <div id="hunt-details-content"></div>
+            </div>
+        </div>
+
+        <!-- Network Graph Tab -->
+        <div id="network-graph-tab" class="tab-content">
+            <div class="card">
+                <h2>Network Topology Graph</h2>
+
+                <div class="graph-controls">
+                    <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
+                    <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
+                    <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
+                    <select id="graph-layout" onchange="changeGraphLayout()">
+                        <option value="forceAtlas2Based">Force Atlas</option>
+                        <option value="barnesHut">Barnes Hut</option>
+                        <option value="hierarchical">Hierarchical</option>
+                    </select>
+                </div>
+
+                <div id="network-graph"></div>
+
+                <div class="graph-legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #4CAF50;"></div>
+                        <span>Internal Hosts</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #f44336;"></div>
+                        <span>External Hosts</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #FFC107;"></div>
+                        <span>Servers (High Connection Count)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #2196F3;"></div>
+                        <span>Regular Clients</span>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <h3>Network Summary</h3>
+                    <div id="network-summary">
+                        <p>Loading network statistics...</p>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -480,6 +894,8 @@
         // WebSocket connection
         let ws = null;
         let currentHuntId = null;
+        let networkGraph = null;
+        let allHunts = [];  // Store all hunts for filtering
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -487,6 +903,8 @@
             loadStats();
             loadRecentHunts();
             loadPlugins();
+            loadHuntTemplates();
+            initializeTheme();
 
             // Setup form handler
             document.getElementById('hunt-form').addEventListener('submit', startHunt);
@@ -494,7 +912,223 @@
             // Refresh data every 10 seconds
             setInterval(loadStats, 10000);
             setInterval(loadRecentHunts, 10000);
+
+            // Setup keyboard shortcuts
+            document.addEventListener('keydown', handleKeyboardShortcut);
         });
+
+        // Theme management
+        function initializeTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            updateThemeIcon(savedTheme);
+        }
+
+        function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }
+
+        function updateThemeIcon(theme) {
+            document.getElementById('theme-icon').textContent = theme === 'dark' ? '🌙' : '☀️';
+        }
+
+        // Keyboard shortcuts
+        function handleKeyboardShortcut(e) {
+            // Ignore if typing in input/textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+
+            switch(e.key.toLowerCase()) {
+                case 'd':
+                    showTabByName('dashboard');
+                    break;
+                case 'n':
+                    showTabByName('new-hunt');
+                    break;
+                case 'h':
+                    showTabByName('history');
+                    break;
+                case 'g':
+                    showTabByName('network-graph-tab');
+                    loadNetworkGraph();
+                    break;
+                case 'p':
+                    showTabByName('plugins');
+                    break;
+                case 'l':
+                    showTabByName('logs');
+                    break;
+                case 't':
+                    toggleTheme();
+                    break;
+                case '?':
+                    toggleShortcuts();
+                    break;
+                case 'escape':
+                    toggleShortcuts(false);
+                    break;
+            }
+        }
+
+        function toggleShortcuts(show) {
+            const overlay = document.getElementById('shortcuts-overlay');
+            if (show === false) {
+                overlay.classList.remove('show');
+            } else {
+                overlay.classList.toggle('show');
+            }
+        }
+
+        function showTabByName(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Remove active from all tab buttons
+            document.querySelectorAll('.tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+
+            // Highlight active button
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => {
+                if (tab.textContent.toLowerCase().includes(tabName.split('-')[0])) {
+                    tab.classList.add('active');
+                }
+            });
+        }
+
+        // Hunt templates
+        function loadHuntTemplates() {
+            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
+            const select = document.getElementById('hunt-template');
+            select.innerHTML = '<option value="">-- Load Hunt Template --</option>';
+
+            Object.keys(templates).forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                select.appendChild(option);
+            });
+        }
+
+        function saveHuntTemplate() {
+            const name = prompt('Enter template name:');
+            if (!name) return;
+
+            const template = {
+                timeRange: document.getElementById('time-range').value,
+                mode: document.getElementById('hunt-mode').value,
+                description: document.getElementById('description').value
+            };
+
+            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
+            templates[name] = template;
+            localStorage.setItem('huntTemplates', JSON.stringify(templates));
+
+            loadHuntTemplates();
+            addLog(`Saved template: ${name}`, 'info');
+        }
+
+        function loadHuntTemplate() {
+            const select = document.getElementById('hunt-template');
+            const name = select.value;
+            if (!name) return;
+
+            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
+            const template = templates[name];
+
+            if (template) {
+                document.getElementById('time-range').value = template.timeRange;
+                document.getElementById('hunt-mode').value = template.mode;
+                document.getElementById('description').value = template.description;
+                addLog(`Loaded template: ${name}`, 'info');
+            }
+        }
+
+        function deleteHuntTemplate() {
+            const select = document.getElementById('hunt-template');
+            const name = select.value;
+            if (!name) {
+                alert('Please select a template to delete');
+                return;
+            }
+
+            if (!confirm(`Delete template "${name}"?`)) return;
+
+            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
+            delete templates[name];
+            localStorage.setItem('huntTemplates', JSON.stringify(templates));
+
+            loadHuntTemplates();
+            addLog(`Deleted template: ${name}`, 'info');
+        }
+
+        // Copy to clipboard
+        function copyToClipboard(text, button) {
+            navigator.clipboard.writeText(text).then(() => {
+                if (button) {
+                    const originalText = button.textContent;
+                    button.textContent = '✓ Copied!';
+                    button.classList.add('copied');
+                    setTimeout(() => {
+                        button.textContent = originalText;
+                        button.classList.remove('copied');
+                    }, 2000);
+                }
+                addLog(`Copied to clipboard: ${text}`, 'info');
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+            });
+        }
+
+        // Search and filter hunts
+        function filterHunts() {
+            const searchTerm = document.getElementById('history-search').value.toLowerCase();
+            const huntItems = document.querySelectorAll('#hunt-history .hunt-item');
+
+            huntItems.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                if (text.includes(searchTerm)) {
+                    item.style.display = '';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+        }
+
+        function filterBySeverity(button, severity) {
+            // Update active button
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            button.classList.add('active');
+
+            const huntItems = document.querySelectorAll('#hunt-history .hunt-item');
+
+            huntItems.forEach(item => {
+                if (severity === 'all') {
+                    item.style.display = '';
+                } else if (severity === 'clean') {
+                    const findingsText = item.querySelector('div').textContent;
+                    const findings = parseInt(findingsText.match(/(\d+) findings/)?.[1] || '0');
+                    item.style.display = findings === 0 ? '' : 'none';
+                } else {
+                    // Filter by severity would require hunt data - simplified for now
+                    item.style.display = '';
+                }
+            });
+        }
 
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -588,7 +1222,9 @@
                 const contentDiv = document.getElementById('hunt-details-content');
 
                 let html = `
-                    <h3>${hunt.hunt_id}</h3>
+                    <h3>${hunt.hunt_id}
+                        <button class="copy-btn" onclick="copyToClipboard('${hunt.hunt_id}', this)">📋 Copy ID</button>
+                    </h3>
                     <p><strong>Time Range:</strong> ${hunt.time_range}</p>
                     <p><strong>Mode:</strong> ${hunt.mode}</p>
                     <p><strong>Status:</strong> ${hunt.status}</p>
@@ -601,13 +1237,19 @@
 
                 if (hunt.findings && hunt.findings.length > 0) {
                     hunt.findings.forEach(finding => {
+                        // Extract IPs from affected assets
+                        const assetsWithCopy = finding.affected_assets && finding.affected_assets.length > 0
+                            ? finding.affected_assets.map(asset =>
+                                `${asset} <button class="copy-btn" onclick="copyToClipboard('${asset}', this)">📋</button>`
+                              ).join(' ')
+                            : '';
+
                         html += `
                             <div class="finding-item severity-${finding.severity}">
                                 <h4>${finding.title}</h4>
                                 <p>${finding.description}</p>
                                 <p><strong>Agent:</strong> ${finding.agent_name}</p>
-                                ${finding.affected_assets && finding.affected_assets.length > 0 ?
-                                    `<p><strong>Affected:</strong> ${finding.affected_assets.join(', ')}</p>` : ''}
+                                ${assetsWithCopy ? `<p><strong>Affected:</strong> ${assetsWithCopy}</p>` : ''}
                                 ${finding.mitre_tactics && finding.mitre_tactics.length > 0 ?
                                     `<p><strong>MITRE Tactics:</strong> ${finding.mitre_tactics.join(', ')}</p>` : ''}
                                 <span class="confidence">Confidence: ${finding.confidence.toFixed(2)}</span>
@@ -626,6 +1268,178 @@
 
             } catch (error) {
                 console.error('Error loading hunt details:', error);
+            }
+        }
+
+        // Network Graph Functions
+        async function loadNetworkGraph() {
+            try {
+                addLog('Loading network topology...', 'info');
+
+                const response = await fetch('/api/network-graph');
+                const graphData = await response.json();
+
+                if (graphData.error) {
+                    addLog('Network mapper plugin not enabled', 'warning');
+                    document.getElementById('network-graph').innerHTML =
+                        '<p style="text-align:center; padding:50px;">Network mapper plugin not enabled. Enable it in the Plugins tab.</p>';
+                    return;
+                }
+
+                renderNetworkGraph(graphData);
+                loadNetworkSummary();
+
+                addLog(`Loaded network graph with ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`, 'info');
+
+            } catch (error) {
+                console.error('Error loading network graph:', error);
+                addLog(`Error loading network graph: ${error.message}`, 'error');
+            }
+        }
+
+        function renderNetworkGraph(graphData) {
+            const container = document.getElementById('network-graph');
+
+            // Prepare nodes for vis.js
+            const nodes = graphData.nodes.map(node => {
+                let color = node.is_internal ? '#4CAF50' : '#f44336';  // Green for internal, red for external
+                let size = 10;
+
+                // Size based on connection count
+                if (node.total_connections > 100) {
+                    size = 30;
+                    color = '#FFC107';  // Yellow for servers
+                } else if (node.total_connections > 50) {
+                    size = 20;
+                } else if (node.total_connections > 10) {
+                    size = 15;
+                }
+
+                return {
+                    id: node.ip,
+                    label: node.ip,
+                    title: `${node.ip}\nConnections: ${node.total_connections}\nServices: ${node.services.join(', ')}\nRoles: ${node.roles.join(', ')}`,
+                    color: color,
+                    size: size
+                };
+            });
+
+            // Prepare edges for vis.js
+            const edges = graphData.edges.map(edge => ({
+                from: edge.source,
+                to: edge.target,
+                value: edge.connection_count,
+                title: `${edge.connection_count} connections`
+            }));
+
+            const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+
+            const options = {
+                nodes: {
+                    shape: 'dot',
+                    font: { size: 12, color: '#eee' }
+                },
+                edges: {
+                    color: { color: '#666', highlight: '#667eea' },
+                    smooth: { type: 'continuous' }
+                },
+                physics: {
+                    solver: 'forceAtlas2Based',
+                    forceAtlas2Based: {
+                        gravitationalConstant: -50,
+                        centralGravity: 0.01,
+                        springLength: 100,
+                        springConstant: 0.08
+                    },
+                    stabilization: { iterations: 200 }
+                },
+                interaction: {
+                    hover: true,
+                    tooltipDelay: 200,
+                    zoomView: true
+                }
+            };
+
+            networkGraph = new vis.Network(container, data, options);
+
+            // Add click handler
+            networkGraph.on('click', function(params) {
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    const node = graphData.nodes.find(n => n.ip === nodeId);
+                    if (node) {
+                        showNodeDetails(node);
+                    }
+                }
+            });
+        }
+
+        function showNodeDetails(node) {
+            alert(`IP: ${node.ip}\n` +
+                  `Internal: ${node.is_internal}\n` +
+                  `Connections: ${node.total_connections}\n` +
+                  `Services: ${node.services.join(', ')}\n` +
+                  `Roles: ${node.roles.join(', ')}`);
+        }
+
+        async function loadNetworkSummary() {
+            try {
+                const response = await fetch('/api/network-summary');
+                const summary = await response.json();
+
+                if (summary.error) {
+                    return;
+                }
+
+                const html = `
+                    <p><strong>Total Nodes:</strong> ${summary.total_nodes}</p>
+                    <p><strong>Internal Nodes:</strong> ${summary.internal_nodes}</p>
+                    <p><strong>External Nodes:</strong> ${summary.external_nodes}</p>
+                    <p><strong>Total Services:</strong> ${summary.total_services}</p>
+                    <p><strong>Top Servers:</strong> ${summary.servers.slice(0, 5).join(', ')}</p>
+                    <p><strong>Top Talkers:</strong></p>
+                    <ul>
+                        ${summary.top_talkers.slice(0, 5).map(([ip, count]) =>
+                            `<li>${ip}: ${count} connections</li>`
+                        ).join('')}
+                    </ul>
+                `;
+
+                document.getElementById('network-summary').innerHTML = html;
+
+            } catch (error) {
+                console.error('Error loading network summary:', error);
+            }
+        }
+
+        function resetGraphZoom() {
+            if (networkGraph) {
+                networkGraph.fit();
+            }
+        }
+
+        function exportGraphImage() {
+            if (networkGraph) {
+                const canvas = document.querySelector('#network-graph canvas');
+                if (canvas) {
+                    const url = canvas.toDataURL('image/png');
+                    const link = document.createElement('a');
+                    link.download = 'network-graph.png';
+                    link.href = url;
+                    link.click();
+                    addLog('Exported network graph as PNG', 'info');
+                }
+            }
+        }
+
+        function changeGraphLayout() {
+            const layout = document.getElementById('graph-layout').value;
+            if (networkGraph) {
+                networkGraph.setOptions({
+                    physics: {
+                        solver: layout
+                    }
+                });
             }
         }
 

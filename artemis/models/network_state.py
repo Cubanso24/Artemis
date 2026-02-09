@@ -97,6 +97,78 @@ class NetworkState:
     system_load: float = 0.0  # 0.0 to 1.0
     recent_agent_findings: Dict[str, Any] = field(default_factory=dict)
 
+    @classmethod
+    def from_data(cls, hunting_data: Dict[str, Any]) -> 'NetworkState':
+        """
+        Create NetworkState from hunting data collected by DataPipeline.
+
+        Args:
+            hunting_data: Dict containing network_connections, dns_queries, etc.
+
+        Returns:
+            NetworkState instance populated from the hunting data
+        """
+        # Time features from current time
+        time_features = TimeFeatures.from_timestamp(datetime.now())
+
+        # Traffic metrics from network connections
+        traffic_metrics = TrafficMetrics()
+        network_connections = hunting_data.get('network_connections', [])
+        dns_queries = hunting_data.get('dns_queries', [])
+
+        if network_connections:
+            traffic_metrics.connection_count = len(network_connections)
+            traffic_metrics.total_bytes_in = sum(
+                conn.get('orig_bytes', 0) for conn in network_connections
+            )
+            traffic_metrics.total_bytes_out = sum(
+                conn.get('resp_bytes', 0) for conn in network_connections
+            )
+
+            # Count unique destinations
+            destinations = set(conn.get('id.resp_h', '') for conn in network_connections)
+            traffic_metrics.unique_destinations = len(destinations)
+
+            # Count failed connections
+            traffic_metrics.failed_connections = sum(
+                1 for conn in network_connections
+                if conn.get('conn_state', '') in ['S0', 'REJ', 'RSTO', 'RSTR']
+            )
+
+            # Protocol distribution
+            protocols = {}
+            for conn in network_connections:
+                proto = conn.get('proto', 'unknown')
+                protocols[proto] = protocols.get(proto, 0) + 1
+            traffic_metrics.protocol_distribution = protocols
+
+        if dns_queries:
+            traffic_metrics.dns_queries = len(dns_queries)
+
+        # Alert history from IDS alerts
+        alert_history = AlertHistory()
+        ids_alerts = hunting_data.get('ids_alerts', [])
+        if ids_alerts:
+            alert_history.total_alerts_24h = len(ids_alerts)
+            alert_history.recent_incident_types = list(set(
+                alert.get('alert.category', 'unknown') for alert in ids_alerts[:10]
+            ))
+
+        # Threat intel - basic for now
+        threat_intel = ThreatIntelligence()
+
+        # Asset context - basic for now
+        asset_context = AssetContext()
+
+        return cls(
+            time_features=time_features,
+            traffic_metrics=traffic_metrics,
+            alert_history=alert_history,
+            threat_intel=threat_intel,
+            asset_context=asset_context,
+            system_load=0.5  # Default moderate load
+        )
+
     def to_state_vector(self) -> np.ndarray:
         """
         Convert network state to numerical vector for ML models.
