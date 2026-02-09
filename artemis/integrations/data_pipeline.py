@@ -194,10 +194,11 @@ class DataPipeline:
                     )
                 }
 
-                # Collect results - increased timeout for large datasets
+                # Collect results - increased timeout for massive datasets
+                # With millions of events and pagination, this can take 20-30 minutes
                 for key, future in futures.items():
                     try:
-                        data[key] = future.result(timeout=600)  # 10 minutes for millions of events
+                        data[key] = future.result(timeout=3600)  # 1 hour for multi-million event datasets
                     except Exception as e:
                         import traceback
                         error_msg = f"Failed to collect {key}: {str(e)}"
