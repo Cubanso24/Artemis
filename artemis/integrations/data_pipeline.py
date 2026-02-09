@@ -194,7 +194,10 @@ class DataPipeline:
                     try:
                         data[key] = future.result(timeout=60)
                     except Exception as e:
-                        self.logger.error(f"Failed to collect {key}: {e}")
+                        import traceback
+                        error_msg = f"Failed to collect {key}: {str(e)}"
+                        self.logger.error(error_msg)
+                        self.logger.error(f"Traceback: {traceback.format_exc()}")
                         data[key] = []
 
         except Exception as e:

@@ -118,7 +118,7 @@ class SplunkConnector:
         search_query: str,
         earliest_time: str = "-1h",
         latest_time: str = "now",
-        max_results: int = 10000
+        max_results: int = 50000
     ) -> List[Dict[str, Any]]:
         """
         Execute Splunk search query.
@@ -148,9 +148,9 @@ class SplunkConnector:
             import time
             time.sleep(0.5)
 
-        # Get results
+        # Get results - must specify count parameter to override default 100 limit
         events = []
-        for result in results.ResultsReader(job.results()):
+        for result in results.ResultsReader(job.results(count=max_results)):
             if isinstance(result, dict):
                 events.append(result)
 
