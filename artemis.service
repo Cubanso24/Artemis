@@ -1,0 +1,16 @@
+[Unit]
+Description=Artemis Threat Hunting Platform
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/user/Artemis
+Environment="SPLUNK_HOST=10.25.11.86"
+Environment="SPLUNK_TOKEN=your-token-here"
+ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

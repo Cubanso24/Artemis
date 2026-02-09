@@ -13,7 +13,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from artemis.meta_learner.coordinator import MetaLearnerCoordinator
-from artemis.integrations.data_pipeline import DataPipeline
+from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
 from artemis.models.network_state import NetworkState
 
 
@@ -46,16 +46,15 @@ class BulkHuntManager:
             print("❌ ERROR: Splunk credentials not set!")
             sys.exit(1)
 
-        self.pipeline = DataPipeline(
-            splunk_config={
-                'host': host,
-                'port': 8089,
-                'username': username if not token else "",
-                'password': password if not token else "",
-                'token': token,
-                'verify_ssl': False
-            }
+        config = DataSourceConfig(
+            splunk_host=host,
+            splunk_port=8089,
+            splunk_token=token if token else "",
+            splunk_username=username if username else "",
+            splunk_password=password if password else ""
         )
+
+        self.pipeline = DataPipeline(config)
 
     def generate_time_windows(self, days_back: int, window_hours: int):
         """
