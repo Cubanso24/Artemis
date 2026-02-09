@@ -24,6 +24,7 @@ class DataSourceConfig:
     splunk_token: str = ""
     splunk_username: str = ""
     splunk_password: str = ""
+    splunk_verify_ssl: bool = False
 
     security_onion_host: str = ""
     security_onion_api_key: str = ""
@@ -70,7 +71,8 @@ class DataPipeline:
                     port=self.config.splunk_port,
                     token=self.config.splunk_token,
                     username=self.config.splunk_username,
-                    password=self.config.splunk_password
+                    password=self.config.splunk_password,
+                    verify_ssl=self.config.splunk_verify_ssl
                 )
                 self.logger.info("Splunk connector initialized")
             except Exception as e:

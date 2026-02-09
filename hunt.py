@@ -46,11 +46,12 @@ class HuntAnalyzer:
         self.print_section("📊 NETWORK STATE ANALYSIS")
 
         print(f"\n🔍 Network Metrics:")
-        print(f"  • Active Connections: {state.traffic_metrics.active_connections}")
-        print(f"  • DNS Query Rate: {state.traffic_metrics.dns_query_rate:.2f}/sec")
-        print(f"  • Total Data Transfer: {state.traffic_metrics.total_bytes / 1024 / 1024:.2f} MB")
-        print(f"  • Unique Internal IPs: {state.traffic_metrics.unique_internal_ips}")
-        print(f"  • Unique External IPs: {state.traffic_metrics.unique_external_ips}")
+        print(f"  • Connection Count: {state.traffic_metrics.connection_count}")
+        print(f"  • DNS Queries: {state.traffic_metrics.dns_queries}")
+        total_bytes = state.traffic_metrics.total_bytes_in + state.traffic_metrics.total_bytes_out
+        print(f"  • Total Data Transfer: {total_bytes / 1024 / 1024:.2f} MB")
+        print(f"  • Unique Destinations: {state.traffic_metrics.unique_destinations}")
+        print(f"  • Failed Connections: {state.traffic_metrics.failed_connections}")
 
         print(f"\n⏰ Time Context:")
         print(f"  • Hour of Day: {state.time_features.hour_of_day}:00")
@@ -58,8 +59,8 @@ class HuntAnalyzer:
         print(f"  • Is Business Hours: {'Yes' if state.time_features.is_business_hours else 'No'}")
         print(f"  • Is Weekend: {'Yes' if state.time_features.is_weekend else 'No'}")
 
-        if state.alert_history.recent_alerts:
-            print(f"\n⚠️  Recent Alerts: {state.alert_history.recent_alerts} in last hour")
+        if state.alert_history.total_alerts_24h > 0:
+            print(f"\n⚠️  Recent Alerts: {state.alert_history.total_alerts_24h} in last 24h")
 
     def print_hypotheses(self, hypotheses: list):
         """Display threat hypotheses generated."""
@@ -271,7 +272,7 @@ def main():
     print(f"  • Network Connections: {len(hunting_data.get('network_connections', []))}")
     print(f"  • DNS Queries: {len(hunting_data.get('dns_queries', []))}")
 
-    # Create network state
+    # Create network state for display purposes
     network_state = NetworkState.from_data(hunting_data)
     analyzer.print_network_state(network_state)
 
@@ -280,10 +281,12 @@ def main():
     print("\nMeta-learner is analyzing the network state...")
     print("This may take 30-60 seconds...\n")
 
+    # coordinator.hunt() signature: hunt(data, initial_signals=None, context_data=None)
+    # It creates NetworkState internally from context_data
     hunt_result = coordinator.hunt(
-        network_state=network_state,
-        hunting_data=hunting_data,
-        mode="PARALLEL"  # Deploy all relevant agents in parallel
+        data=hunting_data,
+        initial_signals=None,
+        context_data=None
     )
 
     # Display hypotheses
