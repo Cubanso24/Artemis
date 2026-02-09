@@ -378,7 +378,7 @@ class HuntManager:
             # Collect data
             hunting_data = await asyncio.get_event_loop().run_in_executor(
                 self.executor,
-                self.pipeline.splunk_connector.get_all_hunting_data,
+                self.pipeline.collect_hunting_data,
                 time_range
             )
 

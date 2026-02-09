@@ -264,7 +264,7 @@ def main():
     print("  • Time range: Last 1 hour")
     print("  • Sources: Zeek (conn, dns, http, ssl), Suricata alerts")
 
-    hunting_data = pipeline.splunk_connector.get_all_hunting_data(time_range="-1h")
+    hunting_data = pipeline.collect_hunting_data(time_range="-1h")
 
     print(f"\n✓ Collected {sum(len(v) for v in hunting_data.values())} total events")
     print(f"  • Network Connections: {len(hunting_data.get('network_connections', []))}")

@@ -113,7 +113,7 @@ class BulkHuntManager:
 
         try:
             # Collect data
-            hunting_data = self.pipeline.splunk_connector.get_all_hunting_data(time_range=time_range)
+            hunting_data = self.pipeline.collect_hunting_data(time_range=time_range)
 
             total_events = sum(len(v) for v in hunting_data.values())
             print(f"   📊 Collected {total_events} events")
