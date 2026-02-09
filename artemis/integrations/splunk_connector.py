@@ -118,7 +118,7 @@ class SplunkConnector:
         search_query: str,
         earliest_time: str = "-1h",
         latest_time: str = "now",
-        max_results: int = 50000
+        max_results: int = 0  # 0 = unlimited, get ALL results
     ) -> List[Dict[str, Any]]:
         """
         Execute Splunk search query.
@@ -127,19 +127,22 @@ class SplunkConnector:
             search_query: SPL (Splunk Processing Language) query
             earliest_time: Start time (e.g., "-1h", "-24h", "2024-01-01T00:00:00")
             latest_time: End time (default "now")
-            max_results: Maximum results to return
+            max_results: Maximum results to return (0 = unlimited)
 
         Returns:
             List of events as dictionaries
         """
         self.logger.info(f"Executing Splunk query: {search_query[:100]}...")
 
-        # Create search job
+        # Create search job - don't limit results in job creation
         kwargs = {
             "earliest_time": earliest_time,
-            "latest_time": latest_time,
-            "max_count": max_results
+            "latest_time": latest_time
         }
+
+        # Only add max_count if it's not 0 (unlimited)
+        if max_results > 0:
+            kwargs["max_count"] = max_results
 
         job = self.service.jobs.create(search_query, **kwargs)
 
@@ -148,13 +151,37 @@ class SplunkConnector:
             import time
             time.sleep(0.5)
 
-        # Get results - must specify count parameter to override default 100 limit
+        # Get ALL results using pagination
         events = []
-        for result in results.ResultsReader(job.results(count=max_results)):
-            if isinstance(result, dict):
-                events.append(result)
+        offset = 0
+        page_size = 50000  # Retrieve in chunks of 50k for efficiency
 
-        self.logger.info(f"Retrieved {len(events)} events from Splunk")
+        while True:
+            # Get a page of results
+            result_kwargs = {"offset": offset, "count": page_size}
+            page_results = list(results.ResultsReader(job.results(**result_kwargs)))
+
+            # Filter out non-dict results (like messages)
+            page_events = [r for r in page_results if isinstance(r, dict)]
+
+            if not page_events:
+                break  # No more results
+
+            events.extend(page_events)
+            self.logger.info(f"Retrieved page: {len(page_events)} events (total so far: {len(events)})")
+
+            # If we got fewer results than page_size, we've reached the end
+            if len(page_events) < page_size:
+                break
+
+            # If max_results is set and we've hit it, stop
+            if max_results > 0 and len(events) >= max_results:
+                events = events[:max_results]
+                break
+
+            offset += page_size
+
+        self.logger.info(f"Retrieved {len(events)} total events from Splunk")
         return events
 
     def get_network_connections(

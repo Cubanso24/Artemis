@@ -403,7 +403,7 @@ class HuntManager:
         self.coordinator = MetaLearnerCoordinator()
         self.pipeline = None
         self.active_hunts = {}
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.executor = ThreadPoolExecutor(max_workers=16)  # Maximize parallel hunt execution
 
     def initialize_pipeline(self):
         """Initialize data pipeline."""

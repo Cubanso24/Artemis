@@ -160,8 +160,9 @@ class DataPipeline:
         data = {}
 
         try:
-            # Use parallel execution for faster collection
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            # Use parallel execution for faster collection - maximize CPU utilization
+            # Each data type query runs in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
                 futures = {
                     "network_connections": executor.submit(
                         self.splunk.get_network_connections, time_range
@@ -189,10 +190,10 @@ class DataPipeline:
                     )
                 }
 
-                # Collect results
+                # Collect results - increased timeout for large datasets
                 for key, future in futures.items():
                     try:
-                        data[key] = future.result(timeout=60)
+                        data[key] = future.result(timeout=600)  # 10 minutes for millions of events
                     except Exception as e:
                         import traceback
                         error_msg = f"Failed to collect {key}: {str(e)}"
