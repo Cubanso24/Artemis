@@ -173,8 +173,10 @@ class SplunkConnector:
             Network connections in Artemis format
         """
         # Use Zeek field names: id.orig_h, id.resp_h, id.resp_p, orig_bytes, resp_bytes
+        # spath extracts JSON fields from _raw
         query = '''
         search index=zeek_conn OR index=suricata
+        | spath
         | eval timestamp=_time
         | table _time id.orig_h id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
         | rename "id.orig_h" as source_ip, "id.resp_h" as destination_ip, "id.resp_p" as destination_port, proto as protocol, orig_bytes as bytes_in, resp_bytes as bytes_out
@@ -208,11 +210,14 @@ class SplunkConnector:
         Returns:
             DNS queries in Artemis format
         """
-        # Use Zeek DNS field names: id.orig_h, query, answers, rcode_name
+        # Use Zeek DNS field names: id.orig_h, query, rcode_name
+        # spath extracts JSON fields from _raw
+        # Note: Zeek DNS doesn't always have 'answers' field, so we omit it
         query = '''
         search index=zeek_dns
-        | table _time id.orig_h query answers rcode_name
-        | rename "id.orig_h" as source_ip, rcode_name as response_code, answers as answer
+        | spath
+        | table _time id.orig_h query rcode_name
+        | rename "id.orig_h" as source_ip, rcode_name as response_code
         '''
 
         events = self.query(query, earliest_time=time_range)
@@ -223,7 +228,6 @@ class SplunkConnector:
                 "source_ip": event.get("source_ip"),
                 "domain": event.get("query"),
                 "response_code": event.get("response_code", "NOERROR"),
-                "answer": event.get("answer"),
                 "timestamp": parse_splunk_timestamp(event.get("_time"))
             })
 
