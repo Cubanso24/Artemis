@@ -452,19 +452,18 @@ class HuntManager:
                     'progress': 50
                 })
 
-            # Create network state
-            network_state = NetworkState.from_data(hunting_data)
-
             if progress_callback:
                 await progress_callback({'stage': 'hunt', 'message': 'Running hunting agents...', 'progress': 70})
 
             # Execute hunt
+            # coordinator.hunt() signature: hunt(data, initial_signals=None, context_data=None)
+            # It creates NetworkState internally from context_data
             hunt_result = await asyncio.get_event_loop().run_in_executor(
                 self.executor,
                 self.coordinator.hunt,
-                network_state,
-                hunting_data,
-                mode
+                hunting_data,  # data: Dict[str, Any] - hunting data for agents
+                None,          # initial_signals: Optional initial alerts
+                None           # context_data: Optional context (hunt() creates NetworkState)
             )
 
             if progress_callback:
