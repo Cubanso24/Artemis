@@ -1,5 +1,5 @@
 [Unit]
-Description=Artemis Threat Hunting Platform
+Description=Artemis Threat Hunting Platform (LAN-accessible on port 8000)
 After=network.target
 
 [Service]
@@ -8,6 +8,7 @@ User=root
 WorkingDirectory=/home/user/Artemis
 Environment="SPLUNK_HOST=10.25.11.86"
 Environment="SPLUNK_TOKEN=your-token-here"
+# Server binds to 0.0.0.0:8000 (accessible from LAN)
 ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
 Restart=always
 RestartSec=10

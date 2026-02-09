@@ -614,13 +614,31 @@ async def serve_static(path: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import socket
+
+    # Get LAN IP address
+    def get_lan_ip():
+        try:
+            # Create a socket to determine the local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            lan_ip = s.getsockname()[0]
+            s.close()
+            return lan_ip
+        except Exception:
+            return "0.0.0.0"
+
+    lan_ip = get_lan_ip()
 
     print("=" * 80)
     print("  🏹 ARTEMIS THREAT HUNTING PLATFORM")
     print("=" * 80)
-    print("\n🚀 Starting server...")
-    print("📡 Web UI: http://localhost:8000")
-    print("📚 API Docs: http://localhost:8000/docs")
-    print("\n" + "=" * 80 + "\n")
+    print("\n🚀 Starting server on all network interfaces...")
+    print("\n📡 Access Artemis from:")
+    print(f"   Local:      http://localhost:8000")
+    print(f"   LAN:        http://{lan_ip}:8000")
+    print(f"   API Docs:   http://{lan_ip}:8000/docs")
+    print("\n💡 Anyone on your network can access Artemis at the LAN address")
+    print("=" * 80 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

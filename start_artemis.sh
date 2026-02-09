@@ -43,9 +43,7 @@ pip install -q --upgrade -r requirements.txt
 
 echo ""
 echo "🚀 Launching Artemis Server..."
-echo ""
-echo "   Web UI:     http://localhost:8000"
-echo "   API Docs:   http://localhost:8000/docs"
+echo "   (Server will display LAN access URLs below)"
 echo ""
 echo "======================================================================"
 echo ""
