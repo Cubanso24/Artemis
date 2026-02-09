@@ -1139,7 +1139,15 @@
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                handleProgress(data);
+
+                // Handle different message types
+                if (data.type === 'server_log') {
+                    // Server-side log message
+                    addLog(data.message, data.log_type);
+                } else {
+                    // Progress update message
+                    handleProgress(data);
+                }
             };
 
             ws.onclose = () => {
@@ -1487,6 +1495,18 @@
 
                 addLog(data.message, data.stage === 'error' ? 'error' : 'info');
 
+                // If there's an error with details, log them too
+                if (data.stage === 'error' && data.error_detail) {
+                    addLog('Error details:', 'error');
+                    // Split traceback into lines and log each
+                    const lines = data.error_detail.split('\n');
+                    lines.forEach(line => {
+                        if (line.trim()) {
+                            addLog(line, 'error');
+                        }
+                    });
+                }
+
                 if (data.stage === 'complete') {
                     setTimeout(() => {
                         document.getElementById('progress').classList.remove('active');
@@ -1495,6 +1515,14 @@
                         loadStats();
                         viewHuntDetails(data.hunt_id);
                     }, 2000);
+                } else if (data.stage === 'error') {
+                    // Also hide progress bar on error after a delay
+                    setTimeout(() => {
+                        document.getElementById('progress').classList.remove('active');
+                        progressFill.style.width = '0%';
+                        loadRecentHunts();
+                        loadStats();
+                    }, 5000);
                 }
             }
         }

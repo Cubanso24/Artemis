@@ -8,6 +8,7 @@ import sys
 import json
 import asyncio
 import logging
+import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -31,6 +32,66 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("artemis.server")
+
+
+# ============================================================================
+# WebSocket Logging Handler
+# ============================================================================
+
+class WebSocketLogHandler(logging.Handler):
+    """Custom logging handler that broadcasts logs to WebSocket clients."""
+
+    def __init__(self):
+        super().__init__()
+        self.connections = []
+
+    def emit(self, record):
+        """Emit a log record to all WebSocket clients."""
+        try:
+            log_entry = self.format(record)
+
+            # Determine log type for client-side styling
+            if record.levelno >= logging.ERROR:
+                log_type = 'error'
+            elif record.levelno >= logging.WARNING:
+                log_type = 'warning'
+            else:
+                log_type = 'info'
+
+            # Create message for WebSocket
+            message = {
+                'type': 'server_log',
+                'level': record.levelname,
+                'message': log_entry,
+                'log_type': log_type,
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Broadcast to all connected clients asynchronously
+            # We'll handle this in the broadcast function
+            asyncio.create_task(self.broadcast_log(message))
+        except Exception:
+            self.handleError(record)
+
+    async def broadcast_log(self, message: dict):
+        """Broadcast log message to all WebSocket clients."""
+        # This will use the global active_connections list
+        for connection in active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass  # Connection might be closed
+
+
+# Create and configure WebSocket log handler
+ws_log_handler = WebSocketLogHandler()
+ws_log_handler.setLevel(logging.INFO)
+ws_log_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+# Add handler to root logger so all logs go to WebSocket
+logging.getLogger().addHandler(ws_log_handler)
+# Also add to artemis logger
+logger.addHandler(ws_log_handler)
 
 
 # ============================================================================
@@ -473,7 +534,13 @@ class HuntManager:
             return hunt_data
 
         except Exception as e:
-            logger.error(f"Hunt {hunt_id} failed: {e}", exc_info=True)
+            error_msg = f"Hunt {hunt_id} failed: {str(e)}"
+            error_traceback = traceback.format_exc()
+
+            # Log error with full traceback
+            logger.error(error_msg)
+            logger.error(f"Traceback:\n{error_traceback}")
+
             self.active_hunts[hunt_id]['status'] = 'failed'
             self.active_hunts[hunt_id]['error'] = str(e)
 
@@ -481,10 +548,13 @@ class HuntManager:
                 await progress_callback({
                     'stage': 'error',
                     'message': f'Hunt failed: {str(e)}',
-                    'progress': 0
+                    'error_detail': error_traceback,
+                    'progress': 0,
+                    'hunt_id': hunt_id
                 })
 
-            raise
+            # Don't raise - just mark as failed
+            return None
 
 
 # ============================================================================
@@ -540,13 +610,17 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
     """Start a new threat hunt."""
     hunt_id = f"hunt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    # Start hunt in background
+    # Log hunt start to WebSocket clients
+    logger.info(f"Starting hunt {hunt_id}: time_range={request.time_range}, mode={request.mode}")
+
+    # Start hunt in background with progress callback
     background_tasks.add_task(
         hunt_manager.execute_hunt,
         hunt_id,
         request.time_range,
         request.mode,
-        request.description
+        request.description,
+        broadcast_progress  # Pass broadcast function as progress callback
     )
 
     return {'hunt_id': hunt_id, 'status': 'started'}
