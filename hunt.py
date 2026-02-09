@@ -243,16 +243,17 @@ def main():
 
     # Initialize data pipeline (Splunk only, no Security Onion for now)
     print("📡 Connecting to data sources...")
-    pipeline = DataPipeline(
-        splunk_config={
-            'host': host,
-            'port': 8089,
-            'username': username if not token else "",
-            'password': password if not token else "",
-            'token': token,
-            'verify_ssl': False
-        }
+    from artemis.integrations.data_pipeline import DataSourceConfig
+
+    config = DataSourceConfig(
+        splunk_host=host,
+        splunk_port=8089,
+        splunk_username=username if not token else "",
+        splunk_password=password if not token else "",
+        splunk_token=token if token else ""
     )
+
+    pipeline = DataPipeline(config)
 
     # Initialize meta-learner coordinator
     print("🧠 Initializing Meta-Learner Coordinator...")
