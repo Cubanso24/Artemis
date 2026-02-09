@@ -174,39 +174,38 @@ class SplunkConnector:
         page_size = 50000
         num_pages = (fetch_count + page_size - 1) // page_size  # Ceiling division
 
-        self.logger.info(f"Fetching {fetch_count} events in {num_pages} pages using parallel pagination")
+        self.logger.info(f"Fetching {fetch_count} events in {num_pages} pages using SEQUENTIAL pagination (debugging)")
 
-        # Fetch pages in parallel using ThreadPoolExecutor
-        def fetch_page(page_num):
-            """Fetch a single page of results."""
+        # Fetch pages sequentially with detailed logging
+        events = []
+        for page_num in range(num_pages):
             offset = page_num * page_size
             count = min(page_size, fetch_count - offset)
 
-            result_kwargs = {"offset": offset, "count": count}
-            page_results = list(results.ResultsReader(job.results(**result_kwargs)))
+            self.logger.info(f"Fetching page {page_num + 1}/{num_pages} (offset={offset}, count={count})...")
 
-            # Filter out non-dict results (like messages)
-            page_events = [r for r in page_results if isinstance(r, dict)]
+            try:
+                result_kwargs = {"offset": offset, "count": count}
+                page_results = list(results.ResultsReader(job.results(**result_kwargs)))
 
-            self.logger.info(f"Retrieved page {page_num + 1}/{num_pages}: {len(page_events)} events")
-            return page_events
+                # Filter out non-dict results (like messages)
+                page_events = [r for r in page_results if isinstance(r, dict)]
 
-        # Fetch all pages in parallel with up to 16 concurrent requests
-        events = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-            # Submit all page fetch tasks
-            page_futures = {executor.submit(fetch_page, i): i for i in range(num_pages)}
+                events.extend(page_events)
+                self.logger.info(f"Retrieved page {page_num + 1}/{num_pages}: {len(page_events)} events (total so far: {len(events)})")
 
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(page_futures):
-                page_num = page_futures[future]
-                try:
-                    page_events = future.result()
-                    events.extend(page_events)
-                except Exception as e:
-                    self.logger.error(f"Failed to fetch page {page_num}: {e}")
+                # If we got fewer events than expected, something is wrong
+                if len(page_events) == 0 and page_num < num_pages - 1:
+                    self.logger.warning(f"Page {page_num + 1} returned 0 events but more pages expected - stopping pagination")
+                    break
 
-        self.logger.info(f"Retrieved {len(events)} total events from Splunk via parallel pagination")
+            except Exception as e:
+                self.logger.error(f"Failed to fetch page {page_num + 1}: {str(e)}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                break
+
+        self.logger.info(f"Retrieved {len(events)} total events from Splunk (expected {fetch_count})")
         return events
 
     def get_network_connections(
