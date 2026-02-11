@@ -8,11 +8,9 @@ import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import logging
-import concurrent.futures
 
 try:
     import splunklib.client as client
-    import splunklib.results as results
     SPLUNK_AVAILABLE = True
 except ImportError:
     SPLUNK_AVAILABLE = False
@@ -122,7 +120,10 @@ class SplunkConnector:
         max_results: int = 0  # 0 = unlimited, get ALL results
     ) -> List[Dict[str, Any]]:
         """
-        Execute Splunk search query.
+        Execute Splunk search query using the export endpoint.
+
+        Uses service.jobs.export() which streams all results directly,
+        bypassing the 50K per-call limit of job.results().
 
         Args:
             search_query: SPL (Splunk Processing Language) query
@@ -135,82 +136,49 @@ class SplunkConnector:
         """
         self.logger.info(f"Executing Splunk query: {search_query[:100]}...")
 
-        # Create search job - don't limit results in job creation
-        kwargs = {
-            "earliest_time": earliest_time,
-            "latest_time": latest_time
-        }
-
-        # Set max_count to control how many results Splunk stores for retrieval
-        # Default job max_count is 50000 - must explicitly set 0 for unlimited
-        if max_results > 0:
-            kwargs["max_count"] = max_results
-        else:
-            kwargs["max_count"] = 0  # Unlimited - store all results for retrieval
-
-        job = self.service.jobs.create(search_query, **kwargs)
-
-        # Wait for job to complete with timeout
         import time
         start_time = time.time()
-        timeout = 600  # 10 minute timeout per job
 
-        while not job.is_done():
-            if time.time() - start_time > timeout:
-                self.logger.error(f"Query timed out after {timeout} seconds")
-                raise TimeoutError(f"Splunk query exceeded {timeout} second timeout")
-            time.sleep(0.5)
+        kwargs = {
+            "earliest_time": earliest_time,
+            "latest_time": latest_time,
+            "search_mode": "normal",
+            "output_mode": "json",
+        }
 
-        self.logger.info(f"Job completed in {time.time() - start_time:.1f} seconds, retrieving results...")
+        if max_results > 0:
+            kwargs["count"] = max_results
+        else:
+            kwargs["count"] = 0  # Return all results
 
-        # Get result count to determine pagination strategy
-        result_count = int(job["resultCount"])
-        self.logger.info(f"Job has {result_count} total results")
+        # Export endpoint streams all results - no 50K limit
+        export_stream = self.service.jobs.export(search_query, **kwargs)
 
-        if result_count == 0:
-            return []
+        # Read and parse concatenated JSON objects from export stream
+        raw = export_stream.read()
+        if isinstance(raw, bytes):
+            raw = raw.decode('utf-8')
 
-        # Determine how many results to actually fetch
-        fetch_count = result_count if max_results == 0 else min(result_count, max_results)
-
-        # Paginate in chunks matching Splunk server max_result_rows setting
-        page_size = 2000000
-        num_pages = (fetch_count + page_size - 1) // page_size
-
-        self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s) (parallel)")
-
-        def fetch_page(page_num):
-            """Fetch a single page of results."""
-            offset = page_num * page_size
-            count = min(page_size, fetch_count - offset)
-            page_results = job.results(offset=offset, count=count)
-            return [r for r in results.ResultsReader(page_results) if isinstance(r, dict)]
-
-        # Fetch all pages in parallel
         events = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(num_pages, 8)) as executor:
-            future_to_page = {
-                executor.submit(fetch_page, page_num): page_num
-                for page_num in range(num_pages)
-            }
-
-            # Collect results in page order
-            page_results_map = {}
-            for future in concurrent.futures.as_completed(future_to_page):
-                page_num = future_to_page[future]
+        if raw.strip():
+            decoder = json.JSONDecoder()
+            pos = 0
+            while pos < len(raw):
+                # Skip whitespace between JSON objects
+                while pos < len(raw) and raw[pos] in ' \t\n\r':
+                    pos += 1
+                if pos >= len(raw):
+                    break
                 try:
-                    page_events = future.result()
-                    page_results_map[page_num] = page_events
-                    self.logger.info(f"Page {page_num + 1}/{num_pages}: {len(page_events)} events")
-                except Exception as e:
-                    self.logger.error(f"Failed on page {page_num + 1}: {str(e)}")
-                    page_results_map[page_num] = []
+                    obj, end_pos = decoder.raw_decode(raw, pos)
+                    if 'results' in obj:
+                        events.extend(obj['results'])
+                    pos = end_pos
+                except json.JSONDecodeError:
+                    break
 
-            # Reassemble in order
-            for page_num in range(num_pages):
-                events.extend(page_results_map.get(page_num, []))
-
-        self.logger.info(f"Retrieved {len(events)} total events from Splunk")
+        elapsed = time.time() - start_time
+        self.logger.info(f"Retrieved {len(events)} total events from Splunk in {elapsed:.1f}s")
         return events
 
     def get_network_connections(
