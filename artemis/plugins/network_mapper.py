@@ -20,17 +20,18 @@ logger = logging.getLogger("artemis.plugins.network_mapper")
 
 
 class NetworkNode:
-    """Represents a network host observed by a specific sensor."""
+    """Represents a network host observed by a specific sensor on a specific VLAN."""
 
     __slots__ = (
-        'ip', 'sensor_id', 'hostnames', 'services', 'first_seen',
+        'ip', 'sensor_id', 'vlan', 'hostnames', 'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
     )
 
-    def __init__(self, ip: str, sensor_id: str = "default"):
+    def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
         self.ip = ip
         self.sensor_id = sensor_id
+        self.vlan = vlan
         self.hostnames: Set[str] = set()
         self.services: Set[tuple] = set()  # (port, protocol) tuples
         self.first_seen = datetime.now()
@@ -70,6 +71,7 @@ class NetworkNode:
         return {
             'ip': self.ip,
             'sensor_id': self.sensor_id,
+            'vlan': self.vlan,
             'hostnames': list(self.hostnames),
             'services': [f"{port}/{proto}" for port, proto in self.services],
             'first_seen': self.first_seen.isoformat(),
@@ -104,7 +106,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.nodes: Dict[str, NetworkNode] = {}  # key: "sensor:ip"
+        self.nodes: Dict[str, NetworkNode] = {}  # key: "sensor:vlan:ip"
         self.sensors: Set[str] = set()
         self.output_dir = Path(config.get('output_dir', 'network_maps'))
         self.auto_save_interval = config.get('auto_save_interval', 300)
@@ -175,9 +177,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """Restore a single NetworkNode from serialized data."""
         ip = node_data.get('ip', '')
         sensor_id = node_data.get('sensor_id', 'default')
-        key = self._node_key(sensor_id, ip)
+        vlan = node_data.get('vlan', '0')
+        key = self._node_key(sensor_id, vlan, ip)
 
-        node = NetworkNode(ip, sensor_id)
+        node = NetworkNode(ip, sensor_id, vlan)
         node.hostnames = set(node_data.get('hostnames', []))
         node.services = set()
         for s in node_data.get('services', []):
@@ -197,12 +200,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _node_key(sensor_id: str, ip: str) -> str:
-        return f"{sensor_id}:{ip}"
+    def _node_key(sensor_id: str, vlan: str, ip: str) -> str:
+        return f"{sensor_id}:{vlan}:{ip}"
 
-    def _get_or_create_node(self, sensor_id: str, ip: str) -> NetworkNode:
+    def _get_or_create_node(
+        self, sensor_id: str, vlan: str, ip: str,
+    ) -> NetworkNode:
         """Get existing node or create a new one, respecting max_nodes."""
-        key = self._node_key(sensor_id, ip)
+        key = self._node_key(sensor_id, vlan, ip)
         node = self.nodes.get(key)
         if node is not None:
             return node
@@ -211,7 +216,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         if len(self.nodes) >= self.max_nodes:
             self._evict_stale_nodes(count=max(1, self.max_nodes // 100))
 
-        node = NetworkNode(ip, sensor_id)
+        node = NetworkNode(ip, sensor_id, vlan)
         self.nodes[key] = node
         self.sensors.add(sensor_id)
         self._dirty_nodes.add(key)
@@ -283,12 +288,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
         bytes_out = conn.get('bytes_out', 0)
         bytes_in = conn.get('bytes_in', 0)
         sensor_id = conn.get('sensor_id', 'default')
+        vlan = str(conn.get('vlan', '0'))
 
         if not src_ip or not dst_ip:
             return
 
-        src_node = self._get_or_create_node(sensor_id, src_ip)
-        dst_node = self._get_or_create_node(sensor_id, dst_ip)
+        src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
+        dst_node = self._get_or_create_node(sensor_id, vlan, dst_ip)
 
         now = datetime.now()
         src_node.last_seen = now
@@ -317,8 +323,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             dst_node.services.add((dst_port, protocol))
 
         # Mark both nodes as dirty for role inference
-        src_key = self._node_key(sensor_id, src_ip)
-        dst_key = self._node_key(sensor_id, dst_ip)
+        src_key = self._node_key(sensor_id, vlan, src_ip)
+        dst_key = self._node_key(sensor_id, vlan, dst_ip)
         self._dirty_nodes.add(src_key)
         self._dirty_nodes.add(dst_key)
 
@@ -328,16 +334,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
         domain = dns.get('domain')
         answer = dns.get('answer')
         sensor_id = dns.get('sensor_id', 'default')
+        vlan = str(dns.get('vlan', '0'))
 
         if not src_ip:
             return
 
-        src_node = self._get_or_create_node(sensor_id, src_ip)
+        src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
         src_node.last_seen = datetime.now()
 
         if answer and domain:
             if '.' in answer and all(p.isdigit() for p in answer.split('.')):
-                ans_node = self._get_or_create_node(sensor_id, answer)
+                ans_node = self._get_or_create_node(sensor_id, vlan, answer)
                 ans_node.hostnames.add(domain)
 
     # ------------------------------------------------------------------
@@ -446,14 +453,20 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 sensor_nodes = by_sensor[sensor_id]
                 internal = [n for n in sensor_nodes if n.is_internal]
                 external = [n for n in sensor_nodes if not n.is_internal]
+                vlans = sorted(
+                    {n.vlan for n in sensor_nodes if n.vlan != '0'}
+                )
 
                 f.write(f"\n{'─' * 80}\n")
                 f.write(f"SENSOR: {sensor_id}\n")
                 f.write(f"{'─' * 80}\n")
                 f.write(
                     f"  Nodes: {len(sensor_nodes)} "
-                    f"(internal: {len(internal)}, external: {len(external)})\n"
+                    f"(internal: {len(internal)}, "
+                    f"external: {len(external)})\n"
                 )
+                if vlans:
+                    f.write(f"  VLANs observed: {', '.join(vlans)}\n")
 
                 # Top internal hosts
                 f.write("\n  TOP INTERNAL HOSTS (by connection count):\n")
@@ -465,8 +478,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     roles_str = (
                         ", ".join(node.roles) if node.roles else "unknown"
                     )
+                    vlan_tag = f" [v{node.vlan}]" if node.vlan != '0' else ""
                     f.write(
-                        f"    {node.ip:15s} | "
+                        f"    {node.ip:15s}{vlan_tag:8s} | "
                         f"{node.total_connections:6d} conns | "
                         f"Roles: {roles_str}\n"
                     )
@@ -475,7 +489,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                             f"{p}/{pr}"
                             for p, pr in sorted(node.services)[:5]
                         )
-                        f.write(f"                     Services: {svcs}\n")
+                        f.write(
+                            f"                              "
+                            f"Services: {svcs}\n"
+                        )
 
                 # Top external destinations
                 f.write("\n  TOP EXTERNAL DESTINATIONS:\n")
@@ -509,8 +526,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     svcs = ", ".join(
                         f"{p}/{pr}" for p, pr in sorted(node.services)[:8]
                     )
+                    vlan_tag = f" [v{node.vlan}]" if node.vlan != '0' else ""
                     f.write(
-                        f"    {node.ip:15s} | "
+                        f"    {node.ip:15s}{vlan_tag:8s} | "
                         f"Services: {svcs or 'none detected'}\n"
                     )
 
@@ -549,9 +567,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         internal_count = sum(1 for n in nodes if n.is_internal)
 
+        vlans = sorted({n.vlan for n in nodes if n.vlan != '0'})
+
         top_talkers = sorted(
-            [(n.ip, n.sensor_id, n.total_connections) for n in nodes],
-            key=lambda x: x[2],
+            [
+                (n.ip, n.sensor_id, n.vlan, n.total_connections)
+                for n in nodes
+            ],
+            key=lambda x: x[3],
             reverse=True,
         )[:10]
 
@@ -559,6 +582,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
             '_key': cache_key,
             'total_nodes': len(nodes),
             'sensors': sorted(self.sensors),
+            'vlans': vlans,
             'internal_nodes': internal_count,
             'external_nodes': len(nodes) - internal_count,
             'total_services': sum(len(n.services) for n in nodes),
@@ -566,8 +590,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 n.ip for n in nodes if 'server' in n.roles
             ][:10],
             'top_talkers': [
-                {'ip': ip, 'sensor_id': sid, 'connections': c}
-                for ip, sid, c in top_talkers
+                {
+                    'ip': ip, 'sensor_id': sid,
+                    'vlan': v, 'connections': c,
+                }
+                for ip, sid, v, c in top_talkers
             ],
         }
 
@@ -606,15 +633,22 @@ class NetworkMapperPlugin(ArtemisPlugin):
             filtered, key=lambda n: n.total_connections, reverse=True
         )[:max_nodes]
         top_keys = {
-            self._node_key(n.sensor_id, n.ip) for n in top
+            self._node_key(n.sensor_id, n.vlan, n.ip) for n in top
         }
 
         nodes = []
         for node in top:
+            # Show VLAN in label when tagged (non-zero)
+            label = (
+                f"{node.ip} (v{node.vlan})"
+                if node.vlan != '0'
+                else node.ip
+            )
             nodes.append({
-                'id': self._node_key(node.sensor_id, node.ip),
-                'label': node.ip,
+                'id': self._node_key(node.sensor_id, node.vlan, node.ip),
+                'label': label,
                 'sensor_id': node.sensor_id,
+                'vlan': node.vlan,
                 'group': 'internal' if node.is_internal else 'external',
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
@@ -625,22 +659,20 @@ class NetworkMapperPlugin(ArtemisPlugin):
         edges = []
         seen_edges: Set[tuple] = set()
         for node in top:
+            src_key = self._node_key(node.sensor_id, node.vlan, node.ip)
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )[:5]:
-                dst_key = self._node_key(node.sensor_id, dst_ip)
+                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
                 if dst_key not in top_keys:
                     continue
-                edge_key = tuple(sorted([
-                    self._node_key(node.sensor_id, node.ip),
-                    dst_key,
-                ]))
+                edge_key = tuple(sorted([src_key, dst_key]))
                 if edge_key in seen_edges:
                     continue
                 edges.append({
-                    'from': self._node_key(node.sensor_id, node.ip),
+                    'from': src_key,
                     'to': dst_key,
                     'value': count,
                     'title': f"{count} connections",

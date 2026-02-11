@@ -197,7 +197,8 @@ class SplunkConnector:
         search index=zeek_conn OR index=suricata
         | spath
         | eval timestamp=_time
-        | table _time host id.orig_h id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
+        | eval vlan=coalesce(vlan, "0")
+        | table _time host vlan id.orig_h id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
         | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as destination_ip, "id.resp_p" as destination_port, proto as protocol, orig_bytes as bytes_in, resp_bytes as bytes_out
         '''
 
@@ -225,6 +226,7 @@ class SplunkConnector:
                 "bytes_out": int(get_first(event.get("bytes_out"), 0)),
                 "conn_state": get_first(event.get("conn_state"), ""),
                 "sensor_id": get_first(event.get("sensor_id"), "default"),
+                "vlan": str(get_first(event.get("vlan"), "0")),
                 "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
             })
 
@@ -243,7 +245,8 @@ class SplunkConnector:
         query = '''
         search index=zeek_dns
         | spath
-        | table _time host id.orig_h query rcode_name
+        | eval vlan=coalesce(vlan, "0")
+        | table _time host vlan id.orig_h query rcode_name
         | rename host as sensor_id, "id.orig_h" as source_ip, rcode_name as response_code
         '''
 
@@ -263,6 +266,7 @@ class SplunkConnector:
                 "domain": get_first(event.get("query")),
                 "response_code": get_first(event.get("response_code"), "NOERROR"),
                 "sensor_id": get_first(event.get("sensor_id"), "default"),
+                "vlan": str(get_first(event.get("vlan"), "0")),
                 "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
             })
 

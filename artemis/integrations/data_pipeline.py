@@ -353,6 +353,7 @@ class DataPipeline:
                     "bytes_in": int(conn.get("resp_bytes", 0)),
                     "bytes_out": int(conn.get("orig_bytes", 0)),
                     "sensor_id": conn.get("sensor_id", "securityonion"),
+                    "vlan": str(conn.get("vlan", "0")),
                     "timestamp": datetime.fromtimestamp(float(conn.get("ts", 0)))
                 })
             except:
@@ -372,6 +373,7 @@ class DataPipeline:
                     "response_code": dns.get("rcode_name", "NOERROR"),
                     "answer": dns.get("answers"),
                     "sensor_id": dns.get("sensor_id", "securityonion"),
+                    "vlan": str(dns.get("vlan", "0")),
                     "timestamp": datetime.fromtimestamp(float(dns.get("ts", 0)))
                 })
             except:
