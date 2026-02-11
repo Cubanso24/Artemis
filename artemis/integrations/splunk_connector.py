@@ -170,8 +170,8 @@ class SplunkConnector:
         # Determine how many results to actually fetch
         fetch_count = result_count if max_results == 0 else min(result_count, max_results)
 
-        # Paginate in chunks matching Splunk server max_result_rows setting
-        page_size = 2000000
+        # Paginate in chunks matching Splunk server max_result_rows setting (default 50000)
+        page_size = 50000
         num_pages = (fetch_count + page_size - 1) // page_size
 
         self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s) (parallel)")
