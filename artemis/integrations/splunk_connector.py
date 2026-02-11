@@ -177,7 +177,8 @@ class SplunkConnector:
             # This is 10-20x faster than job.results() pagination
             export_results = job.results(output_mode='json', count=0)  # count=0 means all results
 
-            for result in results.ResultsReader(export_results):
+            # Use JSONResultsReader for JSON output mode (ResultsReader only parses XML)
+            for result in results.JSONResultsReader(export_results):
                 if isinstance(result, dict):
                     events.append(result)
 
