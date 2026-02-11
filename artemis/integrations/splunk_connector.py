@@ -167,29 +167,37 @@ class SplunkConnector:
         if result_count == 0:
             return []
 
-        # Use export mode for streaming results - MUCH faster than pagination
-        # Export streams all results in one request vs. 30+ paginated requests
-        self.logger.info(f"Streaming {result_count} events using export mode (fast streaming)")
+        # Determine how many results to actually fetch
+        fetch_count = result_count if max_results == 0 else min(result_count, max_results)
+
+        # Paginate in chunks of 50000 (Splunk server-side max_result_rows limit)
+        page_size = 50000
+        num_pages = (fetch_count + page_size - 1) // page_size
+
+        self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s)")
 
         events = []
-        try:
-            # Retrieve all results - pass explicit count to avoid server default cap
-            export_results = job.results(count=result_count)
+        for page_num in range(num_pages):
+            offset = page_num * page_size
+            count = min(page_size, fetch_count - offset)
 
-            for result in results.ResultsReader(export_results):
-                if isinstance(result, dict):
-                    events.append(result)
+            try:
+                page_results = job.results(offset=offset, count=count)
+                page_events = [r for r in results.ResultsReader(page_results) if isinstance(r, dict)]
+                events.extend(page_events)
 
-                    # Log progress every 50k events
-                    if len(events) % 50000 == 0:
-                        self.logger.info(f"Streamed {len(events)} events so far...")
+                self.logger.info(f"Page {page_num + 1}/{num_pages}: {len(page_events)} events (total: {len(events)})")
 
-        except Exception as e:
-            self.logger.error(f"Failed during streaming: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+                if len(page_events) == 0:
+                    break
 
-        self.logger.info(f"Retrieved {len(events)} total events from Splunk via streaming export")
+            except Exception as e:
+                self.logger.error(f"Failed on page {page_num + 1}: {str(e)}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                break
+
+        self.logger.info(f"Retrieved {len(events)} total events from Splunk")
         return events
 
     def get_network_connections(
