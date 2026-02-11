@@ -173,12 +173,11 @@ class SplunkConnector:
 
         events = []
         try:
-            # Export mode streams results without pagination overhead
-            # This is 10-20x faster than job.results() pagination
-            export_results = job.results(output_mode='json', count=0)  # count=0 means all results
+            # Retrieve all results in one call (count=0 means no limit)
+            # Uses default XML output which ResultsReader handles reliably
+            export_results = job.results(count=0)
 
-            # Use JSONResultsReader for JSON output mode (ResultsReader only parses XML)
-            for result in results.JSONResultsReader(export_results):
+            for result in results.ResultsReader(export_results):
                 if isinstance(result, dict):
                     events.append(result)
 
