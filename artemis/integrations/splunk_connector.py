@@ -171,16 +171,18 @@ class SplunkConnector:
         # Export streams all results in one request vs. 30+ paginated requests
         self.logger.info(f"Streaming {result_count} events using export mode (fast streaming)")
 
+        import sys
+
         events = []
         try:
             # Retrieve all results in one call (count=0 means no limit)
             # Uses default XML output which ResultsReader handles reliably
             export_results = job.results(count=0)
-            print(f"[DEBUG] export_results type: {type(export_results)}", flush=True)
+            self.logger.info(f"[DEBUG] export_results type: {type(export_results)}")
 
             # Read a small sample of raw bytes to check what Splunk is returning
             raw_peek = export_results.read(1024)
-            print(f"[DEBUG] First 1024 bytes of response: {raw_peek[:500]}", flush=True)
+            self.logger.info(f"[DEBUG] First 500 bytes of response: {raw_peek[:500]}")
 
             # We consumed bytes, so we need to re-fetch the results
             export_results = job.results(count=0)
@@ -198,16 +200,14 @@ class SplunkConnector:
                 else:
                     non_dict_count += 1
                     if non_dict_count <= 5:
-                        print(f"[DEBUG] Non-dict result #{non_dict_count}: type={type(result)}, value={result}", flush=True)
+                        self.logger.info(f"[DEBUG] Non-dict result #{non_dict_count}: type={type(result)}, value={result}")
 
-            print(f"[DEBUG] ResultsReader yielded {item_count} total items: {len(events)} dicts, {non_dict_count} non-dicts", flush=True)
+            self.logger.info(f"[DEBUG] ResultsReader yielded {item_count} total items: {len(events)} dicts, {non_dict_count} non-dicts")
 
         except Exception as e:
             self.logger.error(f"Failed during export streaming: {str(e)}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            print(f"[DEBUG] Exception during streaming: {e}", flush=True)
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}", flush=True)
 
         self.logger.info(f"Retrieved {len(events)} total events from Splunk via streaming export")
         return events
