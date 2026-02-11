@@ -141,9 +141,12 @@ class SplunkConnector:
             "latest_time": latest_time
         }
 
-        # Only add max_count if it's not 0 (unlimited)
+        # Set max_count to control how many results Splunk stores for retrieval
+        # Default job max_count is 50000 - must explicitly set 0 for unlimited
         if max_results > 0:
             kwargs["max_count"] = max_results
+        else:
+            kwargs["max_count"] = 0  # Unlimited - store all results for retrieval
 
         job = self.service.jobs.create(search_query, **kwargs)
 
@@ -170,8 +173,8 @@ class SplunkConnector:
         # Determine how many results to actually fetch
         fetch_count = result_count if max_results == 0 else min(result_count, max_results)
 
-        # Paginate in chunks matching Splunk server max_result_rows setting (default 50000)
-        page_size = 50000
+        # Paginate in chunks matching Splunk server max_result_rows setting
+        page_size = 2000000
         num_pages = (fetch_count + page_size - 1) // page_size
 
         self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s) (parallel)")
