@@ -13,6 +13,7 @@ from pathlib import Path
 from artemis.meta_learner.coordinator import MetaLearnerCoordinator
 from artemis.integrations.data_pipeline import DataPipeline
 from artemis.models.network_state import NetworkState
+from artemis.plugins.network_mapper import NetworkMapperPlugin
 
 
 class HuntAnalyzer:
@@ -291,6 +292,17 @@ def main():
         initial_signals=None,
         context_data=None
     )
+
+    # Update network mapper
+    print("\n🗺️  Updating network map...")
+    mapper = NetworkMapperPlugin({'output_dir': 'network_maps'})
+    mapper.initialize()
+    map_result = mapper.execute(
+        network_connections=hunting_data.get('network_connections', []),
+        dns_queries=hunting_data.get('dns_queries', []),
+    )
+    mapper.save_map()
+    print(f"  • Mapped {map_result['total_nodes']} nodes across sensors: {', '.join(map_result.get('sensors', []))}")
 
     # Display findings
     analyzer.print_findings(hunt_result)

@@ -670,7 +670,10 @@ async def disable_plugin(plugin_name: str):
 
 
 @app.get("/api/network-graph")
-async def get_network_graph():
+async def get_network_graph(
+    sensor_id: Optional[str] = None,
+    max_nodes: int = 200,
+):
     """Get network topology graph from network mapper plugin."""
     plugin = plugin_manager.get_plugin('network_mapper')
 
@@ -678,34 +681,25 @@ async def get_network_graph():
         return {'error': 'Network mapper plugin not enabled'}, 404
 
     try:
-        graph_data = plugin.get_network_graph()
+        graph_data = plugin.get_network_graph(
+            sensor_id=sensor_id,
+            max_nodes=max_nodes,
+        )
         return graph_data
     except Exception as e:
         return {'error': str(e)}, 500
 
 
 @app.get("/api/network-summary")
-async def get_network_summary():
-    """Get network summary statistics."""
+async def get_network_summary(sensor_id: Optional[str] = None):
+    """Get network summary statistics, optionally filtered by sensor."""
     plugin = plugin_manager.get_plugin('network_mapper')
 
     if not plugin:
         return {'error': 'Network mapper plugin not enabled'}, 404
 
     try:
-        summary = {
-            'total_nodes': len(plugin.nodes),
-            'internal_nodes': sum(1 for n in plugin.nodes.values() if n.is_internal),
-            'external_nodes': sum(1 for n in plugin.nodes.values() if not n.is_internal),
-            'total_services': sum(len(n.services) for n in plugin.nodes.values()),
-            'servers': [n.ip for n in plugin.nodes.values() if 'server' in n.roles][:10],
-            'top_talkers': sorted(
-                [(ip, n.total_connections) for ip, n in plugin.nodes.items()],
-                key=lambda x: x[1],
-                reverse=True
-            )[:10]
-        }
-        return summary
+        return plugin.get_summary(sensor_id=sensor_id)
     except Exception as e:
         return {'error': str(e)}, 500
 

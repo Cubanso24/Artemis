@@ -352,6 +352,7 @@ class DataPipeline:
                     "protocol": conn.get("proto", "tcp"),
                     "bytes_in": int(conn.get("resp_bytes", 0)),
                     "bytes_out": int(conn.get("orig_bytes", 0)),
+                    "sensor_id": conn.get("sensor_id", "securityonion"),
                     "timestamp": datetime.fromtimestamp(float(conn.get("ts", 0)))
                 })
             except:
@@ -370,6 +371,7 @@ class DataPipeline:
                     "domain": dns.get("query"),
                     "response_code": dns.get("rcode_name", "NOERROR"),
                     "answer": dns.get("answers"),
+                    "sensor_id": dns.get("sensor_id", "securityonion"),
                     "timestamp": datetime.fromtimestamp(float(dns.get("ts", 0)))
                 })
             except:
