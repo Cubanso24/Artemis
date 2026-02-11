@@ -5,7 +5,8 @@ Coordinates Splunk, Security Onion, and PCAP analysis to provide
 comprehensive data to Artemis hunting agents.
 """
 
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import concurrent.futures
 from dataclasses import dataclass
@@ -149,65 +150,192 @@ class DataPipeline:
 
         return hunting_data
 
+    # ------------------------------------------------------------------
+    # Time-range helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_time_range_hours(time_range: str) -> float:
+        """
+        Parse a Splunk-style relative time range into total hours.
+
+        Supports: -Ns, -Nm, -Nh, -Nd, -Nw, -Nmon
+        Returns 0 if the range cannot be parsed (treated as <= 24h).
+        """
+        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+        if not m:
+            return 0
+
+        value = int(m.group(1))
+        unit = m.group(2)
+        multipliers = {
+            's': 1 / 3600,
+            'm': 1 / 60,
+            'h': 1,
+            'd': 24,
+            'w': 168,
+            'mon': 720,
+        }
+        return value * multipliers.get(unit, 0)
+
+    @staticmethod
+    def _generate_time_windows(
+        time_range: str,
+        window_hours: int = 24,
+    ) -> List[Tuple[str, str]]:
+        """
+        Split a large time range into fixed-size windows.
+
+        Returns a list of (earliest_iso, latest_iso) pairs that Splunk
+        accepts as absolute timestamps.  Windows are generated from the
+        oldest time forward to "now".
+        """
+        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+        if not m:
+            # Cannot parse — return as single window
+            return [(time_range, "now")]
+
+        value = int(m.group(1))
+        unit = m.group(2)
+        unit_seconds = {
+            's': 1, 'm': 60, 'h': 3600,
+            'd': 86400, 'w': 604800, 'mon': 2592000,
+        }
+
+        total_seconds = value * unit_seconds.get(unit, 3600)
+        window_seconds = window_hours * 3600
+
+        now = datetime.utcnow()
+        start = now - timedelta(seconds=total_seconds)
+
+        windows = []
+        cursor = start
+        while cursor < now:
+            window_end = min(cursor + timedelta(seconds=window_seconds), now)
+            windows.append((
+                cursor.strftime('%Y-%m-%dT%H:%M:%S'),
+                window_end.strftime('%Y-%m-%dT%H:%M:%S'),
+            ))
+            cursor = window_end
+
+        return windows
+
+    # ------------------------------------------------------------------
+    # Splunk collection
+    # ------------------------------------------------------------------
+
     def _collect_from_splunk(self, time_range: str) -> Dict[str, Any]:
         """
         Collect data from Splunk.
 
+        For time ranges > 24 hours, the query is broken into 24-hour
+        windows so the Splunk search head isn't overwhelmed by a single
+        massive job.  Each window's 8 data-type queries run in parallel,
+        then results are merged before returning.
+
         Args:
-            time_range: Time range for queries
+            time_range: Time range for queries (e.g. "-1h", "-30d")
 
         Returns:
             Splunk data dictionary
         """
-        self.logger.info("Collecting data from Splunk...")
+        total_hours = self._parse_time_range_hours(time_range)
 
-        data = {}
+        if total_hours <= 24:
+            # Short range — single pass (existing fast path)
+            return self._collect_splunk_window(time_range, "now")
+
+        # Long range — split into 24h windows
+        windows = self._generate_time_windows(time_range, window_hours=24)
+        self.logger.info(
+            f"Large time range ({time_range} = {total_hours:.0f}h): "
+            f"splitting into {len(windows)} x 24h windows"
+        )
+
+        merged: Dict[str, List] = {}
+
+        for idx, (earliest, latest) in enumerate(windows, 1):
+            self.logger.info(
+                f"  Window {idx}/{len(windows)}: {earliest} → {latest}"
+            )
+
+            window_data = self._collect_splunk_window(earliest, latest)
+
+            # Merge into combined result
+            for key, events in window_data.items():
+                if key not in merged:
+                    merged[key] = []
+                if isinstance(events, list):
+                    merged[key].extend(events)
+
+            window_total = sum(
+                len(v) for v in window_data.values() if isinstance(v, list)
+            )
+            running_total = sum(len(v) for v in merged.values())
+            self.logger.info(
+                f"    Window {idx} returned {window_total} events "
+                f"(running total: {running_total})"
+            )
+
+        return merged
+
+    def _collect_splunk_window(
+        self,
+        earliest: str,
+        latest: str,
+    ) -> Dict[str, Any]:
+        """
+        Collect all data types from Splunk for a single time window.
+
+        Args:
+            earliest: Start time (relative like "-1h" or absolute ISO timestamp)
+            latest: End time ("now" or absolute ISO timestamp)
+
+        Returns:
+            Dict keyed by data type, values are event lists
+        """
+        data: Dict[str, Any] = {}
 
         try:
-            # Use parallel execution for faster collection - maximize CPU utilization
-            # Each data type query runs in parallel
             with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
                 futures = {
                     "network_connections": executor.submit(
-                        self.splunk.get_network_connections, time_range
+                        self.splunk.get_network_connections, earliest, None, latest
                     ),
                     "dns_queries": executor.submit(
-                        self.splunk.get_dns_queries, time_range
+                        self.splunk.get_dns_queries, earliest, latest
                     ),
                     "authentication_logs": executor.submit(
-                        self.splunk.get_authentication_logs, time_range
+                        self.splunk.get_authentication_logs, earliest, latest
                     ),
                     "process_logs": executor.submit(
-                        self.splunk.get_process_logs, time_range
+                        self.splunk.get_process_logs, earliest, None, latest
                     ),
                     "powershell_logs": executor.submit(
-                        self.splunk.get_powershell_logs, time_range
+                        self.splunk.get_powershell_logs, earliest, latest
                     ),
                     "file_operations": executor.submit(
-                        self.splunk.get_file_operations, time_range
+                        self.splunk.get_file_operations, earliest, latest
                     ),
                     "scheduled_tasks": executor.submit(
-                        self.splunk.get_scheduled_tasks, time_range
+                        self.splunk.get_scheduled_tasks, earliest, latest
                     ),
                     "registry_changes": executor.submit(
-                        self.splunk.get_registry_changes, time_range
-                    )
+                        self.splunk.get_registry_changes, earliest, latest
+                    ),
                 }
 
-                # Collect results - increased timeout for massive datasets
-                # With millions of events and pagination, this can take 20-30 minutes
                 for key, future in futures.items():
                     try:
-                        data[key] = future.result(timeout=3600)  # 1 hour for multi-million event datasets
+                        data[key] = future.result(timeout=3600)
                     except Exception as e:
                         import traceback
-                        error_msg = f"Failed to collect {key}: {str(e)}"
-                        self.logger.error(error_msg)
+                        self.logger.error(f"Failed to collect {key}: {e}")
                         self.logger.error(f"Traceback: {traceback.format_exc()}")
                         data[key] = []
 
         except Exception as e:
-            self.logger.error(f"Splunk data collection failed: {e}")
+            self.logger.error(f"Splunk window collection failed: {e}")
 
         return data
 

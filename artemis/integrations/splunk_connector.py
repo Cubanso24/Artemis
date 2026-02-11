@@ -179,14 +179,16 @@ class SplunkConnector:
     def get_network_connections(
         self,
         time_range: str = "-1h",
-        source_filter: Optional[str] = None
+        source_filter: Optional[str] = None,
+        latest_time: str = "now",
     ) -> List[Dict[str, Any]]:
         """
         Get network connection data for reconnaissance/C2 detection.
 
         Args:
-            time_range: Time range (e.g., "-1h", "-24h")
+            time_range: Time range / earliest_time (e.g., "-1h", "-24h", or ISO timestamp)
             source_filter: Optional filter for source IPs
+            latest_time: End time (default "now", or ISO timestamp for windowed queries)
 
         Returns:
             Network connections in Artemis format
@@ -205,7 +207,7 @@ class SplunkConnector:
         if source_filter:
             query += f' | where source_ip="{source_filter}"'
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         # Transform to Artemis format
         # Note: spath returns multi-valued fields as lists, so we take first element
@@ -232,7 +234,7 @@ class SplunkConnector:
 
         return connections
 
-    def get_dns_queries(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_dns_queries(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get DNS query data for reconnaissance/C2 detection.
 
@@ -250,7 +252,7 @@ class SplunkConnector:
         | rename host as sensor_id, "id.orig_h" as source_ip, rcode_name as response_code
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         # Note: spath returns multi-valued fields as lists, so we take first element
         dns_queries = []
@@ -272,7 +274,7 @@ class SplunkConnector:
 
         return dns_queries
 
-    def get_authentication_logs(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_authentication_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get authentication logs for credential access/initial access detection.
 
@@ -286,7 +288,7 @@ class SplunkConnector:
         | rename user as username, src_ip as source_ip, dest_host as target_hostname
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         auth_logs = []
         for event in events:
@@ -305,7 +307,8 @@ class SplunkConnector:
     def get_process_logs(
         self,
         time_range: str = "-1h",
-        hostname_filter: Optional[str] = None
+        hostname_filter: Optional[str] = None,
+        latest_time: str = "now",
     ) -> List[Dict[str, Any]]:
         """
         Get process execution logs for execution/persistence detection.
@@ -323,7 +326,7 @@ class SplunkConnector:
         if hostname_filter:
             query += f' | where hostname="{hostname_filter}"'
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         process_logs = []
         for event in events:
@@ -338,7 +341,7 @@ class SplunkConnector:
 
         return process_logs
 
-    def get_powershell_logs(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_powershell_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get PowerShell execution logs.
 
@@ -352,7 +355,7 @@ class SplunkConnector:
         | eval command_line=coalesce(command_line, Message)
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         ps_logs = []
         for event in events:
@@ -365,7 +368,7 @@ class SplunkConnector:
 
         return ps_logs
 
-    def get_file_operations(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_file_operations(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get file operation logs for collection/impact detection.
 
@@ -383,7 +386,7 @@ class SplunkConnector:
           )
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         file_ops = []
         for event in events:
@@ -397,7 +400,7 @@ class SplunkConnector:
 
         return file_ops
 
-    def get_scheduled_tasks(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_scheduled_tasks(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get scheduled task creation events.
 
@@ -411,7 +414,7 @@ class SplunkConnector:
         | eval event_type="created"
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         tasks = []
         for event in events:
@@ -426,7 +429,7 @@ class SplunkConnector:
 
         return tasks
 
-    def get_registry_changes(self, time_range: str = "-1h") -> List[Dict[str, Any]]:
+    def get_registry_changes(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get registry modification events.
 
@@ -440,7 +443,7 @@ class SplunkConnector:
                  Details as value_data
         '''
 
-        events = self.query(query, earliest_time=time_range)
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
 
         reg_changes = []
         for event in events:
