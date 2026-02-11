@@ -176,19 +176,38 @@ class SplunkConnector:
             # Retrieve all results in one call (count=0 means no limit)
             # Uses default XML output which ResultsReader handles reliably
             export_results = job.results(count=0)
+            print(f"[DEBUG] export_results type: {type(export_results)}", flush=True)
 
+            # Read a small sample of raw bytes to check what Splunk is returning
+            raw_peek = export_results.read(1024)
+            print(f"[DEBUG] First 1024 bytes of response: {raw_peek[:500]}", flush=True)
+
+            # We consumed bytes, so we need to re-fetch the results
+            export_results = job.results(count=0)
+
+            item_count = 0
+            non_dict_count = 0
             for result in results.ResultsReader(export_results):
+                item_count += 1
                 if isinstance(result, dict):
                     events.append(result)
 
                     # Log progress every 50k events
                     if len(events) % 50000 == 0:
                         self.logger.info(f"Streamed {len(events)} events so far...")
+                else:
+                    non_dict_count += 1
+                    if non_dict_count <= 5:
+                        print(f"[DEBUG] Non-dict result #{non_dict_count}: type={type(result)}, value={result}", flush=True)
+
+            print(f"[DEBUG] ResultsReader yielded {item_count} total items: {len(events)} dicts, {non_dict_count} non-dicts", flush=True)
 
         except Exception as e:
             self.logger.error(f"Failed during export streaming: {str(e)}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"[DEBUG] Exception during streaming: {e}", flush=True)
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}", flush=True)
 
         self.logger.info(f"Retrieved {len(events)} total events from Splunk via streaming export")
         return events
