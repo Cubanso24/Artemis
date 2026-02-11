@@ -144,6 +144,8 @@ class SplunkConnector:
             "latest_time": latest_time,
             "search_mode": "normal",
             "output_mode": "json",
+            "auto_cancel": 0,       # Never cancel due to inactivity
+            "ttl": 3600,            # Keep job alive for 1 hour
         }
 
         if max_results > 0:
