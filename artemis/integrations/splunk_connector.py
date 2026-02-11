@@ -154,28 +154,23 @@ class SplunkConnector:
         # Export endpoint streams all results - no 50K limit
         export_stream = self.service.jobs.export(search_query, **kwargs)
 
-        # Read and parse concatenated JSON objects from export stream
+        # Export returns NDJSON: one JSON object per line
+        # Each line: {"preview":false,"offset":N,"result":{...}}
         raw = export_stream.read()
         if isinstance(raw, bytes):
             raw = raw.decode('utf-8')
 
         events = []
-        if raw.strip():
-            decoder = json.JSONDecoder()
-            pos = 0
-            while pos < len(raw):
-                # Skip whitespace between JSON objects
-                while pos < len(raw) and raw[pos] in ' \t\n\r':
-                    pos += 1
-                if pos >= len(raw):
-                    break
-                try:
-                    obj, end_pos = decoder.raw_decode(raw, pos)
-                    if 'results' in obj:
-                        events.extend(obj['results'])
-                    pos = end_pos
-                except json.JSONDecodeError:
-                    break
+        for line in raw.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if 'result' in obj:
+                    events.append(obj['result'])
+            except json.JSONDecodeError:
+                continue
 
         elapsed = time.time() - start_time
         self.logger.info(f"Retrieved {len(events)} total events from Splunk in {elapsed:.1f}s")
