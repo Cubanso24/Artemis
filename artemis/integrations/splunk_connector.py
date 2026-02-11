@@ -174,28 +174,38 @@ class SplunkConnector:
         page_size = 50000
         num_pages = (fetch_count + page_size - 1) // page_size
 
-        self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s)")
+        self.logger.info(f"Fetching {fetch_count} events in {num_pages} page(s) (parallel)")
 
-        events = []
-        for page_num in range(num_pages):
+        def fetch_page(page_num):
+            """Fetch a single page of results."""
             offset = page_num * page_size
             count = min(page_size, fetch_count - offset)
+            page_results = job.results(offset=offset, count=count)
+            return [r for r in results.ResultsReader(page_results) if isinstance(r, dict)]
 
-            try:
-                page_results = job.results(offset=offset, count=count)
-                page_events = [r for r in results.ResultsReader(page_results) if isinstance(r, dict)]
-                events.extend(page_events)
+        # Fetch all pages in parallel
+        events = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(num_pages, 8)) as executor:
+            future_to_page = {
+                executor.submit(fetch_page, page_num): page_num
+                for page_num in range(num_pages)
+            }
 
-                self.logger.info(f"Page {page_num + 1}/{num_pages}: {len(page_events)} events (total: {len(events)})")
+            # Collect results in page order
+            page_results_map = {}
+            for future in concurrent.futures.as_completed(future_to_page):
+                page_num = future_to_page[future]
+                try:
+                    page_events = future.result()
+                    page_results_map[page_num] = page_events
+                    self.logger.info(f"Page {page_num + 1}/{num_pages}: {len(page_events)} events")
+                except Exception as e:
+                    self.logger.error(f"Failed on page {page_num + 1}: {str(e)}")
+                    page_results_map[page_num] = []
 
-                if len(page_events) == 0:
-                    break
-
-            except Exception as e:
-                self.logger.error(f"Failed on page {page_num + 1}: {str(e)}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
-                break
+            # Reassemble in order
+            for page_num in range(num_pages):
+                events.extend(page_results_map.get(page_num, []))
 
         self.logger.info(f"Retrieved {len(events)} total events from Splunk")
         return events
