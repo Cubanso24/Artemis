@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+import shutil
 import sqlite3
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
@@ -278,6 +279,19 @@ class DatabaseManager:
         conn.close()
         return hunts
 
+    def delete_hunt(self, hunt_id: str) -> bool:
+        """Delete a hunt and its findings from the database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM findings WHERE hunt_id = ?", (hunt_id,))
+            cursor.execute("DELETE FROM hunts WHERE hunt_id = ?", (hunt_id,))
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            return deleted
+        finally:
+            conn.close()
+
     def get_hunt_details(self, hunt_id: str) -> Dict:
         """Get detailed hunt results including findings."""
         conn = sqlite3.connect(self.db_path)
@@ -435,37 +449,154 @@ class HuntManager:
     ):
         """Execute a hunt asynchronously."""
         try:
+            hunt_start = datetime.now()
             self.active_hunts[hunt_id] = {
                 'status': 'running',
                 'progress': 0,
-                'start_time': datetime.now()
+                'start_time': hunt_start,
+                'collection_stats': {},
             }
 
             if progress_callback:
-                await progress_callback({'stage': 'init', 'message': 'Initializing hunt...', 'progress': 10})
+                await progress_callback({'stage': 'init', 'message': 'Initializing hunt...', 'progress': 5})
 
             # Initialize pipeline if needed
             self.initialize_pipeline()
 
             if progress_callback:
-                await progress_callback({'stage': 'collect', 'message': 'Collecting network data...', 'progress': 30})
+                await progress_callback({
+                    'stage': 'collect',
+                    'message': 'Starting data collection from Splunk...',
+                    'progress': 10,
+                    'collection': {
+                        'started_at': hunt_start.isoformat(),
+                        'time_range': time_range,
+                        'queries_done': 0,
+                        'queries_total': 8,
+                        'events_by_type': {},
+                        'total_events': 0,
+                        'window': 0,
+                        'total_windows': 0,
+                    }
+                })
 
-            # Collect data
-            logger.info(f"About to start data collection for time_range={time_range}")
+            # Collection progress callback (called from worker thread)
+            main_loop = asyncio.get_event_loop()
+
+            def collection_progress(info):
+                """Bridge sync callback from pipeline to async broadcast."""
+                if not progress_callback:
+                    return
+
+                stats = self.active_hunts.get(hunt_id, {})
+                collection_stats = stats.get('collection_stats', {})
+
+                if info.get('type') == 'query_done':
+                    collection_stats[info['query_name']] = info['query_events']
+                    total_events = sum(collection_stats.values())
+                    queries_done = info['queries_done']
+                    queries_total = info['queries_total']
+                    window = info.get('window', 1)
+                    total_windows = info.get('total_windows', 1)
+
+                    # Calculate progress: 10-60% for collection phase
+                    if total_windows > 1:
+                        window_pct = (window - 1) / total_windows
+                        query_pct = queries_done / queries_total / total_windows
+                        collect_progress = 10 + int((window_pct + query_pct) * 50)
+                    else:
+                        collect_progress = 10 + int((queries_done / queries_total) * 50)
+
+                    elapsed = (datetime.now() - hunt_start).total_seconds()
+
+                    msg_parts = []
+                    if total_windows > 1:
+                        msg_parts.append(f"Window {window}/{total_windows}")
+                    msg_parts.append(
+                        f"Queries: {queries_done}/{queries_total}"
+                    )
+                    msg_parts.append(f"{total_events:,} events collected")
+                    msg_parts.append(f"{elapsed:.0f}s elapsed")
+
+                    data = {
+                        'stage': 'collect',
+                        'message': ' | '.join(msg_parts),
+                        'progress': min(collect_progress, 60),
+                        'collection': {
+                            'started_at': hunt_start.isoformat(),
+                            'time_range': time_range,
+                            'queries_done': queries_done,
+                            'queries_total': queries_total,
+                            'events_by_type': dict(collection_stats),
+                            'total_events': total_events,
+                            'window': window,
+                            'total_windows': total_windows,
+                            'elapsed_seconds': elapsed,
+                            'last_query': info['query_name'],
+                        }
+                    }
+
+                    asyncio.run_coroutine_threadsafe(
+                        progress_callback(data), main_loop
+                    )
+
+                elif info.get('type') == 'window_done':
+                    total = info.get('running_total', 0)
+                    window = info.get('window', 1)
+                    total_windows = info.get('total_windows', 1)
+                    elapsed = (datetime.now() - hunt_start).total_seconds()
+
+                    data = {
+                        'stage': 'collect',
+                        'message': (
+                            f"Window {window}/{total_windows} done | "
+                            f"{total:,} total events | {elapsed:.0f}s elapsed"
+                        ),
+                        'progress': 10 + int((window / total_windows) * 50),
+                        'collection': {
+                            'started_at': hunt_start.isoformat(),
+                            'time_range': time_range,
+                            'events_by_type': info.get('events_by_type', {}),
+                            'total_events': total,
+                            'window': window,
+                            'total_windows': total_windows,
+                            'elapsed_seconds': elapsed,
+                        }
+                    }
+
+                    asyncio.run_coroutine_threadsafe(
+                        progress_callback(data), main_loop
+                    )
+
+                stats['collection_stats'] = collection_stats
+
+            # Collect data with progress tracking
             hunting_data = await asyncio.get_event_loop().run_in_executor(
                 self.executor,
-                self.pipeline.collect_hunting_data,
-                time_range
+                lambda: self.pipeline.collect_hunting_data(
+                    time_range,
+                    progress_callback=collection_progress,
+                )
             )
-            logger.info(f"Data collection completed, got {sum(len(v) for v in hunting_data.values() if isinstance(v, list))} events")
 
             total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
+            logger.info(f"Data collection completed, got {total_events} events")
 
+            collect_elapsed = (datetime.now() - hunt_start).total_seconds()
             if progress_callback:
                 await progress_callback({
                     'stage': 'analyze',
-                    'message': f'Analyzing {total_events} events...',
-                    'progress': 50
+                    'message': f'Collected {total_events:,} events in {collect_elapsed:.0f}s. Running hunting agents...',
+                    'progress': 65,
+                    'collection': {
+                        'total_events': total_events,
+                        'events_by_type': {
+                            k: len(v) for k, v in hunting_data.items()
+                            if isinstance(v, list)
+                        },
+                        'elapsed_seconds': collect_elapsed,
+                        'phase': 'complete',
+                    }
                 })
 
             if progress_callback:
@@ -644,6 +775,155 @@ async def get_hunt(hunt_id: str):
     if not hunt:
         return {'error': 'Hunt not found'}, 404
     return hunt
+
+
+@app.delete("/api/hunts/{hunt_id}")
+async def delete_hunt(hunt_id: str):
+    """Delete a hunt and its findings."""
+    # Don't allow deleting running hunts
+    if hunt_id in hunt_manager.active_hunts and hunt_manager.active_hunts[hunt_id].get('status') == 'running':
+        return {'error': 'Cannot delete a running hunt'}
+    deleted = db_manager.delete_hunt(hunt_id)
+    if not deleted:
+        return {'error': 'Hunt not found'}
+    # Clean up from active hunts cache too
+    hunt_manager.active_hunts.pop(hunt_id, None)
+    logger.info(f"Deleted hunt: {hunt_id}")
+    return {'status': 'deleted', 'hunt_id': hunt_id}
+
+
+@app.get("/api/network-maps")
+async def list_network_maps():
+    """List saved network map snapshots."""
+    maps_dir = Path("network_maps")
+    maps_dir.mkdir(exist_ok=True)
+
+    maps = []
+    for f in sorted(maps_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        if f.suffix == '.json':
+            try:
+                # Read just the header line for metadata
+                with open(f) as fh:
+                    first_line = fh.readline().strip()
+                    if first_line:
+                        header = json.loads(first_line)
+                        maps.append({
+                            'filename': f.name,
+                            'timestamp': header.get('timestamp', ''),
+                            'total_nodes': header.get('total_nodes', 0),
+                            'sensors': header.get('sensors', []),
+                            'size_bytes': f.stat().st_size,
+                            'is_current': f.name == 'current_map.json',
+                        })
+            except Exception:
+                maps.append({
+                    'filename': f.name,
+                    'timestamp': '',
+                    'total_nodes': 0,
+                    'sensors': [],
+                    'size_bytes': f.stat().st_size,
+                    'is_current': f.name == 'current_map.json',
+                })
+    return maps
+
+
+@app.post("/api/network-maps/snapshot")
+async def save_network_map_snapshot(name: Optional[str] = None):
+    """Save a named snapshot of the current network map."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return {'error': 'Network mapper plugin not enabled'}
+
+    # Save current state first
+    plugin.save_map()
+
+    # Copy current_map.json to a named snapshot
+    maps_dir = Path("network_maps")
+    current = maps_dir / "current_map.json"
+    if not current.exists():
+        return {'error': 'No current map to snapshot'}
+
+    if not name:
+        name = f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Sanitize name
+    safe_name = "".join(c for c in name if c.isalnum() or c in ('_', '-'))
+    snapshot_file = maps_dir / f"{safe_name}.json"
+
+    shutil.copy2(current, snapshot_file)
+    logger.info(f"Saved network map snapshot: {snapshot_file.name}")
+
+    return {'status': 'saved', 'filename': snapshot_file.name}
+
+
+@app.post("/api/network-maps/{filename}/load")
+async def load_network_map(filename: str):
+    """Load a saved network map, replacing the current one."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return {'error': 'Network mapper plugin not enabled'}
+
+    maps_dir = Path("network_maps")
+    map_file = maps_dir / filename
+
+    if not map_file.exists():
+        return {'error': 'Map file not found'}
+
+    # Copy chosen file to current_map.json then reload
+    current = maps_dir / "current_map.json"
+    if filename != "current_map.json":
+        shutil.copy2(map_file, current)
+
+    # Reload into plugin
+    plugin.nodes.clear()
+    plugin.sensors.clear()
+    plugin._load_existing_map()
+
+    logger.info(f"Loaded network map: {filename} ({len(plugin.nodes)} nodes)")
+    return {
+        'status': 'loaded',
+        'filename': filename,
+        'total_nodes': len(plugin.nodes),
+        'sensors': sorted(plugin.sensors),
+    }
+
+
+@app.delete("/api/network-maps/{filename}")
+async def delete_network_map(filename: str):
+    """Delete a saved network map snapshot."""
+    if filename == "current_map.json":
+        return {'error': 'Cannot delete the current active map'}
+
+    maps_dir = Path("network_maps")
+    map_file = maps_dir / filename
+
+    if not map_file.exists():
+        return {'error': 'Map file not found'}
+
+    map_file.unlink()
+    # Also delete companion summary if it exists
+    summary = maps_dir / filename.replace('.json', '_summary.txt')
+    if summary.exists():
+        summary.unlink()
+
+    logger.info(f"Deleted network map: {filename}")
+    return {'status': 'deleted', 'filename': filename}
+
+
+@app.post("/api/network-maps/reset")
+async def reset_network_map():
+    """Clear the current network map (start fresh)."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return {'error': 'Network mapper plugin not enabled'}
+
+    plugin.nodes.clear()
+    plugin.sensors.clear()
+    plugin._dirty_nodes.clear()
+    plugin._stats_cache = None
+    plugin.save_map()
+
+    logger.info("Network map reset to empty")
+    return {'status': 'reset', 'total_nodes': 0}
 
 
 @app.get("/api/plugins")

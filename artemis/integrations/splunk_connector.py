@@ -120,10 +120,12 @@ class SplunkConnector:
         max_results: int = 0  # 0 = unlimited, get ALL results
     ) -> List[Dict[str, Any]]:
         """
-        Execute Splunk search query using the export endpoint.
+        Execute Splunk search query using persistent jobs.
 
-        Uses service.jobs.export() which streams all results directly,
-        bypassing the 50K per-call limit of job.results().
+        Creates a proper search job with jobs.create(), polls for
+        completion with progress logging, then paginates through all
+        results.  This avoids the premature expiration issues of the
+        export endpoint on large result sets.
 
         Args:
             search_query: SPL (Splunk Processing Language) query
@@ -139,43 +141,125 @@ class SplunkConnector:
         import time
         start_time = time.time()
 
-        kwargs = {
+        job_kwargs = {
             "earliest_time": earliest_time,
             "latest_time": latest_time,
             "search_mode": "normal",
-            "output_mode": "json",
-            "auto_cancel": 0,       # Never cancel due to inactivity
-            "ttl": 3600,            # Keep job alive for 1 hour
+            "auto_cancel": "0",       # Never cancel due to inactivity (string)
+            "timeout": "3600",         # 1 hour server-side timeout
         }
 
         if max_results > 0:
-            kwargs["count"] = max_results
-        else:
-            kwargs["count"] = 0  # Return all results
+            job_kwargs["max_count"] = str(max_results)
 
-        # Export endpoint streams all results - no 50K limit
-        export_stream = self.service.jobs.export(search_query, **kwargs)
+        # Create a persistent search job (not export)
+        job = self.service.jobs.create(search_query, **job_kwargs)
 
-        # Export returns NDJSON: one JSON object per line
-        # Each line: {"preview":false,"offset":N,"result":{...}}
-        raw = export_stream.read()
-        if isinstance(raw, bytes):
-            raw = raw.decode('utf-8')
+        # Immediately set TTL high so the job doesn't expire while running
+        try:
+            job.set_ttl(3600)
+        except Exception as e:
+            self.logger.warning(f"Could not set initial TTL: {e}")
 
-        events = []
-        for line in raw.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
+        # Poll until the job is done, logging progress
+        last_progress = -1
+        ttl_refresh_interval = 120  # Refresh TTL every 2 minutes
+        last_ttl_refresh = time.time()
+
+        while not job.is_done():
+            time.sleep(2)
+            job.refresh()
+
+            # Log progress at 10% increments
             try:
-                obj = json.loads(line)
-                if 'result' in obj:
-                    events.append(obj['result'])
-            except json.JSONDecodeError:
-                continue
+                progress = round(float(job["doneProgress"]) * 100)
+                scan_count = int(job.get("scanCount", 0) or 0)
+                event_count = int(job.get("eventCount", 0) or 0)
+                result_count = int(job.get("resultCount", 0) or 0)
+
+                if progress >= last_progress + 10:
+                    elapsed = time.time() - start_time
+                    self.logger.info(
+                        f"  Job {job.sid}: {progress}% done | "
+                        f"scanned={scan_count:,} events={event_count:,} "
+                        f"results={result_count:,} | {elapsed:.0f}s elapsed"
+                    )
+                    last_progress = progress
+            except Exception:
+                pass
+
+            # Refresh TTL periodically to prevent mid-run expiration
+            if time.time() - last_ttl_refresh > ttl_refresh_interval:
+                try:
+                    job.set_ttl(3600)
+                    last_ttl_refresh = time.time()
+                except Exception:
+                    pass
+
+        # Final TTL extension so results stick around for reading
+        try:
+            job.set_ttl(3600)
+        except Exception:
+            pass
+
+        # Read result count
+        job.refresh()
+        total_results = int(job.get("resultCount", 0) or 0)
+        elapsed = time.time() - start_time
+        self.logger.info(
+            f"  Job {job.sid} finished: {total_results:,} results in {elapsed:.1f}s"
+        )
+
+        # Paginate through all results (50K per page to stay safe)
+        PAGE_SIZE = 50000
+        events = []
+
+        offset = 0
+        while True:
+            kwargs = {
+                "output_mode": "json",
+                "count": PAGE_SIZE,
+                "offset": offset,
+            }
+            results_stream = job.results(**kwargs)
+            raw = results_stream.read()
+            if isinstance(raw, bytes):
+                raw = raw.decode('utf-8')
+
+            page_events = []
+            for line in raw.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if 'results' in obj:
+                        # JSON output_mode returns {"results": [...]}
+                        page_events.extend(obj['results'])
+                    elif 'result' in obj:
+                        page_events.append(obj['result'])
+                except json.JSONDecodeError:
+                    continue
+
+            events.extend(page_events)
+
+            if len(page_events) < PAGE_SIZE:
+                break  # Last page
+            offset += PAGE_SIZE
+
+            self.logger.info(
+                f"  Paginating results: {len(events):,}/{total_results:,} read"
+            )
 
         elapsed = time.time() - start_time
-        self.logger.info(f"Retrieved {len(events)} total events from Splunk in {elapsed:.1f}s")
+        self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
+
+        # Clean up the job
+        try:
+            job.cancel()
+        except Exception:
+            pass
+
         return events
 
     def get_network_connections(

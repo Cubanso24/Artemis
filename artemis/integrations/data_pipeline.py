@@ -104,7 +104,8 @@ class DataPipeline:
         self,
         time_range: str = "-1h",
         include_pcap: bool = False,
-        suspicious_ips: Optional[List[str]] = None
+        suspicious_ips: Optional[List[str]] = None,
+        progress_callback=None
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
@@ -113,21 +114,18 @@ class DataPipeline:
             time_range: Time range for data collection (e.g., "-1h", "-24h")
             include_pcap: Whether to retrieve and analyze PCAP
             suspicious_ips: Optional list of IPs to focus on
+            progress_callback: Optional callable(info_dict) for live progress updates
 
         Returns:
             Comprehensive hunting data dictionary
         """
-        import sys
-        print(f"[DATA_PIPELINE] collect_hunting_data() called with time_range={time_range}", file=sys.stderr, flush=True)
         self.logger.info(f"Collecting hunting data for time range: {time_range}")
 
         hunting_data = {}
 
         # Collect from Splunk (if available)
         if self.splunk:
-            print(f"[DATA_PIPELINE] Splunk connector available, calling _collect_from_splunk()", file=sys.stderr, flush=True)
-            splunk_data = self._collect_from_splunk(time_range)
-            print(f"[DATA_PIPELINE] Got {sum(len(v) for v in splunk_data.values() if isinstance(v, list))} events from Splunk", file=sys.stderr, flush=True)
+            splunk_data = self._collect_from_splunk(time_range, progress_callback=progress_callback)
             hunting_data.update(splunk_data)
 
         # Collect from Security Onion
@@ -224,7 +222,7 @@ class DataPipeline:
     # Splunk collection
     # ------------------------------------------------------------------
 
-    def _collect_from_splunk(self, time_range: str) -> Dict[str, Any]:
+    def _collect_from_splunk(self, time_range: str, progress_callback=None) -> Dict[str, Any]:
         """
         Collect data from Splunk.
 
@@ -235,6 +233,7 @@ class DataPipeline:
 
         Args:
             time_range: Time range for queries (e.g. "-1h", "-30d")
+            progress_callback: Optional callable(info_dict) for progress updates
 
         Returns:
             Splunk data dictionary
@@ -243,7 +242,7 @@ class DataPipeline:
 
         if total_hours <= 24:
             # Short range — single pass (existing fast path)
-            return self._collect_splunk_window(time_range, "now")
+            return self._collect_splunk_window(time_range, "now", progress_callback=progress_callback)
 
         # Long range — split into 24h windows
         windows = self._generate_time_windows(time_range, window_hours=24)
@@ -259,7 +258,12 @@ class DataPipeline:
                 f"  Window {idx}/{len(windows)}: {earliest} → {latest}"
             )
 
-            window_data = self._collect_splunk_window(earliest, latest)
+            window_data = self._collect_splunk_window(
+                earliest, latest,
+                progress_callback=progress_callback,
+                window_index=idx,
+                total_windows=len(windows),
+            )
 
             # Merge into combined result
             for key, events in window_data.items():
@@ -277,12 +281,25 @@ class DataPipeline:
                 f"(running total: {running_total})"
             )
 
+            if progress_callback:
+                progress_callback({
+                    'type': 'window_done',
+                    'window': idx,
+                    'total_windows': len(windows),
+                    'window_events': window_total,
+                    'running_total': running_total,
+                    'events_by_type': {k: len(v) for k, v in merged.items()},
+                })
+
         return merged
 
     def _collect_splunk_window(
         self,
         earliest: str,
         latest: str,
+        progress_callback=None,
+        window_index: int = 1,
+        total_windows: int = 1,
     ) -> Dict[str, Any]:
         """
         Collect all data types from Splunk for a single time window.
@@ -290,11 +307,20 @@ class DataPipeline:
         Args:
             earliest: Start time (relative like "-1h" or absolute ISO timestamp)
             latest: End time ("now" or absolute ISO timestamp)
+            progress_callback: Optional callable for progress updates
+            window_index: Current window number (1-based)
+            total_windows: Total number of windows
 
         Returns:
             Dict keyed by data type, values are event lists
         """
         data: Dict[str, Any] = {}
+        query_names = [
+            "network_connections", "dns_queries", "authentication_logs",
+            "process_logs", "powershell_logs", "file_operations",
+            "scheduled_tasks", "registry_changes",
+        ]
+        completed_queries = {}
 
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
@@ -328,6 +354,21 @@ class DataPipeline:
                 for key, future in futures.items():
                     try:
                         data[key] = future.result(timeout=3600)
+                        completed_queries[key] = len(data[key])
+
+                        # Report per-query progress
+                        if progress_callback:
+                            progress_callback({
+                                'type': 'query_done',
+                                'query_name': key,
+                                'query_events': len(data[key]),
+                                'completed_queries': dict(completed_queries),
+                                'queries_done': len(completed_queries),
+                                'queries_total': len(query_names),
+                                'window': window_index,
+                                'total_windows': total_windows,
+                            })
+
                     except Exception as e:
                         import traceback
                         self.logger.error(f"Failed to collect {key}: {e}")

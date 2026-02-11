@@ -191,7 +191,7 @@
         }
 
         .progress-container {
-            background: #1a1a2e;
+            background: var(--bg-primary);
             border-radius: 10px;
             padding: 20px;
             margin-top: 20px;
@@ -214,11 +214,123 @@
             height: 100%;
             background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
             width: 0%;
-            transition: width 0.3s;
+            transition: width 0.5s;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 600;
+            font-size: 13px;
+        }
+
+        .collection-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .collection-stat {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .collection-stat .stat-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
+        .collection-stat .stat-value {
+            font-size: 1.4em;
+            font-weight: 700;
+            color: var(--accent-primary);
+        }
+
+        .collection-stat .stat-value.done {
+            color: var(--success);
+        }
+
+        .query-tracker {
+            margin-top: 15px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 8px;
+        }
+
+        .query-chip {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .query-chip.done {
+            border-color: var(--success);
+        }
+
+        .query-chip .q-name {
+            opacity: 0.8;
+        }
+
+        .query-chip .q-count {
+            font-weight: 700;
+            color: var(--accent-primary);
+        }
+
+        .query-chip.done .q-count {
+            color: var(--success);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            padding: 6px 14px;
+            font-size: 13px;
+        }
+
+        .btn-danger:hover {
+            opacity: 0.85;
+            transform: translateY(-1px);
+        }
+
+        .btn-sm {
+            padding: 6px 14px;
+            font-size: 13px;
+        }
+
+        .map-list {
+            list-style: none;
+        }
+
+        .map-item {
+            background: var(--bg-primary);
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 4px solid var(--accent-primary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .map-item.current {
+            border-left-color: var(--success);
+        }
+
+        .map-item .map-info {
+            flex: 1;
+        }
+
+        .map-item .map-actions {
+            display: flex;
+            gap: 8px;
         }
 
         .hunt-list {
@@ -665,6 +777,10 @@
                     <span class="shortcut-key">G</span>
                 </li>
                 <li class="shortcut-item">
+                    <span>Network Maps</span>
+                    <span class="shortcut-key">M</span>
+                </li>
+                <li class="shortcut-item">
                     <span>Plugins</span>
                     <span class="shortcut-key">P</span>
                 </li>
@@ -719,6 +835,7 @@
             <button class="tab" onclick="showTab('new-hunt')">New Hunt</button>
             <button class="tab" onclick="showTab('history')">Hunt History</button>
             <button class="tab" onclick="showTab('network-graph-tab')">Network Graph</button>
+            <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
@@ -785,11 +902,34 @@
                 </form>
 
                 <div id="progress" class="progress-container">
-                    <h3>Hunt in Progress</h3>
+                    <h3 id="progress-title">Hunt in Progress</h3>
                     <div class="progress-bar">
                         <div id="progress-fill" class="progress-fill">0%</div>
                     </div>
                     <p id="progress-message">Initializing...</p>
+
+                    <div id="collection-detail" style="display:none;">
+                        <div class="collection-stats">
+                            <div class="collection-stat">
+                                <div class="stat-label">Total Events</div>
+                                <div class="stat-value" id="coll-total-events">0</div>
+                            </div>
+                            <div class="collection-stat">
+                                <div class="stat-label">Queries Done</div>
+                                <div class="stat-value" id="coll-queries-done">0 / 8</div>
+                            </div>
+                            <div class="collection-stat">
+                                <div class="stat-label">Window</div>
+                                <div class="stat-value" id="coll-window">-</div>
+                            </div>
+                            <div class="collection-stat">
+                                <div class="stat-label">Elapsed</div>
+                                <div class="stat-value" id="coll-elapsed">0s</div>
+                            </div>
+                        </div>
+
+                        <div class="query-tracker" id="query-tracker"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -871,6 +1011,26 @@
             </div>
         </div>
 
+        <!-- Network Maps Tab -->
+        <div id="network-maps-tab" class="tab-content">
+            <div class="card">
+                <h2>Network Map Management</h2>
+                <p style="margin-bottom:15px; opacity:0.8;">
+                    Each hunt adds data to the current network map. Save snapshots before resetting, or load old maps to review.
+                </p>
+
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                    <button class="btn" onclick="saveMapSnapshot()">Save Snapshot</button>
+                    <button class="btn btn-danger" onclick="resetNetworkMap()">Reset Map (Start Fresh)</button>
+                    <button class="btn btn-secondary" onclick="loadNetworkMaps()">Refresh List</button>
+                </div>
+
+                <ul id="network-maps-list" class="map-list">
+                    <li>Loading...</li>
+                </ul>
+            </div>
+        </div>
+
         <!-- Plugins Tab -->
         <div id="plugins" class="tab-content">
             <div class="card">
@@ -904,6 +1064,7 @@
             loadRecentHunts();
             loadPlugins();
             loadHuntTemplates();
+            loadNetworkMaps();
             initializeTheme();
 
             // Setup form handler
@@ -957,6 +1118,10 @@
                 case 'g':
                     showTabByName('network-graph-tab');
                     loadNetworkGraph();
+                    break;
+                case 'm':
+                    showTabByName('network-maps-tab');
+                    loadNetworkMaps();
                     break;
                 case 'p':
                     showTabByName('plugins');
@@ -1180,44 +1345,84 @@
 
         async function loadRecentHunts() {
             try {
-                const response = await fetch('/api/hunts?limit=5');
+                const response = await fetch('/api/hunts?limit=50');
                 const hunts = await response.json();
+                allHunts = hunts;
 
-                const huntsList = document.getElementById('recent-hunts');
-                huntsList.innerHTML = '';
-
+                // Dashboard: show last 5
+                const recentList = document.getElementById('recent-hunts');
+                recentList.innerHTML = '';
                 if (hunts.length === 0) {
-                    huntsList.innerHTML = '<li>No hunts yet. Start your first hunt!</li>';
-                    return;
+                    recentList.innerHTML = '<li>No hunts yet. Start your first hunt!</li>';
+                } else {
+                    hunts.slice(0, 5).forEach(hunt => {
+                        recentList.appendChild(createHuntItem(hunt, false));
+                    });
                 }
 
-                hunts.forEach(hunt => {
-                    const li = document.createElement('li');
-                    li.className = 'hunt-item';
-                    li.onclick = () => viewHuntDetails(hunt.hunt_id);
-
-                    li.innerHTML = `
-                        <div class="hunt-header">
-                            <span class="hunt-id">${hunt.hunt_id}</span>
-                            <span class="hunt-status status-${hunt.status}">${hunt.status}</span>
-                        </div>
-                        <div>
-                            <strong>${hunt.total_findings || 0}</strong> findings |
-                            Confidence: <strong>${(hunt.overall_confidence || 0).toFixed(2)}</strong> |
-                            ${hunt.time_range} |
-                            ${new Date(hunt.start_time).toLocaleString()}
-                        </div>
-                        ${hunt.description ? `<div style="margin-top:5px;opacity:0.8;">${hunt.description}</div>` : ''}
-                    `;
-
-                    huntsList.appendChild(li);
-                });
-
-                // Update history tab too
-                document.getElementById('hunt-history').innerHTML = huntsList.innerHTML;
+                // History tab: show all with delete buttons
+                const historyList = document.getElementById('hunt-history');
+                historyList.innerHTML = '';
+                if (hunts.length === 0) {
+                    historyList.innerHTML = '<li>No hunts yet.</li>';
+                } else {
+                    hunts.forEach(hunt => {
+                        historyList.appendChild(createHuntItem(hunt, true));
+                    });
+                }
 
             } catch (error) {
                 console.error('Error loading hunts:', error);
+            }
+        }
+
+        function createHuntItem(hunt, showDelete) {
+            const li = document.createElement('li');
+            li.className = 'hunt-item';
+            li.setAttribute('data-hunt-id', hunt.hunt_id);
+
+            li.innerHTML = `
+                <div class="hunt-header">
+                    <span class="hunt-id" style="cursor:pointer;" onclick="viewHuntDetails('${hunt.hunt_id}')">${hunt.hunt_id}</span>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <span class="hunt-status status-${hunt.status}">${hunt.status}</span>
+                        ${showDelete && hunt.status !== 'running' ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteHunt('${hunt.hunt_id}')">Delete</button>` : ''}
+                    </div>
+                </div>
+                <div style="cursor:pointer;" onclick="viewHuntDetails('${hunt.hunt_id}')">
+                    <strong>${hunt.total_findings || 0}</strong> findings |
+                    Confidence: <strong>${(hunt.overall_confidence || 0).toFixed(2)}</strong> |
+                    ${hunt.time_range} |
+                    ${new Date(hunt.start_time).toLocaleString()}
+                </div>
+                ${hunt.description ? `<div style="margin-top:5px;opacity:0.8;">${hunt.description}</div>` : ''}
+            `;
+
+            return li;
+        }
+
+        async function deleteHunt(huntId) {
+            if (!confirm(`Delete hunt "${huntId}" and all its findings? This cannot be undone.`)) return;
+
+            try {
+                const response = await fetch(`/api/hunts/${huntId}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Deleted hunt: ${huntId}`, 'info');
+                loadRecentHunts();
+                loadStats();
+
+                // Hide details panel if we deleted the currently viewed hunt
+                document.getElementById('hunt-details').style.display = 'none';
+
+            } catch (error) {
+                console.error('Error deleting hunt:', error);
+                addLog(`Error deleting hunt: ${error.message}`, 'error');
             }
         }
 
@@ -1484,46 +1689,120 @@
             setTimeout(() => document.getElementById('hunt-form').dispatchEvent(new Event('submit')), 100);
         }
 
+        // All query type labels
+        const QUERY_LABELS = {
+            'network_connections': 'Network Connections',
+            'dns_queries': 'DNS Queries',
+            'authentication_logs': 'Auth Logs',
+            'process_logs': 'Process Logs',
+            'powershell_logs': 'PowerShell',
+            'file_operations': 'File Ops',
+            'scheduled_tasks': 'Scheduled Tasks',
+            'registry_changes': 'Registry Changes',
+        };
+
         function handleProgress(data) {
-            if (data.stage) {
-                const progressFill = document.getElementById('progress-fill');
-                const progressMessage = document.getElementById('progress-message');
+            if (!data.stage) return;
 
-                progressFill.style.width = `${data.progress}%`;
-                progressFill.textContent = `${data.progress}%`;
-                progressMessage.textContent = data.message;
+            const progressFill = document.getElementById('progress-fill');
+            const progressMessage = document.getElementById('progress-message');
+            const collectionDetail = document.getElementById('collection-detail');
+            const progressTitle = document.getElementById('progress-title');
 
-                addLog(data.message, data.stage === 'error' ? 'error' : 'info');
+            progressFill.style.width = `${data.progress}%`;
+            progressFill.textContent = `${data.progress}%`;
+            progressMessage.textContent = data.message;
 
-                // If there's an error with details, log them too
-                if (data.stage === 'error' && data.error_detail) {
-                    addLog('Error details:', 'error');
-                    // Split traceback into lines and log each
-                    const lines = data.error_detail.split('\n');
-                    lines.forEach(line => {
-                        if (line.trim()) {
-                            addLog(line, 'error');
-                        }
-                    });
+            addLog(data.message, data.stage === 'error' ? 'error' : 'info');
+
+            // Show detailed collection stats
+            if (data.stage === 'collect' && data.collection) {
+                collectionDetail.style.display = 'block';
+                progressTitle.textContent = 'Collecting Data from Splunk...';
+
+                const c = data.collection;
+
+                // Update stat boxes
+                document.getElementById('coll-total-events').textContent =
+                    (c.total_events || 0).toLocaleString();
+                document.getElementById('coll-queries-done').textContent =
+                    `${c.queries_done || 0} / ${c.queries_total || 8}`;
+
+                if (c.total_windows && c.total_windows > 1) {
+                    document.getElementById('coll-window').textContent =
+                        `${c.window || 0} / ${c.total_windows}`;
+                } else {
+                    document.getElementById('coll-window').textContent = '1 / 1';
                 }
 
-                if (data.stage === 'complete') {
-                    setTimeout(() => {
-                        document.getElementById('progress').classList.remove('active');
-                        progressFill.style.width = '0%';
-                        loadRecentHunts();
-                        loadStats();
-                        viewHuntDetails(data.hunt_id);
-                    }, 2000);
-                } else if (data.stage === 'error') {
-                    // Also hide progress bar on error after a delay
-                    setTimeout(() => {
-                        document.getElementById('progress').classList.remove('active');
-                        progressFill.style.width = '0%';
-                        loadRecentHunts();
-                        loadStats();
-                    }, 5000);
+                if (c.elapsed_seconds) {
+                    const mins = Math.floor(c.elapsed_seconds / 60);
+                    const secs = Math.floor(c.elapsed_seconds % 60);
+                    document.getElementById('coll-elapsed').textContent =
+                        mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
                 }
+
+                // Mark total events green when queries are all done
+                if (c.queries_done >= (c.queries_total || 8)) {
+                    document.getElementById('coll-total-events').classList.add('done');
+                    document.getElementById('coll-queries-done').classList.add('done');
+                }
+
+                // Update per-query tracker chips
+                if (c.events_by_type) {
+                    const tracker = document.getElementById('query-tracker');
+                    tracker.innerHTML = '';
+                    for (const [key, label] of Object.entries(QUERY_LABELS)) {
+                        const count = c.events_by_type[key];
+                        const isDone = count !== undefined;
+                        const chip = document.createElement('div');
+                        chip.className = `query-chip${isDone ? ' done' : ''}`;
+                        chip.innerHTML = `
+                            <span class="q-name">${label}</span>
+                            <span class="q-count">${isDone ? count.toLocaleString() : '...'}</span>
+                        `;
+                        tracker.appendChild(chip);
+                    }
+                }
+            } else if (data.stage === 'analyze' || data.stage === 'hunt') {
+                progressTitle.textContent = data.stage === 'analyze'
+                    ? 'Analyzing Collected Data...'
+                    : 'Running Hunting Agents...';
+                // Keep collection stats visible but stop updating
+            } else if (data.stage === 'finalize') {
+                progressTitle.textContent = 'Finalizing Results...';
+            }
+
+            // Error handling
+            if (data.stage === 'error' && data.error_detail) {
+                progressTitle.textContent = 'Hunt Failed';
+                addLog('Error details:', 'error');
+                data.error_detail.split('\n').forEach(line => {
+                    if (line.trim()) addLog(line, 'error');
+                });
+            }
+
+            if (data.stage === 'complete') {
+                progressTitle.textContent = 'Hunt Complete!';
+                setTimeout(() => {
+                    document.getElementById('progress').classList.remove('active');
+                    collectionDetail.style.display = 'none';
+                    progressFill.style.width = '0%';
+                    // Reset stat classes
+                    document.getElementById('coll-total-events').classList.remove('done');
+                    document.getElementById('coll-queries-done').classList.remove('done');
+                    loadRecentHunts();
+                    loadStats();
+                    viewHuntDetails(data.hunt_id);
+                }, 2000);
+            } else if (data.stage === 'error') {
+                setTimeout(() => {
+                    document.getElementById('progress').classList.remove('active');
+                    collectionDetail.style.display = 'none';
+                    progressFill.style.width = '0%';
+                    loadRecentHunts();
+                    loadStats();
+                }, 5000);
             }
         }
 
@@ -1596,6 +1875,145 @@
 
             // Highlight active button
             event.target.classList.add('active');
+        }
+
+        // ========================================
+        // Network Maps Management
+        // ========================================
+
+        async function loadNetworkMaps() {
+            try {
+                const response = await fetch('/api/network-maps');
+                const maps = await response.json();
+
+                const list = document.getElementById('network-maps-list');
+                list.innerHTML = '';
+
+                if (maps.length === 0) {
+                    list.innerHTML = '<li style="padding:15px;opacity:0.7;">No network maps saved yet. Run a hunt with the Network Mapper plugin enabled.</li>';
+                    return;
+                }
+
+                maps.forEach(map => {
+                    const li = document.createElement('li');
+                    li.className = `map-item${map.is_current ? ' current' : ''}`;
+
+                    const sizeKB = (map.size_bytes / 1024).toFixed(1);
+                    const sizeMB = (map.size_bytes / (1024 * 1024)).toFixed(1);
+                    const sizeStr = map.size_bytes > 1024 * 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
+
+                    const ts = map.timestamp ? new Date(map.timestamp).toLocaleString() : 'Unknown';
+
+                    li.innerHTML = `
+                        <div class="map-info">
+                            <strong>${map.filename}</strong>
+                            ${map.is_current ? '<span style="color:var(--success); margin-left:8px;">(Active)</span>' : ''}
+                            <div style="margin-top:4px; opacity:0.7; font-size:13px;">
+                                ${map.total_nodes.toLocaleString()} nodes |
+                                ${map.sensors.length} sensor(s) |
+                                ${sizeStr} |
+                                ${ts}
+                            </div>
+                        </div>
+                        <div class="map-actions">
+                            ${!map.is_current ? `<button class="btn btn-sm" onclick="loadNetworkMapFile('${map.filename}')">Load</button>` : ''}
+                            ${!map.is_current ? `<button class="btn btn-danger btn-sm" onclick="deleteNetworkMap('${map.filename}')">Delete</button>` : ''}
+                        </div>
+                    `;
+
+                    list.appendChild(li);
+                });
+
+            } catch (error) {
+                console.error('Error loading network maps:', error);
+                addLog(`Error loading maps: ${error.message}`, 'error');
+            }
+        }
+
+        async function saveMapSnapshot() {
+            const name = prompt('Enter snapshot name (leave blank for auto-timestamp):');
+            if (name === null) return;  // cancelled
+
+            try {
+                const url = name ? `/api/network-maps/snapshot?name=${encodeURIComponent(name)}` : '/api/network-maps/snapshot';
+                const response = await fetch(url, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Saved map snapshot: ${result.filename}`, 'info');
+                loadNetworkMaps();
+
+            } catch (error) {
+                console.error('Error saving snapshot:', error);
+                addLog(`Error saving snapshot: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadNetworkMapFile(filename) {
+            if (!confirm(`Load "${filename}"? This will replace the current active map.`)) return;
+
+            try {
+                const response = await fetch(`/api/network-maps/${encodeURIComponent(filename)}/load`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Loaded map: ${filename} (${result.total_nodes.toLocaleString()} nodes)`, 'info');
+                loadNetworkMaps();
+
+            } catch (error) {
+                console.error('Error loading map:', error);
+                addLog(`Error loading map: ${error.message}`, 'error');
+            }
+        }
+
+        async function deleteNetworkMap(filename) {
+            if (!confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+
+            try {
+                const response = await fetch(`/api/network-maps/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Deleted map: ${filename}`, 'info');
+                loadNetworkMaps();
+
+            } catch (error) {
+                console.error('Error deleting map:', error);
+                addLog(`Error deleting map: ${error.message}`, 'error');
+            }
+        }
+
+        async function resetNetworkMap() {
+            if (!confirm('Reset the network map? All current map data will be cleared. Consider saving a snapshot first.')) return;
+
+            try {
+                const response = await fetch('/api/network-maps/reset', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog('Network map reset to empty', 'info');
+                loadNetworkMaps();
+
+            } catch (error) {
+                console.error('Error resetting map:', error);
+                addLog(`Error resetting map: ${error.message}`, 'error');
+            }
         }
 
         function addLog(message, type = 'info') {
