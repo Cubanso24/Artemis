@@ -171,41 +171,21 @@ class SplunkConnector:
         # Export streams all results in one request vs. 30+ paginated requests
         self.logger.info(f"Streaming {result_count} events using export mode (fast streaming)")
 
-        import sys
-
         events = []
         try:
-            # Retrieve all results in one call (count=0 means no limit)
-            # Uses default XML output which ResultsReader handles reliably
-            export_results = job.results(count=0)
-            self.logger.info(f"[DEBUG] export_results type: {type(export_results)}")
+            # Retrieve all results - pass explicit count to avoid server default cap
+            export_results = job.results(count=result_count)
 
-            # Read a small sample of raw bytes to check what Splunk is returning
-            raw_peek = export_results.read(1024)
-            self.logger.info(f"[DEBUG] First 500 bytes of response: {raw_peek[:500]}")
-
-            # We consumed bytes, so we need to re-fetch the results
-            export_results = job.results(count=0)
-
-            item_count = 0
-            non_dict_count = 0
             for result in results.ResultsReader(export_results):
-                item_count += 1
                 if isinstance(result, dict):
                     events.append(result)
 
                     # Log progress every 50k events
                     if len(events) % 50000 == 0:
                         self.logger.info(f"Streamed {len(events)} events so far...")
-                else:
-                    non_dict_count += 1
-                    if non_dict_count <= 5:
-                        self.logger.info(f"[DEBUG] Non-dict result #{non_dict_count}: type={type(result)}, value={result}")
-
-            self.logger.info(f"[DEBUG] ResultsReader yielded {item_count} total items: {len(events)} dicts, {non_dict_count} non-dicts")
 
         except Exception as e:
-            self.logger.error(f"Failed during export streaming: {str(e)}")
+            self.logger.error(f"Failed during streaming: {str(e)}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
 

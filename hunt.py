@@ -101,11 +101,11 @@ class HuntAnalyzer:
             desc = agent_descriptions.get(agent_name, "Specialized threat detection")
             print(f"  ✓ {agent_name:30s} → {desc}")
 
-    def print_findings(self, results: dict):
-        """Display findings from all agents."""
+    def print_findings(self, assessment: dict):
+        """Display findings from the hunt assessment."""
         self.print_section("🔍 HUNTING RESULTS")
 
-        total_findings = sum(len(r.findings) for r in results.values())
+        total_findings = assessment.get('total_findings', 0)
 
         if total_findings == 0:
             print("\n✓ No threats detected - Network appears clean")
@@ -113,22 +113,27 @@ class HuntAnalyzer:
 
         print(f"\n⚠️  Found {total_findings} potential threats:\n")
 
-        # Group by severity
+        # Group by severity using agent outputs
         critical = []
         high = []
         medium = []
         low = []
 
-        for agent_name, result in results.items():
-            for finding in result.findings:
-                if finding.severity.value == "CRITICAL":
-                    critical.append((agent_name, finding))
-                elif finding.severity.value == "HIGH":
-                    high.append((agent_name, finding))
-                elif finding.severity.value == "MEDIUM":
-                    medium.append((agent_name, finding))
+        for agent_output in assessment.get('agent_outputs', []):
+            agent_name = agent_output['agent_name']
+            severity = agent_output.get('severity', 'low').upper()
+            confidence = agent_output.get('confidence', 0)
+
+            for finding in agent_output.get('findings', []):
+                entry = (agent_name, finding, confidence)
+                if severity == "CRITICAL":
+                    critical.append(entry)
+                elif severity == "HIGH":
+                    high.append(entry)
+                elif severity == "MEDIUM":
+                    medium.append(entry)
                 else:
-                    low.append((agent_name, finding))
+                    low.append(entry)
 
         # Display findings by severity
         for severity_name, findings_list, emoji in [
@@ -139,34 +144,43 @@ class HuntAnalyzer:
         ]:
             if findings_list:
                 print(f"\n{emoji} {severity_name} Severity ({len(findings_list)} findings):")
-                for agent_name, finding in findings_list:
-                    print(f"\n  [{agent_name}] {finding.title}")
-                    print(f"  └─ {finding.description}")
-                    print(f"  └─ Confidence: {finding.confidence:.2f}")
-                    if finding.mitre_tactics:
-                        print(f"  └─ MITRE: {', '.join(finding.mitre_tactics)}")
-                    if finding.affected_assets:
-                        print(f"  └─ Affected: {', '.join(finding.affected_assets[:3])}")
+                for agent_name, finding, confidence in findings_list:
+                    print(f"\n  [{agent_name}] {finding.get('activity_type', 'Unknown')}")
+                    print(f"  └─ {finding.get('description', 'No description')}")
+                    print(f"  └─ Confidence: {confidence:.2f}")
+                    if finding.get('mitre_techniques'):
+                        print(f"  └─ MITRE: {', '.join(finding['mitre_techniques'])}")
+                    if finding.get('affected_assets'):
+                        print(f"  └─ Affected: {', '.join(finding['affected_assets'][:3])}")
 
-    def print_aggregated_results(self, aggregated: dict):
+    def print_aggregated_results(self, assessment: dict):
         """Display meta-learner's aggregated assessment."""
         self.print_section("🧠 META-LEARNER ANALYSIS")
 
         print(f"\n📈 Overall Threat Assessment:")
-        print(f"  • Total Findings: {len(aggregated.get('findings', []))}")
-        print(f"  • Overall Confidence: {aggregated.get('overall_confidence', 0):.2f}")
-        print(f"  • Corroborated Findings: {aggregated.get('corroborated_count', 0)}")
-        print(f"  • Kill Chain Sequences: {aggregated.get('kill_chain_sequences', 0)}")
+        print(f"  • Total Findings: {assessment.get('total_findings', 0)}")
+        print(f"  • Overall Confidence: {assessment.get('final_confidence', 0):.2f}")
+        print(f"  • Corroborating Agents: {assessment.get('corroborating_agents', 0)}")
+        print(f"  • Alert Level: {assessment.get('alert_level', 'none')}")
 
-        if aggregated.get('attack_campaigns'):
-            print(f"\n🎯 Detected Attack Campaigns:")
-            for campaign in aggregated['attack_campaigns']:
-                print(f"  • {campaign['name']} (Confidence: {campaign['confidence']:.2f})")
-                print(f"    Stages: {' → '.join(campaign['stages'])}")
+        if assessment.get('mitre_techniques'):
+            print(f"\n🎯 MITRE ATT&CK Techniques Detected:")
+            for technique in assessment['mitre_techniques']:
+                print(f"  • {technique}")
 
-    def save_results(self, results: dict, aggregated: dict, network_state: NetworkState):
+        if assessment.get('recommendations'):
+            print(f"\n📋 Recommendations:")
+            for rec in assessment['recommendations']:
+                print(f"  • {rec}")
+
+    def save_results(self, assessment: dict, network_state: NetworkState):
         """Save hunt results to JSON for later analysis."""
         output_file = self.output_dir / f"hunt_{self.hunt_timestamp}.json"
+
+        # Serialize severity enum if present
+        severity = assessment.get('severity', 'low')
+        if hasattr(severity, 'value'):
+            severity = severity.value
 
         hunt_data = {
             "timestamp": self.hunt_timestamp,
@@ -178,30 +192,17 @@ class HuntAnalyzer:
                 "failed_connections": network_state.traffic_metrics.failed_connections,
                 "is_business_hours": network_state.time_features.is_business_hours,
             },
-            "agent_results": {},
-            "aggregated_results": aggregated
+            "total_findings": assessment.get('total_findings', 0),
+            "final_confidence": assessment.get('final_confidence', 0),
+            "severity": severity,
+            "alert_level": assessment.get('alert_level', 'none'),
+            "mitre_techniques": assessment.get('mitre_techniques', []),
+            "agent_outputs": assessment.get('agent_outputs', []),
+            "recommendations": assessment.get('recommendations', [])
         }
 
-        # Save individual agent results
-        for agent_name, result in results.items():
-            hunt_data["agent_results"][agent_name] = {
-                "findings_count": len(result.findings),
-                "findings": [
-                    {
-                        "title": f.title,
-                        "description": f.description,
-                        "severity": f.severity.value,
-                        "confidence": f.confidence,
-                        "mitre_tactics": f.mitre_tactics,
-                        "mitre_techniques": f.mitre_techniques,
-                        "affected_assets": f.affected_assets
-                    }
-                    for f in result.findings
-                ]
-            }
-
         with open(output_file, 'w') as f:
-            json.dump(hunt_data, f, indent=2)
+            json.dump(hunt_data, f, indent=2, default=str)
 
         print(f"\n💾 Results saved to: {output_file}")
 
@@ -210,15 +211,17 @@ class HuntAnalyzer:
         with open(summary_file, 'w') as f:
             f.write(f"Artemis Hunt Summary - {self.hunt_timestamp}\n")
             f.write("=" * 80 + "\n\n")
-            f.write(f"Total Findings: {sum(len(r.findings) for r in results.values())}\n")
-            f.write(f"Overall Confidence: {aggregated.get('overall_confidence', 0):.2f}\n")
-            f.write(f"Agents Deployed: {len(results)}\n\n")
+            f.write(f"Total Findings: {assessment.get('total_findings', 0)}\n")
+            f.write(f"Overall Confidence: {assessment.get('final_confidence', 0):.2f}\n")
+            f.write(f"Alert Level: {assessment.get('alert_level', 'none')}\n")
+            f.write(f"Agents Deployed: {assessment.get('agent_count', 0)}\n\n")
 
-            for agent_name, result in results.items():
-                if result.findings:
-                    f.write(f"\n{agent_name}:\n")
-                    for finding in result.findings:
-                        f.write(f"  - {finding.title} (Confidence: {finding.confidence:.2f})\n")
+            for agent_output in assessment.get('agent_outputs', []):
+                findings = agent_output.get('findings', [])
+                if findings:
+                    f.write(f"\n{agent_output['agent_name']}:\n")
+                    for finding in findings:
+                        f.write(f"  - {finding.get('activity_type', 'Unknown')} ({finding.get('description', '')})\n")
 
         return output_file
 
@@ -289,30 +292,19 @@ def main():
         context_data=None
     )
 
-    # Display hypotheses
-    analyzer.print_hypotheses(hunt_result.get('hypotheses', []))
-
-    # Display agent selection
-    if hunt_result.get('selected_agents'):
-        analyzer.print_agent_selection(hunt_result['selected_agents'])
-
     # Display findings
-    analyzer.print_findings(hunt_result.get('agent_results', {}))
+    analyzer.print_findings(hunt_result)
 
     # Display aggregated results
-    analyzer.print_aggregated_results(hunt_result.get('aggregated_results', {}))
+    analyzer.print_aggregated_results(hunt_result)
 
     # Save results
-    output_file = analyzer.save_results(
-        hunt_result.get('agent_results', {}),
-        hunt_result.get('aggregated_results', {}),
-        network_state
-    )
+    output_file = analyzer.save_results(hunt_result, network_state)
 
     # Final summary
     analyzer.print_section("✅ HUNT COMPLETE")
 
-    total_findings = sum(len(r.findings) for r in hunt_result.get('agent_results', {}).values())
+    total_findings = hunt_result.get('total_findings', 0)
 
     if total_findings > 0:
         print(f"\n⚠️  Detected {total_findings} potential threats requiring investigation")
