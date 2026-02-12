@@ -123,9 +123,9 @@ class SplunkConnector:
         Execute Splunk search query using persistent jobs.
 
         Creates a proper search job with jobs.create(), polls for
-        completion with progress logging, then paginates through all
-        results.  This avoids the premature expiration issues of the
-        export endpoint on large result sets.
+        completion with progress logging, then fetches all results
+        in a single call.  This avoids the premature expiration
+        issues of the export endpoint on large result sets.
 
         Args:
             search_query: SPL (Splunk Processing Language) query
@@ -210,46 +210,25 @@ class SplunkConnector:
             f"  Job {job.sid} finished: {total_results:,} results in {elapsed:.1f}s"
         )
 
-        # Paginate through all results (50K per page to stay safe)
-        PAGE_SIZE = 50000
+        # Fetch all results in a single call (no pagination)
+        results_stream = job.results(output_mode="json", count=0)
+        raw = results_stream.read()
+        if isinstance(raw, bytes):
+            raw = raw.decode('utf-8')
+
         events = []
-
-        offset = 0
-        while True:
-            kwargs = {
-                "output_mode": "json",
-                "count": PAGE_SIZE,
-                "offset": offset,
-            }
-            results_stream = job.results(**kwargs)
-            raw = results_stream.read()
-            if isinstance(raw, bytes):
-                raw = raw.decode('utf-8')
-
-            page_events = []
-            for line in raw.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                    if 'results' in obj:
-                        # JSON output_mode returns {"results": [...]}
-                        page_events.extend(obj['results'])
-                    elif 'result' in obj:
-                        page_events.append(obj['result'])
-                except json.JSONDecodeError:
-                    continue
-
-            events.extend(page_events)
-
-            if len(page_events) < PAGE_SIZE:
-                break  # Last page
-            offset += PAGE_SIZE
-
-            self.logger.info(
-                f"  Paginating results: {len(events):,}/{total_results:,} read"
-            )
+        for line in raw.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if 'results' in obj:
+                    events.extend(obj['results'])
+                elif 'result' in obj:
+                    events.append(obj['result'])
+            except json.JSONDecodeError:
+                continue
 
         elapsed = time.time() - start_time
         self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
