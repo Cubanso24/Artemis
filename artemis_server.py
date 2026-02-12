@@ -592,6 +592,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description,
                 nm.execute(
                     network_connections=hunting_data.get('network_connections', []),
                     dns_queries=hunting_data.get('dns_queries', []),
+                    ntlm_logs=hunting_data.get('ntlm_logs', []),
                 )
             except Exception as e:
                 log.warning(f'Network mapper failed: {e}')

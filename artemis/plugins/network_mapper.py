@@ -23,7 +23,8 @@ class NetworkNode:
     """Represents a network host observed by a specific sensor on a specific VLAN."""
 
     __slots__ = (
-        'ip', 'sensor_id', 'vlan', 'hostnames', 'services', 'first_seen',
+        'ip', 'sensor_id', 'vlan', 'hostnames', 'netbios_names', 'domain',
+        'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
         'device_type',
@@ -34,6 +35,8 @@ class NetworkNode:
         self.sensor_id = sensor_id
         self.vlan = vlan
         self.hostnames: Set[str] = set()
+        self.netbios_names: Set[str] = set()  # NetBIOS/NTLM hostnames
+        self.domain: str = ''  # AD domain or workgroup name
         self.services: Set[tuple] = set()  # (port, protocol) tuples
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
@@ -75,6 +78,8 @@ class NetworkNode:
             'sensor_id': self.sensor_id,
             'vlan': self.vlan,
             'hostnames': list(self.hostnames),
+            'netbios_names': list(self.netbios_names),
+            'domain': self.domain,
             'services': [f"{port}/{proto}" for port, proto in self.services],
             'first_seen': self.first_seen.isoformat(),
             'last_seen': self.last_seen.isoformat(),
@@ -185,6 +190,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         node = NetworkNode(ip, sensor_id, vlan)
         node.hostnames = set(node_data.get('hostnames', []))
+        node.netbios_names = set(node_data.get('netbios_names', []))
+        node.domain = node_data.get('domain', '')
         node.services = set()
         for s in node_data.get('services', []):
             parts = s.split('/')
@@ -246,13 +253,16 @@ class NetworkMapperPlugin(ArtemisPlugin):
         Expected kwargs:
             network_connections: List of connection records
             dns_queries: List of DNS query records
+            ntlm_logs: List of NTLM authentication records (optional)
         """
         connections = kwargs.get('network_connections', [])
         dns_queries = kwargs.get('dns_queries', [])
+        ntlm_logs = kwargs.get('ntlm_logs', [])
 
         logger.info(
-            f"Processing {len(connections)} connections and "
-            f"{len(dns_queries)} DNS queries"
+            f"Processing {len(connections)} connections, "
+            f"{len(dns_queries)} DNS queries, and "
+            f"{len(ntlm_logs)} NTLM events"
         )
 
         # Process connections in batches to allow periodic progress logging
@@ -275,6 +285,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 logger.info(
                     f"  Processed {i + batch_size}/{len(dns_queries)} DNS queries"
                 )
+
+        # Process NTLM logs for NetBIOS name enrichment
+        if ntlm_logs:
+            for ntlm in ntlm_logs:
+                self._process_ntlm(ntlm)
+            logger.info(f"  Processed {len(ntlm_logs)} NTLM events for NetBIOS enrichment")
 
         logger.info(f"  Connections and DNS done. Inferring roles for {len(self._dirty_nodes)} nodes...")
 
@@ -373,6 +389,37 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if '.' in answer and all(p.isdigit() for p in answer.split('.')):
                 ans_node = self._get_or_create_node(sensor_id, vlan, answer)
                 ans_node.hostnames.add(domain)
+
+    def _process_ntlm(self, ntlm: Dict):
+        """Process an NTLM authentication event for NetBIOS name enrichment."""
+        src_ip = ntlm.get('source_ip')
+        dst_ip = ntlm.get('dest_ip')
+        hostname = ntlm.get('hostname', '')        # Client NetBIOS name
+        domainname = ntlm.get('domainname', '')     # Domain/workgroup
+        server_nb = ntlm.get('server_nb_computer_name', '')  # Server NetBIOS name
+        server_dns = ntlm.get('server_dns_computer_name', '')
+        sensor_id = ntlm.get('sensor_id', 'default')
+        vlan = str(ntlm.get('vlan', '0'))
+
+        # Enrich the client (source) node
+        if src_ip:
+            src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
+            src_node.last_seen = datetime.now()
+            if hostname and hostname != '-':
+                src_node.netbios_names.add(hostname.upper())
+            if domainname and domainname != '-':
+                src_node.domain = domainname.upper()
+
+        # Enrich the server (destination) node
+        if dst_ip:
+            dst_node = self._get_or_create_node(sensor_id, vlan, dst_ip)
+            dst_node.last_seen = datetime.now()
+            if server_nb and server_nb != '-':
+                dst_node.netbios_names.add(server_nb.upper())
+            if server_dns and server_dns != '-':
+                dst_node.hostnames.add(server_dns.lower())
+            if domainname and domainname != '-':
+                dst_node.domain = domainname.upper()
 
     # ------------------------------------------------------------------
     # Role inference (incremental)
@@ -636,8 +683,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | where outgoing_count >= 3
         '''
 
-        # Run both queries in parallel
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        # Query 3: NTLM logs — NetBIOS hostname and domain enrichment
+        ntlm_query = '''
+        search index=zeek_ntlm
+        | spath
+        | eval vlan=coalesce(vlan, "0")
+        | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
+        | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
+        '''
+
+        # Run all three queries in parallel
+        with ThreadPoolExecutor(max_workers=3) as executor:
             server_future = executor.submit(
                 splunk_connector.query, server_query,
                 earliest_time=time_range, latest_time="now"
@@ -646,13 +702,48 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 splunk_connector.query, client_query,
                 earliest_time=time_range, latest_time="now"
             )
+            ntlm_future = executor.submit(
+                splunk_connector.query, ntlm_query,
+                earliest_time=time_range, latest_time="now"
+            )
 
             server_results = server_future.result(timeout=600)
             client_results = client_future.result(timeout=600)
+            try:
+                ntlm_results = ntlm_future.result(timeout=600)
+            except Exception:
+                ntlm_results = []  # NTLM index may not exist
+
+        # Enrich nodes with NTLM data (NetBIOS names + domain)
+        ntlm_enriched = 0
+        for row in ntlm_results:
+            src_ip = row.get('source_ip', '')
+            dst_ip = row.get('dest_ip', '')
+            hostname = row.get('hostname', '')
+            domainname = row.get('domainname', '')
+            server_nb = row.get('server_nb_computer_name', '')
+            server_dns = row.get('server_dns_computer_name', '')
+
+            # Find matching nodes and enrich
+            for key, node in self.nodes.items():
+                if node.ip == src_ip and hostname and hostname != '-':
+                    node.netbios_names.add(hostname.upper())
+                    if domainname and domainname != '-':
+                        node.domain = domainname.upper()
+                    ntlm_enriched += 1
+                if node.ip == dst_ip:
+                    if server_nb and server_nb != '-':
+                        node.netbios_names.add(server_nb.upper())
+                    if server_dns and server_dns != '-':
+                        node.hostnames.add(server_dns.lower())
+                    if domainname and domainname != '-':
+                        node.domain = domainname.upper()
+                    ntlm_enriched += 1
 
         logger.info(
             f"Device profiling: got {len(server_results)} server profiles, "
-            f"{len(client_results)} client profiles"
+            f"{len(client_results)} client profiles, "
+            f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments)"
         )
 
         # Index server data by IP
@@ -1047,12 +1138,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
         internet_unique_ips = set()
 
         for node in top:
-            # Show VLAN in label when tagged (non-zero)
-            label = (
-                f"{node.ip} (v{node.vlan})"
-                if node.vlan != '0'
-                else node.ip
-            )
+            # Build label: prefer NetBIOS name, fall back to IP
+            nb_name = next(iter(sorted(node.netbios_names)), '')
+            if nb_name:
+                label = f"{nb_name}\n{node.ip}"
+            elif node.vlan != '0':
+                label = f"{node.ip} (v{node.vlan})"
+            else:
+                label = node.ip
 
             # Collect external connections for this node
             ext_conns_out = []
@@ -1098,6 +1191,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'device_type': node.device_type,
                 'device_label': self._device_label(node.device_type),
                 'tier': self._device_tier(node.device_type, node.is_internal),
+                'netbios_names': sorted(node.netbios_names)[:3],
+                'domain': node.domain,
+                'hostnames': sorted(node.hostnames)[:3],
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],
                 'internal_connections': int_conns,

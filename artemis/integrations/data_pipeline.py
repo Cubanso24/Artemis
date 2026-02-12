@@ -316,7 +316,8 @@ class DataPipeline:
         """
         data: Dict[str, Any] = {}
         query_names = [
-            "network_connections", "dns_queries", "authentication_logs",
+            "network_connections", "dns_queries", "ntlm_logs",
+            "authentication_logs",
             "process_logs", "powershell_logs", "file_operations",
             "scheduled_tasks", "registry_changes",
         ]
@@ -330,6 +331,9 @@ class DataPipeline:
                     ),
                     "dns_queries": executor.submit(
                         self.splunk.get_dns_queries, earliest, latest
+                    ),
+                    "ntlm_logs": executor.submit(
+                        self.splunk.get_ntlm_logs, earliest, latest
                     ),
                     "authentication_logs": executor.submit(
                         self.splunk.get_authentication_logs, earliest, latest

@@ -360,6 +360,47 @@ class SplunkConnector:
 
         return dns_queries
 
+    def get_ntlm_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+        """
+        Get NTLM authentication logs from Zeek for NetBIOS name enrichment.
+
+        Zeek's ntlm.log captures NTLM auth exchanges which contain NetBIOS
+        hostnames, domain/workgroup names, and server computer names.
+
+        Returns:
+            NTLM events with hostname and domain info
+        """
+        query = '''
+        search index=zeek_ntlm
+        | spath
+        | eval vlan=coalesce(vlan, "0")
+        | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
+        | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
+        '''
+
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
+
+        ntlm_logs = []
+        for event in events:
+            def get_first(value, default=""):
+                if isinstance(value, list) and len(value) > 0:
+                    return value[0]
+                return value if value else default
+
+            ntlm_logs.append({
+                "source_ip": get_first(event.get("source_ip")),
+                "dest_ip": get_first(event.get("dest_ip")),
+                "hostname": get_first(event.get("hostname")),
+                "domainname": get_first(event.get("domainname")),
+                "server_nb_computer_name": get_first(event.get("server_nb_computer_name")),
+                "server_dns_computer_name": get_first(event.get("server_dns_computer_name")),
+                "sensor_id": get_first(event.get("sensor_id"), "default"),
+                "vlan": str(get_first(event.get("vlan"), "0")),
+                "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
+            })
+
+        return ntlm_logs
+
     def get_authentication_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
         """
         Get authentication logs for credential access/initial access detection.
@@ -562,6 +603,7 @@ class SplunkConnector:
         hunting_data = {
             "network_connections": self.get_network_connections(time_range),
             "dns_queries": self.get_dns_queries(time_range),
+            "ntlm_logs": self.get_ntlm_logs(time_range),
             "authentication_logs": self.get_authentication_logs(time_range),
             "process_logs": self.get_process_logs(time_range),
             "powershell_logs": self.get_powershell_logs(time_range),

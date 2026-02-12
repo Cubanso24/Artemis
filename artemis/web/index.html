@@ -1946,13 +1946,21 @@
                 const deviceStr = node.device_label || node.device_type || '';
                 const rolesStr = node.roles ? node.roles.join(', ') : 'none';
                 const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
+                const nbNames = (node.netbios_names || []).join(', ');
+                const domainStr = node.domain || '';
 
                 let label = node.label;
                 if (deviceStr && node.group !== 'internet') {
                     label = `${node.label}\n${deviceStr}`;
                 }
 
-                const tooltip = `${node.label}${deviceStr ? '\nDevice: ' + deviceStr : ''}\nTier: ${tierLabels[tier] || 'Unknown'}\nServices: ${servicesStr}\nRoles: ${rolesStr}`;
+                let tooltip = node.label;
+                if (nbNames) tooltip += `\nNetBIOS: ${nbNames}`;
+                if (domainStr) tooltip += `\nDomain: ${domainStr}`;
+                if (deviceStr) tooltip += `\nDevice: ${deviceStr}`;
+                tooltip += `\nTier: ${tierLabels[tier] || 'Unknown'}`;
+                tooltip += `\nServices: ${servicesStr}`;
+                tooltip += `\nRoles: ${rolesStr}`;
 
                 // Aggregated Internet cloud node
                 if (node.group === 'internet') {
@@ -2126,6 +2134,9 @@
             const rolesStr = node.roles ? node.roles.join(', ') : 'none';
             const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
             const tierStr = tierNames[node.tier] || node.group;
+            const nbNames = (node.netbios_names || []).join(', ');
+            const domainStr = node.domain || '';
+            const hostnamesStr = (node.hostnames || []).join(', ');
 
             title.textContent = `${node.label}${deviceStr !== 'Unknown' ? ' — ' + deviceStr : ''}`;
 
@@ -2133,6 +2144,9 @@
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; font-size:13px; margin-bottom:16px;">
                     <div><span style="opacity:0.6;">Device:</span> <strong>${escapeHtml(deviceStr)}</strong></div>
                     <div><span style="opacity:0.6;">Layer:</span> <strong>${escapeHtml(tierStr)}</strong></div>
+                    ${nbNames ? `<div><span style="opacity:0.6;">NetBIOS:</span> <strong>${escapeHtml(nbNames)}</strong></div>` : ''}
+                    ${domainStr ? `<div><span style="opacity:0.6;">Domain:</span> <strong>${escapeHtml(domainStr)}</strong></div>` : ''}
+                    ${hostnamesStr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Hostnames:</span> ${escapeHtml(hostnamesStr)}</div>` : ''}
                     <div><span style="opacity:0.6;">Sensor:</span> ${escapeHtml(node.sensor_id || 'default')}</div>
                     <div><span style="opacity:0.6;">Services:</span> ${escapeHtml(servicesStr)}</div>
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
@@ -2324,14 +2338,19 @@
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             if (!query || !networkGraph || !networkGraphData) return;
 
-            // Search through nodes for IP match (partial match on label, id, device type)
+            // Search through nodes (IP, label, device type, NetBIOS name, domain, hostname)
             const matches = networkGraphData.raw.nodes.filter(n => {
                 const lbl = (n.label || '').toLowerCase();
                 const nid = (n.id || '').toLowerCase();
                 const dtype = (n.device_type || '').toLowerCase();
                 const dlabel = (n.device_label || '').toLowerCase();
+                const nbNames = (n.netbios_names || []).join(' ').toLowerCase();
+                const domain = (n.domain || '').toLowerCase();
+                const hostnames = (n.hostnames || []).join(' ').toLowerCase();
                 return lbl.includes(query) || nid.includes(query) ||
-                       dtype.includes(query) || dlabel.includes(query);
+                       dtype.includes(query) || dlabel.includes(query) ||
+                       nbNames.includes(query) || domain.includes(query) ||
+                       hostnames.includes(query);
             });
 
             if (matches.length > 0) {
