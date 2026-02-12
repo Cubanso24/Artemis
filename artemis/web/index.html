@@ -1822,7 +1822,7 @@
                         springLength: 100,
                         springConstant: 0.08
                     },
-                    stabilization: { iterations: 200 }
+                    stabilization: { iterations: 300 }
                 },
                 interaction: {
                     hover: true,
@@ -1832,6 +1832,11 @@
             };
 
             networkGraph = new vis.Network(container, data, options);
+
+            // Stop physics after layout stabilizes so it doesn't keep spinning
+            networkGraph.on('stabilized', function() {
+                networkGraph.setOptions({ physics: { enabled: false } });
+            });
 
             // Add click handler
             networkGraph.on('click', function(params) {
