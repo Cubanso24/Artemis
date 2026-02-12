@@ -1115,6 +1115,17 @@
                 </div>
 
                 <h3 style="margin-bottom:10px;">Loaded Rules</h3>
+                <div style="margin-bottom:10px; display:flex; gap:10px; flex-wrap:wrap;">
+                    <input type="text" id="sigma-search" placeholder="Filter rules..." oninput="filterSigmaRules()" style="padding:8px 12px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#eee; flex:1; min-width:200px;">
+                    <select id="sigma-level-filter" onchange="filterSigmaRules()" style="padding:8px 12px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#eee;">
+                        <option value="">All Levels</option>
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                        <option value="informational">Informational</option>
+                    </select>
+                </div>
                 <div id="sigma-rules-list">
                     <p style="opacity:0.7;">Enable the Sigma Engine plugin to load rules.</p>
                 </div>
@@ -2332,6 +2343,9 @@
         // Sigma Rule Engine
         // ========================================
 
+        let allSigmaRules = [];
+        const SIGMA_PAGE_SIZE = 50;
+
         async function loadSigmaRules() {
             try {
                 const response = await fetch('/api/sigma/rules');
@@ -2343,48 +2357,80 @@
                     return;
                 }
 
-                const rules = Array.isArray(data) ? data : [];
-                document.getElementById('sigma-stat-rules').textContent = rules.length;
+                allSigmaRules = Array.isArray(data) ? data : [];
+                document.getElementById('sigma-stat-rules').textContent = allSigmaRules.length;
 
-                const container = document.getElementById('sigma-rules-list');
-                container.innerHTML = '';
-
-                if (rules.length === 0) {
-                    container.innerHTML = '<p style="opacity:0.7;">No rules loaded. Place .yml files in the sigma_rules/ directory and reload.</p>';
-                    return;
-                }
-
-                rules.forEach(rule => {
-                    const div = document.createElement('div');
-                    div.className = `sigma-rule-item level-${rule.level}`;
-                    const techniques = (rule.mitre_techniques || []).map(t =>
-                        `<span class="sigma-tag">${t}</span>`
-                    ).join('');
-                    const tactics = (rule.mitre_tactics || []).map(t =>
-                        `<span class="sigma-tag">${t}</span>`
-                    ).join('');
-
-                    div.innerHTML = `
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                            <strong>${rule.title}</strong>
-                            <span class="sigma-badge ${rule.level}">${rule.level}</span>
-                        </div>
-                        <p style="opacity:0.8; font-size:13px; margin-bottom:6px;">${rule.description || ''}</p>
-                        <div style="font-size:12px; opacity:0.7;">
-                            Category: <strong>${rule.category}</strong> |
-                            Data: <strong>${rule.data_type}</strong> |
-                            Author: ${rule.author || 'Unknown'}
-                        </div>
-                        ${techniques || tactics ? `<div style="margin-top:6px;">${tactics}${techniques}</div>` : ''}
-                    `;
-                    container.appendChild(div);
-                });
-
-                // Also load results
+                renderSigmaRules(allSigmaRules);
                 loadSigmaResults();
 
             } catch (error) {
                 console.error('Error loading Sigma rules:', error);
+            }
+        }
+
+        function filterSigmaRules() {
+            const query = document.getElementById('sigma-search').value.toLowerCase();
+            const level = document.getElementById('sigma-level-filter').value;
+
+            const filtered = allSigmaRules.filter(rule => {
+                const matchesQuery = !query ||
+                    rule.title.toLowerCase().includes(query) ||
+                    (rule.description || '').toLowerCase().includes(query) ||
+                    (rule.category || '').toLowerCase().includes(query) ||
+                    (rule.author || '').toLowerCase().includes(query) ||
+                    (rule.mitre_techniques || []).some(t => t.toLowerCase().includes(query)) ||
+                    (rule.mitre_tactics || []).some(t => t.toLowerCase().includes(query));
+                const matchesLevel = !level || rule.level === level;
+                return matchesQuery && matchesLevel;
+            });
+
+            renderSigmaRules(filtered);
+        }
+
+        function renderSigmaRules(rules, limit = SIGMA_PAGE_SIZE) {
+            const container = document.getElementById('sigma-rules-list');
+            container.innerHTML = '';
+
+            if (rules.length === 0) {
+                container.innerHTML = '<p style="opacity:0.7;">No rules match the current filter.</p>';
+                return;
+            }
+
+            const showing = rules.slice(0, limit);
+
+            showing.forEach(rule => {
+                const div = document.createElement('div');
+                div.className = `sigma-rule-item level-${rule.level}`;
+                const techniques = (rule.mitre_techniques || []).map(t =>
+                    `<span class="sigma-tag">${t}</span>`
+                ).join('');
+                const tactics = (rule.mitre_tactics || []).map(t =>
+                    `<span class="sigma-tag">${t}</span>`
+                ).join('');
+
+                div.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <strong>${rule.title}</strong>
+                        <span class="sigma-badge ${rule.level}">${rule.level}</span>
+                    </div>
+                    <p style="opacity:0.8; font-size:13px; margin-bottom:6px;">${rule.description || ''}</p>
+                    <div style="font-size:12px; opacity:0.7;">
+                        Category: <strong>${rule.category}</strong> |
+                        Data: <strong>${rule.data_type}</strong> |
+                        Author: ${rule.author || 'Unknown'}
+                    </div>
+                    ${techniques || tactics ? `<div style="margin-top:6px;">${tactics}${techniques}</div>` : ''}
+                `;
+                container.appendChild(div);
+            });
+
+            if (rules.length > limit) {
+                const more = document.createElement('button');
+                more.className = 'btn btn-secondary';
+                more.style.cssText = 'margin-top:15px; width:100%;';
+                more.textContent = `Show More (${limit} of ${rules.length})`;
+                more.onclick = () => renderSigmaRules(rules, limit + SIGMA_PAGE_SIZE);
+                container.appendChild(more);
             }
         }
 
