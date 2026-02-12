@@ -345,43 +345,64 @@ class SigmaEnginePlugin(ArtemisPlugin):
         rules_checked = 0
         total_matches = 0
 
+        # Group rules by data type so we iterate each event list once
+        from collections import defaultdict
+        rules_by_type: Dict[str, list] = defaultdict(list)
         for rule in self.rules:
-            data_key = rule.data_type
+            events = kwargs.get(rule.data_type, [])
+            if events:
+                rules_by_type[rule.data_type].append(rule)
+
+        for data_key, type_rules in rules_by_type.items():
             events = kwargs.get(data_key, [])
-            if not events:
-                continue
+            logger.info(
+                f"  Sigma: scanning {len(events):,} {data_key} events "
+                f"against {len(type_rules)} rules"
+            )
 
-            rules_checked += 1
-            selections = rule.get_selections()
-            matched_events = []
+            for rule_idx, rule in enumerate(type_rules, 1):
+                rules_checked += 1
+                selections = rule.get_selections()
+                matched_events = []
 
-            for event in events:
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    if _evaluate_condition(rule.condition, selections, event):
-                        matched_events.append(event)
-                        if len(matched_events) >= 100:
-                            break  # Cap per rule to avoid flooding
-                except Exception:
-                    continue
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    try:
+                        if _evaluate_condition(rule.condition, selections, event):
+                            matched_events.append(event)
+                            if len(matched_events) >= 100:
+                                break  # Cap per rule to avoid flooding
+                    except Exception:
+                        continue
 
-            if matched_events:
-                total_matches += len(matched_events)
-                matches.append({
-                    'rule_id': rule.id,
-                    'rule_title': rule.title,
-                    'rule_description': rule.description,
-                    'level': rule.level,
-                    'status': rule.status,
-                    'author': rule.author,
-                    'mitre_tactics': rule.mitre_tactics,
-                    'mitre_techniques': rule.mitre_techniques,
-                    'data_type': data_key,
-                    'match_count': len(matched_events),
-                    'sample_events': matched_events[:5],  # Keep first 5 as samples
-                    'filepath': rule.filepath,
-                })
+                if matched_events:
+                    total_matches += len(matched_events)
+                    matches.append({
+                        'rule_id': rule.id,
+                        'rule_title': rule.title,
+                        'rule_description': rule.description,
+                        'level': rule.level,
+                        'status': rule.status,
+                        'author': rule.author,
+                        'mitre_tactics': rule.mitre_tactics,
+                        'mitre_techniques': rule.mitre_techniques,
+                        'data_type': data_key,
+                        'match_count': len(matched_events),
+                        'sample_events': matched_events[:5],
+                        'filepath': rule.filepath,
+                    })
+
+                if rule_idx % 100 == 0:
+                    logger.info(
+                        f"    {data_key}: {rule_idx}/{len(type_rules)} rules checked, "
+                        f"{total_matches} matches so far"
+                    )
+
+            logger.info(
+                f"  Sigma: {data_key} complete — {len(type_rules)} rules, "
+                f"{total_matches} total matches"
+            )
 
         # Sort by level severity
         level_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'informational': 4}

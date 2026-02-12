@@ -250,11 +250,21 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 )
 
         # Process DNS queries
-        for dns in dns_queries:
-            self._process_dns(dns)
+        for i in range(0, len(dns_queries), batch_size):
+            batch = dns_queries[i:i + batch_size]
+            for dns in batch:
+                self._process_dns(dns)
+            if i + batch_size < len(dns_queries):
+                logger.info(
+                    f"  Processed {i + batch_size}/{len(dns_queries)} DNS queries"
+                )
+
+        logger.info(f"  Connections and DNS done. Inferring roles for {len(self._dirty_nodes)} nodes...")
 
         # Infer roles only for nodes touched this round
         self._infer_roles_incremental()
+
+        logger.info(f"  Role inference complete. {len(self.nodes)} total nodes in map.")
 
         # Invalidate stats cache
         self._stats_cache = None
