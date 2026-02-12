@@ -1787,10 +1787,16 @@
 
             addLog(`Rendering graph: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`, 'info');
 
-            // Prepare nodes for vis.js
+            // Prepare nodes for vis.js — scale sizes to avoid overlap
+            const maxSize = Math.max(...graphData.nodes.map(n => n.size || 1));
+            const nodeCount = graphData.nodes.length;
+
             const nodes = graphData.nodes.map(node => {
                 let color = node.group === 'internal' ? '#4CAF50' : '#f44336';
-                let size = Math.max(10, node.size || 10);
+
+                // Scale node size: smaller when many nodes, larger when few
+                const rawSize = node.size || 1;
+                const scaled = 5 + (rawSize / Math.max(maxSize, 1)) * 20;
 
                 // Highlight high-connection nodes
                 if (node.roles && node.roles.includes('server')) {
@@ -1805,7 +1811,8 @@
                     label: node.label,
                     title: `${node.label}\nServices: ${servicesStr}\nRoles: ${rolesStr}`,
                     color: color,
-                    size: size
+                    size: scaled,
+                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee' }
                 };
             });
 
@@ -1819,10 +1826,14 @@
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
 
+            // Adjust physics spacing based on node count
+            const repulsion = nodeCount > 100 ? -150 : nodeCount > 50 ? -100 : -50;
+            const springLen = nodeCount > 100 ? 250 : nodeCount > 50 ? 180 : 120;
+
             const options = {
                 nodes: {
                     shape: 'dot',
-                    font: { size: 12, color: '#eee' }
+                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee' }
                 },
                 edges: {
                     color: { color: '#666', highlight: '#667eea' },
@@ -1831,12 +1842,13 @@
                 physics: {
                     solver: 'forceAtlas2Based',
                     forceAtlas2Based: {
-                        gravitationalConstant: -50,
-                        centralGravity: 0.01,
-                        springLength: 100,
-                        springConstant: 0.08
+                        gravitationalConstant: repulsion,
+                        centralGravity: 0.005,
+                        springLength: springLen,
+                        springConstant: 0.04,
+                        avoidOverlap: 0.8
                     },
-                    stabilization: { iterations: 300 }
+                    stabilization: { iterations: 400 }
                 },
                 interaction: {
                     hover: true,
