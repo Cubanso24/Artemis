@@ -1737,23 +1737,21 @@
 
             // Prepare nodes for vis.js
             const nodes = graphData.nodes.map(node => {
-                let color = node.is_internal ? '#4CAF50' : '#f44336';  // Green for internal, red for external
-                let size = 10;
+                let color = node.group === 'internal' ? '#4CAF50' : '#f44336';
+                let size = Math.max(10, node.size || 10);
 
-                // Size based on connection count
-                if (node.total_connections > 100) {
-                    size = 30;
-                    color = '#FFC107';  // Yellow for servers
-                } else if (node.total_connections > 50) {
-                    size = 20;
-                } else if (node.total_connections > 10) {
-                    size = 15;
+                // Highlight high-connection nodes
+                if (node.roles && node.roles.includes('server')) {
+                    color = '#FFC107';
                 }
 
+                const rolesStr = node.roles ? node.roles.join(', ') : 'none';
+                const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
+
                 return {
-                    id: node.ip,
-                    label: node.ip,
-                    title: `${node.ip}\nConnections: ${node.total_connections}\nServices: ${node.services.join(', ')}\nRoles: ${node.roles.join(', ')}`,
+                    id: node.id,
+                    label: node.label,
+                    title: `${node.label}\nServices: ${servicesStr}\nRoles: ${rolesStr}`,
                     color: color,
                     size: size
                 };
@@ -1761,10 +1759,10 @@
 
             // Prepare edges for vis.js
             const edges = graphData.edges.map(edge => ({
-                from: edge.source,
-                to: edge.target,
-                value: edge.connection_count,
-                title: `${edge.connection_count} connections`
+                from: edge.from,
+                to: edge.to,
+                value: edge.value,
+                title: edge.title || `${edge.value} connections`
             }));
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
@@ -1801,7 +1799,7 @@
             networkGraph.on('click', function(params) {
                 if (params.nodes.length > 0) {
                     const nodeId = params.nodes[0];
-                    const node = graphData.nodes.find(n => n.ip === nodeId);
+                    const node = graphData.nodes.find(n => n.id === nodeId);
                     if (node) {
                         showNodeDetails(node);
                     }
@@ -1810,11 +1808,13 @@
         }
 
         function showNodeDetails(node) {
-            alert(`IP: ${node.ip}\n` +
-                  `Internal: ${node.is_internal}\n` +
-                  `Connections: ${node.total_connections}\n` +
-                  `Services: ${node.services.join(', ')}\n` +
-                  `Roles: ${node.roles.join(', ')}`);
+            const rolesStr = node.roles ? node.roles.join(', ') : 'none';
+            const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
+            alert(`${node.label}\n` +
+                  `Type: ${node.group}\n` +
+                  `Sensor: ${node.sensor_id || 'default'}\n` +
+                  `Services: ${servicesStr}\n` +
+                  `Roles: ${rolesStr}`);
         }
 
         async function loadNetworkSummary() {

@@ -805,7 +805,7 @@ async def get_hunt(hunt_id: str):
     """Get hunt details."""
     hunt = db_manager.get_hunt_details(hunt_id)
     if not hunt:
-        return {'error': 'Hunt not found'}, 404
+        return JSONResponse(status_code=404, content={'error': 'Hunt not found'})
     return hunt
 
 
@@ -1008,7 +1008,7 @@ async def get_network_graph(
     plugin = plugin_manager.get_plugin('network_mapper')
 
     if not plugin:
-        return {'error': 'Network mapper plugin not enabled'}, 404
+        return JSONResponse(status_code=404, content={'error': 'Network mapper plugin not enabled'})
 
     try:
         graph_data = plugin.get_network_graph(
@@ -1017,7 +1017,7 @@ async def get_network_graph(
         )
         return graph_data
     except Exception as e:
-        return {'error': str(e)}, 500
+        return JSONResponse(status_code=500, content={'error': str(e)})
 
 
 @app.get("/api/network-summary")
@@ -1026,12 +1026,12 @@ async def get_network_summary(sensor_id: Optional[str] = None):
     plugin = plugin_manager.get_plugin('network_mapper')
 
     if not plugin:
-        return {'error': 'Network mapper plugin not enabled'}, 404
+        return JSONResponse(status_code=404, content={'error': 'Network mapper plugin not enabled'})
 
     try:
         return plugin.get_summary(sensor_id=sensor_id)
     except Exception as e:
-        return {'error': str(e)}, 500
+        return JSONResponse(status_code=500, content={'error': str(e)})
 
 
 # ============================================================================
