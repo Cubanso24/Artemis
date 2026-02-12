@@ -378,6 +378,10 @@ class PluginManager:
         if self.plugins[name]['instance'] is None:
             self.plugins[name]['instance'] = self.plugins[name]['class'](config or {})
 
+        # Initialize the plugin (loads rules, caches, etc.)
+        if hasattr(self.plugins[name]['instance'], 'initialize'):
+            self.plugins[name]['instance'].initialize()
+
         self.plugins[name]['enabled'] = True
         logger.info(f"Enabled plugin: {name}")
 

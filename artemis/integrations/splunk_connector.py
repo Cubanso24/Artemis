@@ -173,9 +173,9 @@ class SplunkConnector:
             # Log progress at 10% increments
             try:
                 progress = round(float(job["doneProgress"]) * 100)
-                scan_count = int(job.get("scanCount", 0) or 0)
-                event_count = int(job.get("eventCount", 0) or 0)
-                result_count = int(job.get("resultCount", 0) or 0)
+                scan_count = int(job["scanCount"] or 0)
+                event_count = int(job["eventCount"] or 0)
+                result_count = int(job["resultCount"] or 0)
 
                 if progress >= last_progress + 10:
                     elapsed = time.time() - start_time
@@ -204,7 +204,7 @@ class SplunkConnector:
 
         # Read result count
         job.refresh()
-        total_results = int(job.get("resultCount", 0) or 0)
+        total_results = int(job["resultCount"] or 0)
         elapsed = time.time() - start_time
         self.logger.info(
             f"  Job {job.sid} finished: {total_results:,} results in {elapsed:.1f}s"
