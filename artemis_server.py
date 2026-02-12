@@ -455,6 +455,7 @@ class HuntManager:
                 'progress': 0,
                 'start_time': hunt_start,
                 'collection_stats': {},
+                'last_progress': None,
             }
 
             if progress_callback:
@@ -777,6 +778,23 @@ async def get_hunt(hunt_id: str):
     return hunt
 
 
+@app.get("/api/hunts/active")
+async def get_active_hunts():
+    """Get currently running hunts with their latest progress state."""
+    active = []
+    for hunt_id, state in hunt_manager.active_hunts.items():
+        if state.get('status') == 'running':
+            entry = {
+                'hunt_id': hunt_id,
+                'status': 'running',
+                'progress': state.get('progress', 0),
+                'start_time': state['start_time'].isoformat() if isinstance(state.get('start_time'), datetime) else state.get('start_time'),
+                'last_progress': state.get('last_progress'),
+            }
+            active.append(entry)
+    return active
+
+
 @app.delete("/api/hunts/{hunt_id}")
 async def delete_hunt(hunt_id: str):
     """Delete a hunt and its findings."""
@@ -990,6 +1008,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
 
+    # Send current state of any running hunts so reconnecting clients can resume
+    try:
+        for hunt_id, state in hunt_manager.active_hunts.items():
+            if state.get('status') == 'running' and state.get('last_progress'):
+                await websocket.send_json(state['last_progress'])
+    except Exception:
+        pass
+
     try:
         while True:
             # Keep connection alive
@@ -999,7 +1025,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def broadcast_progress(data: dict):
-    """Broadcast progress to all connected clients."""
+    """Broadcast progress to all connected clients and cache for reconnects."""
+    # Cache last progress in active_hunts so reconnecting clients can resume
+    for hunt_id, hunt_state in hunt_manager.active_hunts.items():
+        if hunt_state.get('status') == 'running':
+            hunt_state['last_progress'] = data
+            break
+
     for connection in active_connections:
         try:
             await connection.send_json(data)

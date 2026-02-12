@@ -1066,6 +1066,10 @@
             loadHuntTemplates();
             loadNetworkMaps();
             initializeTheme();
+            checkActiveHunts();
+
+            // Restore current hunt ID from localStorage
+            currentHuntId = localStorage.getItem('currentHuntId') || null;
 
             // Setup form handler
             document.getElementById('hunt-form').addEventListener('submit', startHunt);
@@ -1319,6 +1323,35 @@
                 addLog('Disconnected from server. Reconnecting...', 'warning');
                 setTimeout(connectWebSocket, 3000);
             };
+        }
+
+        async function checkActiveHunts() {
+            try {
+                const response = await fetch('/api/hunts/active');
+                const active = await response.json();
+
+                if (active.length > 0) {
+                    const hunt = active[0];
+                    currentHuntId = hunt.hunt_id;
+                    localStorage.setItem('currentHuntId', hunt.hunt_id);
+
+                    // Show progress container and restore last known state
+                    document.getElementById('progress').classList.add('active');
+
+                    if (hunt.last_progress) {
+                        handleProgress(hunt.last_progress);
+                    } else {
+                        document.getElementById('progress-message').textContent =
+                            `Hunt ${hunt.hunt_id} is running (${hunt.progress}%)...`;
+                        document.getElementById('progress-fill').style.width = `${hunt.progress}%`;
+                        document.getElementById('progress-fill').textContent = `${hunt.progress}%`;
+                    }
+
+                    addLog(`Reconnected to active hunt: ${hunt.hunt_id}`, 'info');
+                }
+            } catch (error) {
+                console.error('Error checking active hunts:', error);
+            }
         }
 
         async function loadStats() {
@@ -1672,6 +1705,7 @@
 
                 const data = await response.json();
                 currentHuntId = data.hunt_id;
+                localStorage.setItem('currentHuntId', currentHuntId);
 
                 // Show progress
                 document.getElementById('progress').classList.add('active');
@@ -1784,6 +1818,8 @@
 
             if (data.stage === 'complete') {
                 progressTitle.textContent = 'Hunt Complete!';
+                currentHuntId = null;
+                localStorage.removeItem('currentHuntId');
                 setTimeout(() => {
                     document.getElementById('progress').classList.remove('active');
                     collectionDetail.style.display = 'none';
@@ -1796,6 +1832,8 @@
                     viewHuntDetails(data.hunt_id);
                 }, 2000);
             } else if (data.stage === 'error') {
+                currentHuntId = null;
+                localStorage.removeItem('currentHuntId');
                 setTimeout(() => {
                     document.getElementById('progress').classList.remove('active');
                     collectionDetail.style.display = 'none';
