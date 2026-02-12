@@ -2274,6 +2274,7 @@
                                             <td style="padding:4px 8px;">IP Address</td>
                                             <td style="padding:4px 8px;">Name</td>
                                             ${isDC ? '<td style="padding:4px 8px;">Domain</td>' : ''}
+                                            <td style="padding:4px 8px;">Vendor</td>
                                             <td style="padding:4px 8px;">Services</td>
                                             <td style="padding:4px 8px; text-align:right;">Connections</td>
                                         </tr>
@@ -2282,11 +2283,13 @@
                                                 ? d.netbios_names[0]
                                                 : (d.hostnames && d.hostnames.length > 0 ? d.hostnames[0] : '-');
                                             const domain = d.domain || '-';
+                                            const vendor = d.vendor || '-';
                                             return `
                                             <tr style="border-top:1px solid rgba(255,255,255,0.05);">
                                                 <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}</td>
                                                 <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
                                                 ${isDC ? '<td style="padding:4px 8px; opacity:0.8;">' + escapeHtml(domain) + '</td>' : ''}
+                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px;">${escapeHtml(vendor)}</td>
                                                 <td style="padding:4px 8px; opacity:0.7; font-size:11px;">${d.services.slice(0, 5).join(', ') || '-'}</td>
                                                 <td style="padding:4px 8px; text-align:right;">${d.connections.toLocaleString()}</td>
                                             </tr>`;

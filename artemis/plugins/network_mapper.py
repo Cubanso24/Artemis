@@ -24,6 +24,7 @@ class NetworkNode:
 
     __slots__ = (
         'ip', 'sensor_id', 'vlan', 'hostnames', 'netbios_names', 'domain',
+        'mac_address', 'vendor',
         'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
@@ -37,6 +38,8 @@ class NetworkNode:
         self.hostnames: Set[str] = set()
         self.netbios_names: Set[str] = set()  # NetBIOS/NTLM hostnames
         self.domain: str = ''  # AD domain or workgroup name
+        self.mac_address: str = ''  # MAC address (from DHCP/L2 logs)
+        self.vendor: str = ''  # Hardware vendor from OUI lookup
         self.services: Set[tuple] = set()  # (port, protocol) tuples
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
@@ -80,6 +83,8 @@ class NetworkNode:
             'hostnames': list(self.hostnames),
             'netbios_names': list(self.netbios_names),
             'domain': self.domain,
+            'mac_address': self.mac_address,
+            'vendor': self.vendor,
             'services': [f"{port}/{proto}" for port, proto in self.services],
             'first_seen': self.first_seen.isoformat(),
             'last_seen': self.last_seen.isoformat(),
@@ -192,6 +197,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.hostnames = set(node_data.get('hostnames', []))
         node.netbios_names = set(node_data.get('netbios_names', []))
         node.domain = node_data.get('domain', '')
+        node.mac_address = node_data.get('mac_address', '')
+        node.vendor = node_data.get('vendor', '')
         node.services = set()
         for s in node_data.get('services', []):
             parts = s.split('/')
@@ -461,6 +468,100 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # Device profiling
     # ------------------------------------------------------------------
 
+    # OUI (Organizationally Unique Identifier) lookup table.
+    # Maps the first 3 octets of a MAC address to the hardware vendor.
+    # Covers major enterprise, networking, virtualization, and IoT vendors.
+    OUI_TABLE = {
+        # Virtualization
+        '00:50:56': 'VMware', '00:0C:29': 'VMware', '00:05:69': 'VMware',
+        '00:1C:14': 'VMware', '00:15:5D': 'Microsoft Hyper-V',
+        '52:54:00': 'QEMU/KVM', '00:16:3E': 'Xen',
+        '08:00:27': 'VirtualBox',
+        # Networking equipment
+        '00:1A:A1': 'Cisco', '00:1B:0D': 'Cisco', '00:1E:BD': 'Cisco',
+        '00:22:55': 'Cisco', '00:24:50': 'Cisco', '00:26:0B': 'Cisco',
+        '00:1D:A2': 'Cisco', '00:0D:ED': 'Cisco', 'C0:62:6B': 'Cisco',
+        '68:86:A7': 'Cisco', '2C:33:11': 'Cisco', 'F4:CF:E2': 'Cisco',
+        '5C:FC:66': 'Cisco', '00:1C:0F': 'Cisco',
+        '00:04:96': 'Juniper', '00:05:85': 'Juniper', '00:1F:12': 'Juniper',
+        '28:C0:DA': 'Juniper', '40:B4:F0': 'Juniper', '84:B5:9C': 'Juniper',
+        '2C:6B:F5': 'Juniper', '54:E0:32': 'Juniper',
+        '00:09:0F': 'Fortinet', '00:60:6E': 'Fortinet', '70:4C:A5': 'Fortinet',
+        '08:5B:0E': 'Fortinet', 'E8:1C:BA': 'Fortinet',
+        '00:1A:8C': 'Palo Alto', '00:86:9C': 'Palo Alto', 'B4:0C:25': 'Palo Alto',
+        '00:0B:86': 'Aruba', '00:24:6C': 'Aruba', '20:4C:03': 'Aruba',
+        '6C:F3:7F': 'Aruba', '94:B4:0F': 'Aruba', 'D8:C7:C8': 'Aruba',
+        '00:12:F2': 'Brocade', '00:05:33': 'Brocade', '00:27:F8': 'Brocade',
+        '00:E0:52': 'Brocade',
+        'B4:FB:E4': 'Ubiquiti', '00:27:22': 'Ubiquiti', '24:A4:3C': 'Ubiquiti',
+        '68:72:51': 'Ubiquiti', 'F0:9F:C2': 'Ubiquiti', 'AC:8B:A9': 'Ubiquiti',
+        '74:AC:B9': 'Ubiquiti', '78:8A:20': 'Ubiquiti', 'FC:EC:DA': 'Ubiquiti',
+        '00:18:0A': 'Meraki', '00:18:74': 'Meraki', '0C:8D:DB': 'Meraki',
+        '34:56:FE': 'Meraki', '68:3A:1E': 'Meraki', 'E0:55:3D': 'Meraki',
+        '00:04:0B': 'CheckPoint', '00:1C:7F': 'CheckPoint',
+        # Server / enterprise
+        '00:25:90': 'SuperMicro', '00:25:B5': 'SuperMicro',
+        '0C:C4:7A': 'SuperMicro', 'AC:1F:6B': 'SuperMicro',
+        '00:14:5E': 'IBM', '00:1A:64': 'IBM', '00:21:5E': 'IBM',
+        '00:10:18': 'Broadcom', '98:03:9B': 'Broadcom',
+        '00:17:A4': 'HP/HPE', '00:1C:C4': 'HP/HPE', '00:22:64': 'HP/HPE',
+        '00:25:B3': 'HP/HPE', '3C:D9:2B': 'HP/HPE', '48:0F:CF': 'HP/HPE',
+        '94:18:82': 'HP/HPE', 'A0:B3:CC': 'HP/HPE', 'A4:5D:36': 'HP/HPE',
+        '14:02:EC': 'HP/HPE', '00:1E:0B': 'HP/HPE',
+        '00:1E:C9': 'Dell', '14:18:77': 'Dell', '18:A9:9B': 'Dell',
+        '24:6E:96': 'Dell', '34:17:EB': 'Dell', 'B0:83:FE': 'Dell',
+        'F0:1F:AF': 'Dell', 'F4:8E:38': 'Dell', '00:14:22': 'Dell',
+        '70:B5:E8': 'Dell', '4C:76:25': 'Dell',
+        '08:94:EF': 'Lenovo', '54:AB:3A': 'Lenovo', '98:FA:9B': 'Lenovo',
+        'E8:2A:44': 'Lenovo', '00:06:1B': 'Lenovo',
+        # Endpoints / consumer
+        '00:03:93': 'Apple', '00:0A:27': 'Apple', '00:0A:95': 'Apple',
+        '00:1B:63': 'Apple', '00:1E:C2': 'Apple', '00:25:BC': 'Apple',
+        '14:10:9F': 'Apple', '20:C9:D0': 'Apple', '3C:15:C2': 'Apple',
+        '44:2A:60': 'Apple', '54:26:96': 'Apple', '60:03:08': 'Apple',
+        '70:56:81': 'Apple', '78:31:C1': 'Apple', '80:E6:50': 'Apple',
+        '84:FC:FE': 'Apple', '8C:85:90': 'Apple', 'A4:B1:97': 'Apple',
+        'A8:66:7F': 'Apple', 'AC:BC:32': 'Apple', 'B8:8D:12': 'Apple',
+        'BC:52:B7': 'Apple', 'C8:69:CD': 'Apple', 'D8:30:62': 'Apple',
+        'F0:B4:79': 'Apple', 'F4:5C:89': 'Apple',
+        'B4:2E:99': 'Intel', '00:1B:21': 'Intel', '00:1E:64': 'Intel',
+        '00:1F:3B': 'Intel', '3C:97:0E': 'Intel', '48:51:B7': 'Intel',
+        '68:05:CA': 'Intel', '8C:EC:4B': 'Intel', 'A4:4C:C8': 'Intel',
+        '60:36:DD': 'Intel',
+        '00:50:F2': 'Microsoft', '28:18:78': 'Microsoft',
+        '7C:1E:52': 'Microsoft', '00:17:FA': 'Microsoft',
+        '60:45:BD': 'Microsoft', 'DC:B4:C4': 'Microsoft',
+        # IoT / embedded
+        'B8:27:EB': 'Raspberry Pi', 'DC:A6:32': 'Raspberry Pi',
+        'E4:5F:01': 'Raspberry Pi', '28:CD:C1': 'Raspberry Pi',
+        '2C:CF:67': 'Espressif (ESP)', '84:CC:A8': 'Espressif (ESP)',
+        'A4:CF:12': 'Espressif (ESP)', '24:6F:28': 'Espressif (ESP)',
+        '30:AE:A4': 'Espressif (ESP)', 'AC:67:B2': 'Espressif (ESP)',
+        '18:FE:34': 'Espressif (ESP)',
+        'B0:A7:B9': 'Hikvision', '44:19:B6': 'Hikvision',
+        '54:C4:15': 'Hikvision', 'C0:56:E3': 'Hikvision',
+        '9C:8E:CD': 'Dahua', '3C:EF:8C': 'Dahua',
+        '00:17:C8': 'Samsung', '00:21:19': 'Samsung',
+        '00:26:37': 'Samsung', '08:37:3D': 'Samsung',
+        '14:49:E0': 'Samsung', '54:92:BE': 'Samsung',
+        '78:52:1A': 'Samsung', 'A8:06:00': 'Samsung',
+        '88:32:9B': 'Samsung', 'C0:97:27': 'Samsung',
+        # Printers
+        '00:00:48': 'Epson', '00:1B:A9': 'Brother', '00:1E:8F': 'Canon',
+        '00:15:99': 'Xerox', '00:00:AA': 'Xerox', '00:17:08': 'Hewlett Packard',
+        '00:80:77': 'Brother', '30:CD:A7': 'Roku',
+        # Wireless / mobile
+        '00:1A:11': 'Google', 'F4:F5:D8': 'Google', '54:60:09': 'Google',
+        'A4:77:33': 'Google', '3C:5A:B4': 'Google',
+        '40:4E:36': 'HTC', '00:23:76': 'HTC',
+        '10:68:3F': 'LG', '00:1E:75': 'LG', '00:22:A9': 'LG',
+        '34:FC:EF': 'LG', '88:C9:D0': 'LG',
+        '00:BB:3A': 'Amazon', 'F0:27:2D': 'Amazon', '40:B4:CD': 'Amazon',
+        '74:75:48': 'Amazon', 'A0:02:DC': 'Amazon',
+        'FC:A6:67': 'Amazon', '44:65:0D': 'Amazon',
+        '68:54:FD': 'Amazon', 'B4:7C:9C': 'Amazon',
+    }
+
     # Port-to-device-type classification rules.
     # Checked in order; first match wins. Each entry:
     #   label, required_ports (need >= min_match), bonus_ports (raise confidence)
@@ -586,6 +687,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         return ''
 
+    @classmethod
+    def _lookup_oui(cls, mac: str) -> str:
+        """Look up hardware vendor from MAC address OUI prefix."""
+        if not mac or len(mac) < 8:
+            return ''
+        prefix = mac[:8].upper()
+        return cls.OUI_TABLE.get(prefix, '')
+
     @staticmethod
     def _device_label(device_type: str) -> str:
         """Get human-readable label for a device type."""
@@ -704,8 +813,19 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | where auth_count >= 3
         '''
 
-        # Run all four queries in parallel
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        # Query 5: DHCP logs — IP-to-MAC address mappings
+        dhcp_query = '''
+        search index=zeek_dhcp
+        | spath
+        | where isnotnull(assigned_addr) AND isnotnull(mac)
+        | stats latest(mac) as mac,
+                latest(host_name) as dhcp_hostname
+          by assigned_addr
+        | rename assigned_addr as ip
+        '''
+
+        # Run all five queries in parallel
+        with ThreadPoolExecutor(max_workers=5) as executor:
             server_future = executor.submit(
                 splunk_connector.query, server_query,
                 earliest_time=time_range, latest_time="now"
@@ -722,6 +842,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 splunk_connector.query, kerberos_query,
                 earliest_time=time_range, latest_time="now"
             )
+            dhcp_future = executor.submit(
+                splunk_connector.query, dhcp_query,
+                earliest_time=time_range, latest_time="now"
+            )
 
             server_results = server_future.result(timeout=600)
             client_results = client_future.result(timeout=600)
@@ -733,6 +857,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 kerberos_results = kerberos_future.result(timeout=600)
             except Exception:
                 kerberos_results = []  # Kerberos index may not exist
+            try:
+                dhcp_results = dhcp_future.result(timeout=600)
+            except Exception:
+                dhcp_results = []  # DHCP index may not exist
 
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
         kdc_ips: set = set()
@@ -781,12 +909,31 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if len(clients) >= 5
         }
 
+        # Enrich nodes with DHCP data (MAC address + OUI vendor lookup)
+        dhcp_enriched = 0
+        for row in dhcp_results:
+            ip = row.get('ip', '')
+            mac = row.get('mac', '')
+            dhcp_hostname = row.get('dhcp_hostname', '')
+            if not ip or not mac:
+                continue
+            # Normalize MAC to colon-separated uppercase
+            mac = mac.strip().upper().replace('-', ':')
+            for key, node in self.nodes.items():
+                if node.ip == ip:
+                    node.mac_address = mac
+                    node.vendor = self._lookup_oui(mac)
+                    if dhcp_hostname and dhcp_hostname != '-' and dhcp_hostname != 'null':
+                        node.hostnames.add(dhcp_hostname.lower())
+                    dhcp_enriched += 1
+
         logger.info(
             f"Device profiling: got {len(server_results)} server profiles, "
             f"{len(client_results)} client profiles, "
             f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments), "
             f"{len(kerberos_results)} Kerberos responders, "
-            f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers"
+            f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers, "
+            f"{len(dhcp_results)} DHCP leases ({dhcp_enriched} MAC enrichments)"
         )
 
         # Index server data by IP
@@ -1090,6 +1237,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'hostnames': hostnames,
                     'netbios_names': sorted(n.netbios_names)[:3],
                     'domain': n.domain,
+                    'mac_address': n.mac_address,
+                    'vendor': n.vendor,
                     'services': svcs,
                     'connections': n.total_connections,
                     'sensor_id': n.sensor_id,
