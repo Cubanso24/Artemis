@@ -1,0 +1,31 @@
+title: PowerShell Download Cradle
+id: 3b6ab547-3c30-4c2b-b294-5e472c7d8b58
+status: stable
+level: high
+description: Detects PowerShell download cradles commonly used to fetch and execute remote payloads
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+tags:
+    - attack.execution
+    - attack.t1059.001
+    - attack.command_and_control
+    - attack.t1105
+logsource:
+    category: ps_script
+    product: windows
+detection:
+    selection:
+        ScriptBlockText|contains:
+            - 'Invoke-WebRequest'
+            - 'IWR '
+            - 'wget '
+            - 'curl '
+            - 'Net.WebClient'
+            - 'DownloadString'
+            - 'DownloadFile'
+            - 'DownloadData'
+            - 'Invoke-RestMethod'
+            - 'Start-BitsTransfer'
+            - 'bitsadmin'
+    condition: selection

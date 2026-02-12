@@ -1,0 +1,23 @@
+title: Suspicious Encoded PowerShell Command
+id: f4bbd493-b796-416e-bbf2-121235348529
+status: stable
+level: high
+description: Detects PowerShell commands using encoded command parameters, commonly used by attackers to obfuscate malicious scripts
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+tags:
+    - attack.execution
+    - attack.t1059.001
+logsource:
+    category: ps_script
+    product: windows
+detection:
+    selection:
+        ScriptBlockText|contains:
+            - '-EncodedCommand'
+            - '-enc '
+            - 'FromBase64String'
+            - '[Convert]::FromBase64'
+            - 'encodedcommand'
+    condition: selection

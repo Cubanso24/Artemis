@@ -1,0 +1,24 @@
+title: Suspicious Scheduled Task Creation
+id: c3d4e5f6-a7b8-9012-cdef-123456789012
+status: stable
+level: high
+description: Detects creation of scheduled tasks via command line, a common persistence mechanism used by attackers
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1053/005/
+tags:
+    - attack.persistence
+    - attack.t1053.005
+    - attack.execution
+logsource:
+    category: taskscheduler
+    product: windows
+detection:
+    selection_event:
+        EventCode: '4698'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'schtasks'
+            - '/create'
+            - 'Register-ScheduledTask'
+    condition: selection_event or selection_cmdline

@@ -1,0 +1,38 @@
+title: Suspicious Process Spawned by Office Application
+id: 438025f9-5856-4663-83f7-52f878930c94
+status: stable
+level: high
+description: Detects suspicious child processes spawned by Microsoft Office applications, indicative of macro-based attacks
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1204/002/
+tags:
+    - attack.initial_access
+    - attack.t1566.001
+    - attack.execution
+    - attack.t1204.002
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '\WINWORD.EXE'
+            - '\EXCEL.EXE'
+            - '\POWERPNT.EXE'
+            - '\OUTLOOK.EXE'
+            - '\MSPUB.EXE'
+            - '\VISIO.EXE'
+    selection_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\certutil.exe'
+            - '\bitsadmin.exe'
+            - '\regsvr32.exe'
+            - '\rundll32.exe'
+    condition: selection_parent and selection_child

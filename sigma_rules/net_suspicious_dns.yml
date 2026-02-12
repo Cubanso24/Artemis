@@ -1,0 +1,29 @@
+title: DNS Query to Suspicious TLD
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: stable
+level: medium
+description: Detects DNS queries to top-level domains frequently abused for phishing, malware distribution, and C2 infrastructure
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+logsource:
+    category: dns_query
+    product: zeek
+detection:
+    selection:
+        domain|endswith:
+            - '.tk'
+            - '.ml'
+            - '.ga'
+            - '.cf'
+            - '.gq'
+            - '.top'
+            - '.xyz'
+            - '.buzz'
+            - '.surf'
+            - '.cyou'
+            - '.icu'
+    condition: selection

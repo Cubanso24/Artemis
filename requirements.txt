@@ -5,6 +5,7 @@ numpy>=1.20.0
 splunk-sdk>=1.7.0              # Splunk integration
 scapy>=2.5.0                   # PCAP analysis
 requests>=2.28.0               # HTTP requests for APIs
+pyyaml>=6.0                    # Sigma rule parsing
 
 # Web interface dependencies
 fastapi>=0.104.0               # Modern web framework

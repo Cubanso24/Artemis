@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Artemis Threat Hunting Platform</title>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg-primary: #1a1a2e;
@@ -747,6 +749,117 @@
         .tab:hover {
             background: var(--bg-tertiary);
         }
+
+        /* Sigma Rules */
+        .sigma-rule-item {
+            background: var(--bg-primary);
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 4px solid var(--accent-primary);
+        }
+
+        .sigma-rule-item.level-critical { border-left-color: #dc3545; }
+        .sigma-rule-item.level-high { border-left-color: #ff6b35; }
+        .sigma-rule-item.level-medium { border-left-color: #ffc107; }
+        .sigma-rule-item.level-low { border-left-color: #17a2b8; }
+        .sigma-rule-item.level-informational { border-left-color: #6c757d; }
+
+        .sigma-match-item {
+            background: var(--bg-primary);
+            padding: 15px;
+            margin-bottom: 12px;
+            border-radius: 5px;
+            border-left: 4px solid #dc3545;
+        }
+
+        .sigma-match-item.level-high { border-left-color: #ff6b35; }
+        .sigma-match-item.level-medium { border-left-color: #ffc107; }
+        .sigma-match-item.level-low { border-left-color: #17a2b8; }
+
+        .sigma-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-right: 6px;
+        }
+
+        .sigma-badge.critical { background: #dc3545; }
+        .sigma-badge.high { background: #ff6b35; }
+        .sigma-badge.medium { background: #ffc107; color: #000; }
+        .sigma-badge.low { background: #17a2b8; }
+        .sigma-badge.informational { background: #6c757d; }
+
+        .sigma-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            font-size: 11px;
+            margin: 2px;
+        }
+
+        .sample-event {
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            overflow-x: auto;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+
+        /* GeoIP Map */
+        #geoip-map {
+            width: 100%;
+            height: 500px;
+            border-radius: 10px;
+            border: 2px solid var(--border-color);
+            z-index: 1;
+        }
+
+        .country-bar {
+            display: flex;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .country-bar .bar-label {
+            width: 140px;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .country-bar .bar-fill {
+            height: 20px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 3px;
+            transition: width 0.3s;
+            min-width: 2px;
+        }
+
+        .country-bar .bar-count {
+            margin-left: 8px;
+            font-size: 12px;
+            opacity: 0.8;
+            flex-shrink: 0;
+        }
+
+        .geoip-top-talker {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: var(--bg-primary);
+            border-radius: 5px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
     </style>
 </head>
 <body>
@@ -834,6 +947,8 @@
             <button class="tab active" onclick="showTab('dashboard')">Dashboard</button>
             <button class="tab" onclick="showTab('new-hunt')">New Hunt</button>
             <button class="tab" onclick="showTab('history')">Hunt History</button>
+            <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
+            <button class="tab" onclick="showTab('geoip-tab')">GeoIP Map</button>
             <button class="tab" onclick="showTab('network-graph-tab')">Network Graph</button>
             <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
@@ -965,6 +1080,75 @@
             </div>
         </div>
 
+        <!-- Sigma Rules Tab -->
+        <div id="sigma-tab" class="tab-content">
+            <div class="card">
+                <h2>Sigma Detection Rules</h2>
+                <p style="margin-bottom:15px; opacity:0.8;">
+                    Sigma rules are automatically matched against collected hunt data. Place <code>.yml</code> rule files in the <code>sigma_rules/</code> directory.
+                </p>
+
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                    <button class="btn" onclick="loadSigmaRules()">Refresh Rules</button>
+                    <button class="btn btn-secondary" onclick="reloadSigmaRules()">Reload from Disk</button>
+                    <button class="btn btn-secondary" onclick="loadSigmaResults()">View Latest Results</button>
+                </div>
+
+                <div id="sigma-stats" class="stats" style="margin-bottom:20px;">
+                    <div class="stat-card" style="background: var(--bg-tertiary);">
+                        <h3 id="sigma-stat-rules">0</h3>
+                        <p>Loaded Rules</p>
+                    </div>
+                    <div class="stat-card" style="background: var(--bg-tertiary);">
+                        <h3 id="sigma-stat-matches">0</h3>
+                        <p>Last Scan Matches</p>
+                    </div>
+                    <div class="stat-card" style="background: var(--bg-tertiary);">
+                        <h3 id="sigma-stat-critical">0</h3>
+                        <p>Critical/High Hits</p>
+                    </div>
+                </div>
+
+                <h3 style="margin-bottom:10px;">Loaded Rules</h3>
+                <div id="sigma-rules-list">
+                    <p style="opacity:0.7;">Enable the Sigma Engine plugin to load rules.</p>
+                </div>
+            </div>
+
+            <div id="sigma-results-card" class="card" style="display:none;">
+                <h2>Sigma Scan Results</h2>
+                <p id="sigma-results-meta" style="margin-bottom:15px; opacity:0.8;"></p>
+                <div id="sigma-results-list"></div>
+            </div>
+        </div>
+
+        <!-- GeoIP Map Tab -->
+        <div id="geoip-tab" class="tab-content">
+            <div class="card">
+                <h2>Geographic Connection Map</h2>
+                <p style="margin-bottom:15px; opacity:0.8;">
+                    External IP addresses from hunt data mapped to geographic locations. Enable the GeoIP Mapper plugin and run a hunt to populate.
+                </p>
+
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                    <button class="btn" onclick="loadGeoIPMap()">Refresh Map</button>
+                </div>
+
+                <div id="geoip-map"></div>
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px;">
+                    <div>
+                        <h3 style="margin-bottom:10px;">Connections by Country</h3>
+                        <div id="geoip-country-chart"></div>
+                    </div>
+                    <div>
+                        <h3 style="margin-bottom:10px;">Top External Talkers</h3>
+                        <div id="geoip-top-talkers"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Network Graph Tab -->
         <div id="network-graph-tab" class="tab-content">
             <div class="card">
@@ -1055,6 +1239,7 @@
         let ws = null;
         let currentHuntId = null;
         let networkGraph = null;
+        let geoipMap = null;
         let allHunts = [];  // Store all hunts for filtering
 
         // Initialize
@@ -1119,9 +1304,13 @@
                 case 'h':
                     showTabByName('history');
                     break;
+                case 's':
+                    showTabByName('sigma-tab');
+                    loadSigmaRules();
+                    break;
                 case 'g':
-                    showTabByName('network-graph-tab');
-                    loadNetworkGraph();
+                    showTabByName('geoip-tab');
+                    loadGeoIPMap();
                     break;
                 case 'm':
                     showTabByName('network-maps-tab');
@@ -2052,6 +2241,286 @@
                 console.error('Error resetting map:', error);
                 addLog(`Error resetting map: ${error.message}`, 'error');
             }
+        }
+
+        // ========================================
+        // Sigma Rule Engine
+        // ========================================
+
+        async function loadSigmaRules() {
+            try {
+                const response = await fetch('/api/sigma/rules');
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('sigma-rules-list').innerHTML =
+                        `<p style="opacity:0.7;">${data.error}. Enable it in the Plugins tab.</p>`;
+                    return;
+                }
+
+                const rules = Array.isArray(data) ? data : [];
+                document.getElementById('sigma-stat-rules').textContent = rules.length;
+
+                const container = document.getElementById('sigma-rules-list');
+                container.innerHTML = '';
+
+                if (rules.length === 0) {
+                    container.innerHTML = '<p style="opacity:0.7;">No rules loaded. Place .yml files in the sigma_rules/ directory and reload.</p>';
+                    return;
+                }
+
+                rules.forEach(rule => {
+                    const div = document.createElement('div');
+                    div.className = `sigma-rule-item level-${rule.level}`;
+                    const techniques = (rule.mitre_techniques || []).map(t =>
+                        `<span class="sigma-tag">${t}</span>`
+                    ).join('');
+                    const tactics = (rule.mitre_tactics || []).map(t =>
+                        `<span class="sigma-tag">${t}</span>`
+                    ).join('');
+
+                    div.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <strong>${rule.title}</strong>
+                            <span class="sigma-badge ${rule.level}">${rule.level}</span>
+                        </div>
+                        <p style="opacity:0.8; font-size:13px; margin-bottom:6px;">${rule.description || ''}</p>
+                        <div style="font-size:12px; opacity:0.7;">
+                            Category: <strong>${rule.category}</strong> |
+                            Data: <strong>${rule.data_type}</strong> |
+                            Author: ${rule.author || 'Unknown'}
+                        </div>
+                        ${techniques || tactics ? `<div style="margin-top:6px;">${tactics}${techniques}</div>` : ''}
+                    `;
+                    container.appendChild(div);
+                });
+
+                // Also load results
+                loadSigmaResults();
+
+            } catch (error) {
+                console.error('Error loading Sigma rules:', error);
+            }
+        }
+
+        async function loadSigmaResults() {
+            try {
+                const response = await fetch('/api/sigma/results');
+                const data = await response.json();
+
+                if (data.error) return;
+
+                const matches = data.matches || [];
+                const totalMatches = data.total_matches || 0;
+
+                document.getElementById('sigma-stat-matches').textContent = totalMatches;
+
+                const critHigh = matches.filter(m => m.level === 'critical' || m.level === 'high').length;
+                document.getElementById('sigma-stat-critical').textContent = critHigh;
+
+                const card = document.getElementById('sigma-results-card');
+                const list = document.getElementById('sigma-results-list');
+                const meta = document.getElementById('sigma-results-meta');
+
+                if (matches.length === 0) {
+                    card.style.display = 'none';
+                    return;
+                }
+
+                card.style.display = 'block';
+                meta.textContent = `Scan: ${data.timestamp ? new Date(data.timestamp).toLocaleString() : 'Unknown'} | ${data.rules_checked || 0}/${data.total_rules || 0} rules checked | ${totalMatches} total matches`;
+
+                list.innerHTML = '';
+                matches.forEach(match => {
+                    const div = document.createElement('div');
+                    div.className = `sigma-match-item level-${match.level}`;
+
+                    const techniques = (match.mitre_techniques || []).map(t =>
+                        `<span class="sigma-tag">${t}</span>`
+                    ).join('');
+
+                    const sampleHtml = (match.sample_events || []).slice(0, 2).map(ev =>
+                        `<div class="sample-event">${escapeHtml(JSON.stringify(ev, null, 2).substring(0, 500))}</div>`
+                    ).join('');
+
+                    div.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <strong>${match.rule_title}</strong>
+                            <div>
+                                <span class="sigma-badge ${match.level}">${match.level}</span>
+                                <span style="font-weight:700; margin-left:8px;">${match.match_count} hit${match.match_count > 1 ? 's' : ''}</span>
+                            </div>
+                        </div>
+                        <p style="opacity:0.8; font-size:13px;">${match.rule_description || ''}</p>
+                        <div style="font-size:12px; opacity:0.7; margin-top:4px;">
+                            Data: <strong>${match.data_type}</strong> ${techniques}
+                        </div>
+                        ${sampleHtml ? `<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12px;">Sample events</summary>${sampleHtml}</details>` : ''}
+                    `;
+                    list.appendChild(div);
+                });
+
+            } catch (error) {
+                console.error('Error loading Sigma results:', error);
+            }
+        }
+
+        async function reloadSigmaRules() {
+            try {
+                const response = await fetch('/api/sigma/reload', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Sigma rules reloaded: ${result.rules_count} rules`, 'info');
+                loadSigmaRules();
+
+            } catch (error) {
+                console.error('Error reloading Sigma rules:', error);
+                addLog(`Error reloading Sigma rules: ${error.message}`, 'error');
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ========================================
+        // GeoIP Map
+        // ========================================
+
+        async function loadGeoIPMap() {
+            try {
+                const response = await fetch('/api/geoip/map');
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('geoip-map').innerHTML =
+                        `<p style="text-align:center; padding:50px;">${data.error}. Enable it in the Plugins tab.</p>`;
+                    return;
+                }
+
+                renderGeoIPMap(data);
+                renderCountryChart(data.country_summary || {});
+                renderTopTalkers(data.top_talkers || []);
+
+                addLog(`GeoIP: Loaded ${(data.locations || []).length} locations across ${Object.keys(data.country_summary || {}).length} countries`, 'info');
+
+            } catch (error) {
+                console.error('Error loading GeoIP map:', error);
+                addLog(`Error loading GeoIP map: ${error.message}`, 'error');
+            }
+        }
+
+        function renderGeoIPMap(data) {
+            const container = document.getElementById('geoip-map');
+            const locations = data.locations || [];
+
+            if (locations.length === 0) {
+                container.innerHTML = '<p style="text-align:center; padding:50px;">No external IP data yet. Run a hunt with the GeoIP Mapper plugin enabled.</p>';
+                return;
+            }
+
+            // Initialize or reset Leaflet map
+            if (geoipMap) {
+                geoipMap.remove();
+            }
+
+            geoipMap = L.map('geoip-map', {
+                center: [20, 0],
+                zoom: 2,
+                minZoom: 2,
+                maxZoom: 12
+            });
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; OSM &copy; CARTO',
+                maxZoom: 19
+            }).addTo(geoipMap);
+
+            // Find max connections for scaling
+            const maxConn = Math.max(...locations.map(l => l.connection_count), 1);
+
+            locations.forEach(loc => {
+                if (!loc.lat || !loc.lon) return;
+
+                // Scale radius by connection count (4-20px)
+                const radius = Math.max(4, Math.min(20, (loc.connection_count / maxConn) * 20));
+
+                // Color by connection density
+                let color = '#667eea';
+                if (loc.connection_count > maxConn * 0.5) color = '#dc3545';
+                else if (loc.connection_count > maxConn * 0.1) color = '#ff6b35';
+                else if (loc.connection_count > maxConn * 0.01) color = '#ffc107';
+
+                const marker = L.circleMarker([loc.lat, loc.lon], {
+                    radius: radius,
+                    fillColor: color,
+                    color: '#fff',
+                    weight: 1,
+                    opacity: 0.9,
+                    fillOpacity: 0.7
+                }).addTo(geoipMap);
+
+                const services = (loc.services || []).slice(0, 10).join(', ');
+                marker.bindPopup(
+                    `<strong>${loc.ip}</strong><br>` +
+                    `${loc.city ? loc.city + ', ' : ''}${loc.country}<br>` +
+                    `Connections: <strong>${loc.connection_count.toLocaleString()}</strong><br>` +
+                    `${loc.org ? 'Org: ' + loc.org + '<br>' : ''}` +
+                    `${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}` +
+                    `${services ? 'Ports: ' + services : ''}`
+                );
+            });
+        }
+
+        function renderCountryChart(countrySummary) {
+            const container = document.getElementById('geoip-country-chart');
+            const entries = Object.entries(countrySummary).sort((a, b) => b[1] - a[1]).slice(0, 15);
+
+            if (entries.length === 0) {
+                container.innerHTML = '<p style="opacity:0.7;">No data</p>';
+                return;
+            }
+
+            const maxCount = entries[0][1];
+            container.innerHTML = entries.map(([country, count]) => {
+                const pct = (count / maxCount * 100).toFixed(0);
+                return `
+                    <div class="country-bar">
+                        <span class="bar-label">${country}</span>
+                        <div class="bar-fill" style="width:${pct}%; flex:1; max-width:calc(100% - 200px);"></div>
+                        <span class="bar-count">${count.toLocaleString()}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderTopTalkers(talkers) {
+            const container = document.getElementById('geoip-top-talkers');
+
+            if (talkers.length === 0) {
+                container.innerHTML = '<p style="opacity:0.7;">No data</p>';
+                return;
+            }
+
+            container.innerHTML = talkers.slice(0, 15).map(t => `
+                <div class="geoip-top-talker">
+                    <span>
+                        <strong>${t.ip}</strong>
+                        <span style="opacity:0.7; margin-left:8px;">${t.city ? t.city + ', ' : ''}${t.country}</span>
+                    </span>
+                    <span>
+                        <strong>${t.connections.toLocaleString()}</strong> conn
+                        ${t.org ? `<span style="opacity:0.6; margin-left:6px;">${t.org}</span>` : ''}
+                    </span>
+                </div>
+            `).join('');
         }
 
         function addLog(message, type = 'info') {

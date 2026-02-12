@@ -643,7 +643,7 @@ class HuntManager:
                     'findings': agent_output.get('findings', [])
                 }
 
-            # Update network mapper plugin if enabled
+            # Run enabled plugins against collected data
             network_mapper = plugin_manager.get_plugin('network_mapper')
             if network_mapper:
                 try:
@@ -653,6 +653,25 @@ class HuntManager:
                     )
                 except Exception as e:
                     logger.warning(f"Network mapper plugin failed: {e}")
+
+            sigma_engine = plugin_manager.get_plugin('sigma_engine')
+            if sigma_engine:
+                try:
+                    sigma_result = sigma_engine.execute(**hunting_data)
+                    if sigma_result.get('total_matches', 0) > 0:
+                        logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_result.get('matches', []))} rules")
+                except Exception as e:
+                    logger.warning(f"Sigma engine plugin failed: {e}")
+
+            geoip_mapper = plugin_manager.get_plugin('geoip_mapper')
+            if geoip_mapper:
+                try:
+                    geoip_mapper.execute(
+                        network_connections=hunting_data.get('network_connections', []),
+                        dns_queries=hunting_data.get('dns_queries', [])
+                    )
+                except Exception as e:
+                    logger.warning(f"GeoIP mapper plugin failed: {e}")
 
             # Save to database
             self.db.save_hunt(hunt_id, hunt_data)
@@ -716,7 +735,11 @@ plugin_manager = PluginManager()
 
 # Register built-in plugins
 from artemis.plugins.network_mapper import NetworkMapperPlugin
+from artemis.plugins.sigma_engine import SigmaEnginePlugin
+from artemis.plugins.geoip_mapper import GeoIPMapperPlugin
 plugin_manager.register_plugin('network_mapper', NetworkMapperPlugin)
+plugin_manager.register_plugin('sigma_engine', SigmaEnginePlugin)
+plugin_manager.register_plugin('geoip_mapper', GeoIPMapperPlugin)
 
 # WebSocket connections
 active_connections: List[WebSocket] = []
@@ -1000,6 +1023,60 @@ async def get_network_summary(sensor_id: Optional[str] = None):
         return plugin.get_summary(sensor_id=sensor_id)
     except Exception as e:
         return {'error': str(e)}, 500
+
+
+# ============================================================================
+# Sigma Engine Endpoints
+# ============================================================================
+
+@app.get("/api/sigma/rules")
+async def get_sigma_rules():
+    """List loaded Sigma rules."""
+    plugin = plugin_manager.get_plugin('sigma_engine')
+    if not plugin:
+        return {'error': 'Sigma engine plugin not enabled'}
+    return plugin.get_rules()
+
+
+@app.get("/api/sigma/results")
+async def get_sigma_results():
+    """Get latest Sigma scan results."""
+    plugin = plugin_manager.get_plugin('sigma_engine')
+    if not plugin:
+        return {'error': 'Sigma engine plugin not enabled'}
+    return plugin.get_last_results()
+
+
+@app.post("/api/sigma/reload")
+async def reload_sigma_rules():
+    """Reload Sigma rules from disk."""
+    plugin = plugin_manager.get_plugin('sigma_engine')
+    if not plugin:
+        return {'error': 'Sigma engine plugin not enabled'}
+    plugin.reload_rules()
+    return {'status': 'reloaded', 'rules_count': len(plugin.rules)}
+
+
+# ============================================================================
+# GeoIP Mapper Endpoints
+# ============================================================================
+
+@app.get("/api/geoip/map")
+async def get_geoip_map():
+    """Get GeoIP map data for visualization."""
+    plugin = plugin_manager.get_plugin('geoip_mapper')
+    if not plugin:
+        return {'error': 'GeoIP mapper plugin not enabled'}
+    return plugin.get_map_data()
+
+
+@app.get("/api/geoip/stats")
+async def get_geoip_stats():
+    """Get GeoIP cache statistics."""
+    plugin = plugin_manager.get_plugin('geoip_mapper')
+    if not plugin:
+        return {'error': 'GeoIP mapper plugin not enabled'}
+    return plugin.get_cache_stats()
 
 
 @app.websocket("/ws")

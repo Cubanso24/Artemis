@@ -1,0 +1,22 @@
+title: Failed Authentication Brute Force Indicators
+id: b2c3d4e5-f6a7-8901-bcde-f12345678901
+status: stable
+level: high
+description: Detects authentication failure events (EventCode 4625) which may indicate brute force attempts when occurring in high volume
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1110/
+tags:
+    - attack.credential_access
+    - attack.t1110.001
+    - attack.t1110.003
+logsource:
+    category: authentication
+    product: windows
+detection:
+    selection:
+        EventCode: '4625'
+    filter:
+        SubStatus:
+            - '0xC0000064'
+    condition: selection and not filter

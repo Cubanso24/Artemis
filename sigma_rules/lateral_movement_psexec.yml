@@ -1,0 +1,29 @@
+title: PsExec Lateral Movement Indicators
+id: e5f6a7b8-c9d0-1234-efab-345678901234
+status: stable
+level: high
+description: Detects indicators of PsExec or similar remote execution tools used for lateral movement
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1570/
+tags:
+    - attack.lateral_movement
+    - attack.t1570
+    - attack.execution
+    - attack.t1569.002
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_psexec:
+        Image|endswith:
+            - '\PsExec.exe'
+            - '\PsExec64.exe'
+            - '\PSEXESVC.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'psexec'
+            - '\\\\*\ADMIN$'
+            - '\\\\*\C$'
+            - 'winexe'
+    condition: selection_psexec or selection_cmdline

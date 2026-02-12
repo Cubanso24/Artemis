@@ -1,0 +1,24 @@
+title: Registry Run Key Modification
+id: d4e5f6a7-b8c9-0123-defa-234567890123
+status: stable
+level: high
+description: Detects modifications to registry Run/RunOnce keys, a classic persistence technique
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1547/001/
+tags:
+    - attack.persistence
+    - attack.t1547.001
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains:
+            - '\CurrentVersion\Run'
+            - '\CurrentVersion\RunOnce'
+            - '\CurrentVersion\RunServices'
+            - '\CurrentVersion\Policies\Explorer\Run'
+            - '\CurrentVersion\Explorer\Shell Folders'
+            - '\CurrentVersion\Explorer\User Shell Folders'
+    condition: selection

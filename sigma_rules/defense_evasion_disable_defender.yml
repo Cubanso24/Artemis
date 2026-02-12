@@ -1,0 +1,27 @@
+title: Windows Defender Tampering
+id: f6a7b8c9-d0e1-2345-fabc-456789012345
+status: stable
+level: critical
+description: Detects attempts to disable or tamper with Windows Defender via PowerShell or registry modifications
+author: Artemis
+references:
+    - https://attack.mitre.org/techniques/T1562/001/
+tags:
+    - attack.defense_evasion
+    - attack.t1562.001
+logsource:
+    category: ps_script
+    product: windows
+detection:
+    selection:
+        ScriptBlockText|contains:
+            - 'Set-MpPreference'
+            - 'DisableRealtimeMonitoring'
+            - 'DisableBehaviorMonitoring'
+            - 'DisableIOAVProtection'
+            - 'DisableScriptScanning'
+            - 'Add-MpPreference'
+            - 'ExclusionPath'
+            - 'ExclusionExtension'
+            - 'ExclusionProcess'
+    condition: selection
