@@ -654,6 +654,8 @@ class HuntManager:
             # Run enabled plugins against collected data
             network_mapper = plugin_manager.get_plugin('network_mapper')
             if network_mapper:
+                if progress_callback:
+                    await progress_callback({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
                 try:
                     network_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
@@ -664,6 +666,8 @@ class HuntManager:
 
             sigma_engine = plugin_manager.get_plugin('sigma_engine')
             if sigma_engine:
+                if progress_callback:
+                    await progress_callback({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
                 try:
                     sigma_result = sigma_engine.execute(**hunting_data)
                     if sigma_result.get('total_matches', 0) > 0:
@@ -673,6 +677,8 @@ class HuntManager:
 
             geoip_mapper = plugin_manager.get_plugin('geoip_mapper')
             if geoip_mapper:
+                if progress_callback:
+                    await progress_callback({'stage': 'finalize', 'message': 'Running GeoIP mapper...', 'progress': 96})
                 try:
                     geoip_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
@@ -680,6 +686,9 @@ class HuntManager:
                     )
                 except Exception as e:
                     logger.warning(f"GeoIP mapper plugin failed: {e}")
+
+            if progress_callback:
+                await progress_callback({'stage': 'finalize', 'message': 'Saving hunt results...', 'progress': 98})
 
             # Save to database
             self.db.save_hunt(hunt_id, hunt_data)
