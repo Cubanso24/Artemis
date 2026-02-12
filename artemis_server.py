@@ -652,15 +652,19 @@ class HuntManager:
                 }
 
             # Run enabled plugins against collected data
+            # Plugins run in executor to avoid blocking the event loop
+            # (which would prevent WebSocket progress messages from being sent)
+            loop = asyncio.get_event_loop()
+
             network_mapper = plugin_manager.get_plugin('network_mapper')
             if network_mapper:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
                 try:
-                    network_mapper.execute(
+                    await loop.run_in_executor(self.executor, lambda: network_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
                         dns_queries=hunting_data.get('dns_queries', [])
-                    )
+                    ))
                 except Exception as e:
                     logger.warning(f"Network mapper plugin failed: {e}")
 
@@ -669,7 +673,7 @@ class HuntManager:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
                 try:
-                    sigma_result = sigma_engine.execute(**hunting_data)
+                    sigma_result = await loop.run_in_executor(self.executor, lambda: sigma_engine.execute(**hunting_data))
                     if sigma_result.get('total_matches', 0) > 0:
                         logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_result.get('matches', []))} rules")
                 except Exception as e:
@@ -680,10 +684,10 @@ class HuntManager:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running GeoIP mapper...', 'progress': 96})
                 try:
-                    geoip_mapper.execute(
+                    await loop.run_in_executor(self.executor, lambda: geoip_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
                         dns_queries=hunting_data.get('dns_queries', [])
-                    )
+                    ))
                 except Exception as e:
                     logger.warning(f"GeoIP mapper plugin failed: {e}")
 
