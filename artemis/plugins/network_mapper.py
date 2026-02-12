@@ -891,6 +891,41 @@ class NetworkMapperPlugin(ArtemisPlugin):
             reverse=True,
         )[:10]
 
+        # Build device inventory grouped by type
+        device_inventory: Dict[str, list] = defaultdict(list)
+        for n in nodes:
+            if n.device_type and n.is_internal:
+                svcs = sorted(f"{p}/{pr}" for p, pr in list(n.services)[:8])
+                hostnames = sorted(n.hostnames)[:3]
+                device_inventory[n.device_type].append({
+                    'ip': n.ip,
+                    'hostnames': hostnames,
+                    'services': svcs,
+                    'connections': n.total_connections,
+                    'sensor_id': n.sensor_id,
+                })
+
+        # Sort each category by connection count and cap at 25
+        for dtype in device_inventory:
+            device_inventory[dtype].sort(key=lambda x: x['connections'], reverse=True)
+            device_inventory[dtype] = device_inventory[dtype][:25]
+
+        # Ordered categories relevant to SOC
+        soc_order = [
+            'domain_controller', 'dns_server', 'gateway', 'vpn_gateway',
+            'web_server', 'database_server', 'file_server', 'mail_server',
+            'dhcp_server', 'ssh_server', 'syslog_server', 'monitoring',
+            'print_server', 'workstation', 'iot_device',
+        ]
+        device_inventory_ordered = {}
+        for dtype in soc_order:
+            if dtype in device_inventory:
+                device_inventory_ordered[dtype] = device_inventory[dtype]
+        # Add any types not in the predefined order
+        for dtype in device_inventory:
+            if dtype not in device_inventory_ordered:
+                device_inventory_ordered[dtype] = device_inventory[dtype]
+
         summary = {
             '_key': cache_key,
             'total_nodes': len(nodes),
@@ -909,6 +944,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 }
                 for ip, sid, v, c in top_talkers
             ],
+            'device_inventory': device_inventory_ordered,
+            'device_counts': {
+                dtype: len(items) for dtype, items in device_inventory_ordered.items()
+            },
+            'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
+            'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
         }
 
         self._stats_cache = summary

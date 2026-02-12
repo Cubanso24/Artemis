@@ -1902,6 +1902,7 @@
                     smooth: { type: 'continuous' }
                 },
                 physics: {
+                    enabled: true,
                     solver: 'forceAtlas2Based',
                     forceAtlas2Based: {
                         gravitationalConstant: repulsion,
@@ -1910,7 +1911,14 @@
                         springConstant: 0.04,
                         avoidOverlap: 0.8
                     },
-                    stabilization: { iterations: 400 }
+                    stabilization: {
+                        enabled: true,
+                        iterations: 300,
+                        updateInterval: 25,
+                        fit: true
+                    },
+                    maxVelocity: 50,
+                    minVelocity: 0.75,
                 },
                 interaction: {
                     hover: true,
@@ -1919,20 +1927,25 @@
                 }
             };
 
+            // Destroy previous graph if it exists to avoid lingering timers
+            if (networkGraph) {
+                networkGraph.destroy();
+                networkGraph = null;
+            }
+
             networkGraph = new vis.Network(container, data, options);
             networkGraphData = { nodes: data.nodes, edges: data.edges, raw: graphData };
 
-            // Stop physics after layout stabilizes so it doesn't keep spinning
-            networkGraph.on('stabilized', function() {
+            // Permanently disable physics once stabilization completes
+            networkGraph.once('stabilizationIterationsDone', function() {
                 networkGraph.setOptions({ physics: { enabled: false } });
             });
 
-            // Fallback: force-stop physics after 5 seconds regardless
+            // Hard fallback: kill physics after 4 seconds no matter what
+            const graphRef = networkGraph;
             setTimeout(() => {
-                if (networkGraph) {
-                    networkGraph.setOptions({ physics: { enabled: false } });
-                }
-            }, 5000);
+                try { graphRef.setOptions({ physics: { enabled: false } }); } catch(e) {}
+            }, 4000);
 
             // Add click handler
             networkGraph.on('click', function(params) {
@@ -1967,19 +1980,103 @@
                     return;
                 }
 
-                const html = `
-                    <p><strong>Total Nodes:</strong> ${summary.total_nodes}</p>
-                    <p><strong>Internal Nodes:</strong> ${summary.internal_nodes}</p>
-                    <p><strong>External Nodes:</strong> ${summary.external_nodes}</p>
-                    <p><strong>Total Services:</strong> ${summary.total_services}</p>
-                    <p><strong>Top Servers:</strong> ${summary.servers.slice(0, 5).join(', ')}</p>
-                    <p><strong>Top Talkers:</strong></p>
-                    <ul>
-                        ${summary.top_talkers.slice(0, 5).map(([ip, count]) =>
-                            `<li>${ip}: ${count} connections</li>`
-                        ).join('')}
-                    </ul>
+                // Device type display names and icons
+                const deviceLabels = {
+                    'domain_controller': { label: 'Domain Controllers', icon: '🏰' },
+                    'dns_server': { label: 'DNS Servers', icon: '🌐' },
+                    'gateway': { label: 'Gateways / Firewalls', icon: '🛡' },
+                    'vpn_gateway': { label: 'VPN Gateways', icon: '🔒' },
+                    'web_server': { label: 'Web Servers', icon: '🌍' },
+                    'database_server': { label: 'Database Servers', icon: '🗄' },
+                    'file_server': { label: 'File Servers', icon: '📁' },
+                    'mail_server': { label: 'Mail Servers', icon: '📧' },
+                    'dhcp_server': { label: 'DHCP Servers', icon: '📡' },
+                    'ssh_server': { label: 'SSH Servers', icon: '🔑' },
+                    'syslog_server': { label: 'Syslog / SIEM', icon: '📋' },
+                    'monitoring': { label: 'Monitoring Systems', icon: '📊' },
+                    'print_server': { label: 'Printers', icon: '🖨' },
+                    'workstation': { label: 'Workstations', icon: '💻' },
+                    'iot_device': { label: 'IoT Devices', icon: '📱' },
+                };
+
+                let html = `
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:20px;">
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${summary.total_nodes}</div>
+                            <div style="font-size:11px; opacity:0.7;">Total Nodes</div>
+                        </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${summary.internal_nodes}</div>
+                            <div style="font-size:11px; opacity:0.7;">Internal</div>
+                        </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${summary.external_nodes}</div>
+                            <div style="font-size:11px; opacity:0.7;">External</div>
+                        </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${summary.profiled || 0}</div>
+                            <div style="font-size:11px; opacity:0.7;">Profiled</div>
+                        </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${summary.total_services}</div>
+                            <div style="font-size:11px; opacity:0.7;">Services</div>
+                        </div>
+                    </div>
                 `;
+
+                // Device inventory sections
+                const inventory = summary.device_inventory || {};
+                if (Object.keys(inventory).length > 0) {
+                    html += '<h4 style="margin:15px 0 10px 0;">Device Inventory</h4>';
+
+                    for (const [dtype, devices] of Object.entries(inventory)) {
+                        const info = deviceLabels[dtype] || { label: dtype, icon: '❓' };
+                        html += `
+                            <details style="margin-bottom:8px; background:var(--bg-tertiary); border-radius:5px; padding:0;">
+                                <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+                                    <span>${info.icon} ${info.label}</span>
+                                    <span style="background:var(--accent); color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${devices.length}</span>
+                                </summary>
+                                <div style="padding:0 14px 10px 14px;">
+                                    <table style="width:100%; font-size:13px; border-collapse:collapse;">
+                                        <tr style="opacity:0.7; font-size:11px; text-transform:uppercase;">
+                                            <td style="padding:4px 8px;">IP Address</td>
+                                            <td style="padding:4px 8px;">Hostname</td>
+                                            <td style="padding:4px 8px;">Services</td>
+                                            <td style="padding:4px 8px; text-align:right;">Connections</td>
+                                        </tr>
+                                        ${devices.map(d => `
+                                            <tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                                                <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}</td>
+                                                <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${d.hostnames.length > 0 ? d.hostnames[0] : '-'}</td>
+                                                <td style="padding:4px 8px; opacity:0.7; font-size:11px;">${d.services.slice(0, 5).join(', ') || '-'}</td>
+                                                <td style="padding:4px 8px; text-align:right;">${d.connections.toLocaleString()}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </table>
+                                </div>
+                            </details>
+                        `;
+                    }
+                } else {
+                    html += '<p style="opacity:0.6; margin-top:10px;">No devices profiled yet. Click <strong>Profile Devices</strong> above to classify network hosts.</p>';
+                }
+
+                // Top talkers section
+                if (summary.top_talkers && summary.top_talkers.length > 0) {
+                    html += '<h4 style="margin:15px 0 10px 0;">Top Talkers</h4>';
+                    html += '<table style="width:100%; font-size:13px; border-collapse:collapse;">';
+                    summary.top_talkers.forEach(t => {
+                        html += `
+                            <tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${t.ip}'; searchGraphNode();">${t.ip}</td>
+                                <td style="padding:4px 8px; text-align:right;">${t.connections.toLocaleString()} conns</td>
+                                <td style="padding:4px 8px; opacity:0.6;">${t.sensor_id}</td>
+                            </tr>
+                        `;
+                    });
+                    html += '</table>';
+                }
 
                 document.getElementById('network-summary').innerHTML = html;
 
@@ -2012,10 +2109,18 @@
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             if (!query || !networkGraph || !networkGraphData) return;
 
-            // Search through nodes for IP match (partial match supported)
-            const matches = networkGraphData.raw.nodes.filter(n =>
-                n.label.toLowerCase().includes(query) || n.id.toLowerCase().includes(query)
-            );
+            // Stop physics so the node doesn't drift after focusing
+            networkGraph.setOptions({ physics: { enabled: false } });
+
+            // Search through nodes for IP match (partial match on label, id, device type)
+            const matches = networkGraphData.raw.nodes.filter(n => {
+                const lbl = (n.label || '').toLowerCase();
+                const nid = (n.id || '').toLowerCase();
+                const dtype = (n.device_type || '').toLowerCase();
+                const dlabel = (n.device_label || '').toLowerCase();
+                return lbl.includes(query) || nid.includes(query) ||
+                       dtype.includes(query) || dlabel.includes(query);
+            });
 
             if (matches.length === 0) {
                 addLog(`No node found matching "${query}"`, 'warning');
@@ -2023,9 +2128,9 @@
             }
 
             const match = matches[0];
-            addLog(`Found: ${match.label} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
+            addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
 
-            // Select and zoom to the node
+            // Highlight the node with a distinct border
             networkGraph.selectNodes([match.id]);
             networkGraph.focus(match.id, {
                 scale: 1.5,
@@ -2036,11 +2141,22 @@
         function changeGraphLayout() {
             const layout = document.getElementById('graph-layout').value;
             if (networkGraph) {
+                // Briefly enable physics with new solver to re-layout, then stop
                 networkGraph.setOptions({
                     physics: {
-                        solver: layout
+                        enabled: true,
+                        solver: layout,
+                        stabilization: { enabled: true, iterations: 200 }
                     }
                 });
+                networkGraph.once('stabilizationIterationsDone', function() {
+                    networkGraph.setOptions({ physics: { enabled: false } });
+                });
+                // Hard fallback
+                const ref = networkGraph;
+                setTimeout(() => {
+                    try { ref.setOptions({ physics: { enabled: false } }); } catch(e) {}
+                }, 4000);
             }
         }
 
