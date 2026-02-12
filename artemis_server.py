@@ -9,6 +9,8 @@ import json
 import asyncio
 import logging
 import traceback
+import multiprocessing
+import queue
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -22,9 +24,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from artemis.meta_learner.coordinator import MetaLearnerCoordinator
 from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
-from artemis.models.network_state import NetworkState
 
 
 # Configure logging
@@ -421,6 +421,258 @@ class PluginManager:
 
 
 # ============================================================================
+# Hunt Worker Process
+# ============================================================================
+
+def _hunt_worker_process(hunt_id, time_range, mode, description,
+                         db_path, enabled_plugins, progress_queue):
+    """
+    Run a complete hunt in a separate process.
+
+    Creates its own Splunk pipeline, coordinator, and plugins so the main
+    web server process stays entirely free for HTTP requests.  All progress
+    updates are sent back through ``progress_queue``.
+    """
+    # Local imports so the child process bootstraps its own copies
+    import os, json, logging, traceback
+    from datetime import datetime
+    from artemis.meta_learner.coordinator import MetaLearnerCoordinator
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    )
+    log = logging.getLogger('artemis.hunt_worker')
+
+    def send(data):
+        try:
+            progress_queue.put_nowait(data)
+        except Exception:
+            pass
+
+    try:
+        hunt_start = datetime.now()
+        send({'stage': 'init', 'message': 'Initializing hunt process...', 'progress': 5})
+
+        # --- build pipeline ------------------------------------------------
+        host = os.getenv('SPLUNK_HOST', '10.25.11.86')
+        token = os.getenv('SPLUNK_TOKEN')
+        username = os.getenv('SPLUNK_USERNAME')
+        password = os.getenv('SPLUNK_PASSWORD')
+        cfg = DataSourceConfig(
+            splunk_host=host, splunk_port=8089,
+            splunk_token=token or '',
+            splunk_username=username or '',
+            splunk_password=password or '',
+        )
+        pipeline = DataPipeline(cfg)
+        coordinator = MetaLearnerCoordinator()
+
+        # --- data collection -----------------------------------------------
+        send({
+            'stage': 'collect',
+            'message': 'Starting data collection from Splunk...',
+            'progress': 10,
+            'collection': {
+                'started_at': hunt_start.isoformat(),
+                'time_range': time_range,
+                'queries_done': 0, 'queries_total': 8,
+                'events_by_type': {}, 'total_events': 0,
+                'window': 0, 'total_windows': 0,
+            },
+        })
+
+        collection_stats = {}
+
+        def on_collection_progress(info):
+            if info.get('type') == 'query_done':
+                collection_stats[info['query_name']] = info['query_events']
+                total_events = sum(collection_stats.values())
+                qd = info['queries_done']
+                qt = info['queries_total']
+                w = info.get('window', 1)
+                tw = info.get('total_windows', 1)
+                if tw > 1:
+                    pct = 10 + int(((w - 1) / tw + qd / qt / tw) * 50)
+                else:
+                    pct = 10 + int((qd / qt) * 50)
+                elapsed = (datetime.now() - hunt_start).total_seconds()
+                parts = []
+                if tw > 1:
+                    parts.append(f'Window {w}/{tw}')
+                parts += [f'Queries: {qd}/{qt}',
+                          f'{total_events:,} events collected',
+                          f'{elapsed:.0f}s elapsed']
+                send({
+                    'stage': 'collect',
+                    'message': ' | '.join(parts),
+                    'progress': min(pct, 60),
+                    'collection': {
+                        'started_at': hunt_start.isoformat(),
+                        'time_range': time_range,
+                        'queries_done': qd, 'queries_total': qt,
+                        'events_by_type': dict(collection_stats),
+                        'total_events': total_events,
+                        'window': w, 'total_windows': tw,
+                        'elapsed_seconds': elapsed,
+                        'last_query': info['query_name'],
+                    },
+                })
+            elif info.get('type') == 'window_done':
+                total = info.get('running_total', 0)
+                w = info.get('window', 1)
+                tw = info.get('total_windows', 1)
+                elapsed = (datetime.now() - hunt_start).total_seconds()
+                send({
+                    'stage': 'collect',
+                    'message': (f'Window {w}/{tw} done | '
+                                f'{total:,} total events | {elapsed:.0f}s elapsed'),
+                    'progress': 10 + int((w / tw) * 50),
+                    'collection': {
+                        'started_at': hunt_start.isoformat(),
+                        'time_range': time_range,
+                        'events_by_type': info.get('events_by_type', {}),
+                        'total_events': total,
+                        'window': w, 'total_windows': tw,
+                        'elapsed_seconds': elapsed,
+                    },
+                })
+
+        hunting_data = pipeline.collect_hunting_data(
+            time_range, progress_callback=on_collection_progress,
+        )
+        total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
+        collect_elapsed = (datetime.now() - hunt_start).total_seconds()
+        log.info(f'Data collection done: {total_events} events in {collect_elapsed:.0f}s')
+        send({
+            'stage': 'analyze',
+            'message': f'Collected {total_events:,} events in {collect_elapsed:.0f}s. Running hunting agents...',
+            'progress': 65,
+            'collection': {
+                'total_events': total_events,
+                'events_by_type': {k: len(v) for k, v in hunting_data.items() if isinstance(v, list)},
+                'elapsed_seconds': collect_elapsed,
+                'phase': 'complete',
+            },
+        })
+
+        # --- hunt analysis -------------------------------------------------
+        send({'stage': 'hunt', 'message': 'Running hunting agents...', 'progress': 70})
+        hunt_result = coordinator.hunt(hunting_data, None, None)
+        send({'stage': 'finalize', 'message': 'Finalizing results...', 'progress': 90})
+
+        findings_count = hunt_result.get('total_findings', 0)
+        hunt_data = {
+            'start_time': hunt_start.isoformat(),
+            'end_time': datetime.now().isoformat(),
+            'time_range': time_range,
+            'mode': mode,
+            'status': 'completed',
+            'total_findings': findings_count,
+            'overall_confidence': hunt_result.get('final_confidence', 0.0),
+            'description': description,
+            'agent_results': {},
+        }
+        for agent_output in hunt_result.get('agent_outputs', []):
+            aname = agent_output.get('agent_name', 'unknown')
+            hunt_data['agent_results'][aname] = {
+                'confidence': agent_output.get('confidence', 0.0),
+                'severity': agent_output.get('severity', 'low'),
+                'findings': agent_output.get('findings', []),
+            }
+
+        # --- plugins -------------------------------------------------------
+        if 'network_mapper' in enabled_plugins:
+            send({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
+            try:
+                from artemis.plugins.network_mapper import NetworkMapperPlugin
+                nm = NetworkMapperPlugin({})
+                nm.initialize()
+                nm.execute(
+                    network_connections=hunting_data.get('network_connections', []),
+                    dns_queries=hunting_data.get('dns_queries', []),
+                )
+            except Exception as e:
+                log.warning(f'Network mapper failed: {e}')
+
+        if 'sigma_engine' in enabled_plugins:
+            send({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
+            try:
+                from artemis.plugins.sigma_engine import SigmaEnginePlugin
+                se = SigmaEnginePlugin({})
+                se.initialize()
+                sigma_result = se.execute(**hunting_data)
+                sigma_matches = sigma_result.get('matches', [])
+                if sigma_matches:
+                    log.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
+                    sigma_findings = []
+                    max_sev = 'low'
+                    sev_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0}
+                    for match in sigma_matches:
+                        lvl = match.get('level', 'medium')
+                        if sev_rank.get(lvl, 0) > sev_rank.get(max_sev, 0):
+                            max_sev = lvl
+                        sigma_findings.append({
+                            'title': f"Sigma: {match.get('rule_title', 'Unknown Rule')}",
+                            'description': match.get('rule_description', ''),
+                            'severity': lvl,
+                            'confidence': 0.85,
+                            'mitre_tactics': match.get('mitre_tactics', []),
+                            'mitre_techniques': match.get('mitre_techniques', []),
+                            'affected_assets': [],
+                        })
+                    hunt_data['agent_results']['sigma_engine'] = {
+                        'confidence': 0.85,
+                        'severity': max_sev,
+                        'findings': sigma_findings,
+                    }
+                    findings_count += len(sigma_findings)
+                    hunt_data['total_findings'] = findings_count
+            except Exception as e:
+                log.warning(f'Sigma engine failed: {e}')
+
+        if 'geoip_mapper' in enabled_plugins:
+            send({'stage': 'finalize', 'message': 'Running GeoIP mapper...', 'progress': 96})
+            try:
+                from artemis.plugins.geoip_mapper import GeoIPMapperPlugin
+                gm = GeoIPMapperPlugin({})
+                gm.initialize()
+                gm.execute(
+                    network_connections=hunting_data.get('network_connections', []),
+                    dns_queries=hunting_data.get('dns_queries', []),
+                )
+            except Exception as e:
+                log.warning(f'GeoIP mapper failed: {e}')
+
+        # --- save to DB ----------------------------------------------------
+        send({'stage': 'finalize', 'message': 'Saving hunt results...', 'progress': 98})
+        db = DatabaseManager(db_path)
+        db.save_hunt(hunt_id, hunt_data)
+
+        send({
+            'stage': 'complete',
+            'message': f'Hunt complete! Found {findings_count} potential threats.',
+            'progress': 100,
+            'hunt_id': hunt_id,
+        })
+
+    except Exception as e:
+        log.error(f'Hunt {hunt_id} failed: {e}')
+        log.error(traceback.format_exc())
+        send({
+            'stage': 'error',
+            'message': f'Hunt failed: {str(e)}',
+            'error_detail': traceback.format_exc(),
+            'progress': 0,
+            'hunt_id': hunt_id,
+        })
+    finally:
+        # Signal the parent that this process is done
+        send({'_done': True, 'hunt_id': hunt_id})
+
+
+# ============================================================================
 # Hunt Manager
 # ============================================================================
 
@@ -429,35 +681,26 @@ class HuntManager:
 
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
-        self.coordinator = MetaLearnerCoordinator()
-        self.pipeline = None
         self.active_hunts = {}
-        # Dedicated executor for long-running hunt operations (data collection,
-        # analysis, plugins). Kept separate so hunts never starve HTTP requests.
-        self.hunt_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='hunt')
-        # Lightweight executor for quick API operations (DB reads, plugin queries).
-        # Never used by hunts, so always has threads available.
-        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='api')
+        self.hunt_processes = {}  # hunt_id -> Process
+        self._splunk = None  # Lazy Splunk connector for profile_devices
 
-    def initialize_pipeline(self):
-        """Initialize data pipeline."""
-        if self.pipeline is not None:
-            return
-
-        host = os.getenv('SPLUNK_HOST', '10.25.11.86')
-        token = os.getenv('SPLUNK_TOKEN')
-        username = os.getenv('SPLUNK_USERNAME')
-        password = os.getenv('SPLUNK_PASSWORD')
-
-        config = DataSourceConfig(
-            splunk_host=host,
-            splunk_port=8089,
-            splunk_token=token if token else "",
-            splunk_username=username if username else "",
-            splunk_password=password if password else ""
-        )
-
-        self.pipeline = DataPipeline(config)
+    def get_splunk_connector(self):
+        """Get a Splunk connector for API use (e.g. device profiling). Lazy-initialized."""
+        if self._splunk is None:
+            host = os.getenv('SPLUNK_HOST', '10.25.11.86')
+            token = os.getenv('SPLUNK_TOKEN')
+            username = os.getenv('SPLUNK_USERNAME')
+            password = os.getenv('SPLUNK_PASSWORD')
+            cfg = DataSourceConfig(
+                splunk_host=host, splunk_port=8089,
+                splunk_token=token or '',
+                splunk_username=username or '',
+                splunk_password=password or '',
+            )
+            pipeline = DataPipeline(cfg)
+            self._splunk = pipeline.splunk
+        return self._splunk
 
     async def execute_hunt(
         self,
@@ -467,309 +710,101 @@ class HuntManager:
         description: str,
         progress_callback=None
     ):
-        """Execute a hunt asynchronously."""
+        """
+        Execute a hunt in a separate process.
+
+        The entire hunt (data collection, analysis, plugins, DB save) runs
+        in a child process so the web server's event loop and threads remain
+        completely free for HTTP / WebSocket traffic.
+
+        Progress messages arrive via a multiprocessing.Queue and are
+        forwarded to the WebSocket broadcast callback.
+        """
+        self.active_hunts[hunt_id] = {
+            'status': 'running',
+            'progress': 0,
+            'start_time': datetime.now(),
+            'collection_stats': {},
+            'last_progress': None,
+        }
+
+        # Determine which plugins the hunt process should run
+        enabled_plugins = [
+            name for name in ('network_mapper', 'sigma_engine', 'geoip_mapper')
+            if plugin_manager.get_plugin(name) is not None
+        ]
+
+        progress_queue = multiprocessing.Queue()
+
+        proc = multiprocessing.Process(
+            target=_hunt_worker_process,
+            args=(
+                hunt_id, time_range, mode, description,
+                self.db.db_path, enabled_plugins, progress_queue,
+            ),
+            daemon=True,
+        )
+        proc.start()
+        self.hunt_processes[hunt_id] = proc
+        logger.info(f'Hunt {hunt_id} started in subprocess (pid {proc.pid})')
+
+        # Drain the progress queue and forward to WebSocket clients
         try:
-            hunt_start = datetime.now()
-            self.active_hunts[hunt_id] = {
-                'status': 'running',
-                'progress': 0,
-                'start_time': hunt_start,
-                'collection_stats': {},
-                'last_progress': None,
-            }
-
-            if progress_callback:
-                await progress_callback({'stage': 'init', 'message': 'Initializing hunt...', 'progress': 5})
-
-            # Initialize pipeline if needed
-            self.initialize_pipeline()
-
-            if progress_callback:
-                await progress_callback({
-                    'stage': 'collect',
-                    'message': 'Starting data collection from Splunk...',
-                    'progress': 10,
-                    'collection': {
-                        'started_at': hunt_start.isoformat(),
-                        'time_range': time_range,
-                        'queries_done': 0,
-                        'queries_total': 8,
-                        'events_by_type': {},
-                        'total_events': 0,
-                        'window': 0,
-                        'total_windows': 0,
-                    }
-                })
-
-            # Collection progress callback (called from worker thread)
-            main_loop = asyncio.get_event_loop()
-
-            def collection_progress(info):
-                """Bridge sync callback from pipeline to async broadcast."""
-                if not progress_callback:
-                    return
-
-                stats = self.active_hunts.get(hunt_id, {})
-                collection_stats = stats.get('collection_stats', {})
-
-                if info.get('type') == 'query_done':
-                    collection_stats[info['query_name']] = info['query_events']
-                    total_events = sum(collection_stats.values())
-                    queries_done = info['queries_done']
-                    queries_total = info['queries_total']
-                    window = info.get('window', 1)
-                    total_windows = info.get('total_windows', 1)
-
-                    # Calculate progress: 10-60% for collection phase
-                    if total_windows > 1:
-                        window_pct = (window - 1) / total_windows
-                        query_pct = queries_done / queries_total / total_windows
-                        collect_progress = 10 + int((window_pct + query_pct) * 50)
-                    else:
-                        collect_progress = 10 + int((queries_done / queries_total) * 50)
-
-                    elapsed = (datetime.now() - hunt_start).total_seconds()
-
-                    msg_parts = []
-                    if total_windows > 1:
-                        msg_parts.append(f"Window {window}/{total_windows}")
-                    msg_parts.append(
-                        f"Queries: {queries_done}/{queries_total}"
-                    )
-                    msg_parts.append(f"{total_events:,} events collected")
-                    msg_parts.append(f"{elapsed:.0f}s elapsed")
-
-                    data = {
-                        'stage': 'collect',
-                        'message': ' | '.join(msg_parts),
-                        'progress': min(collect_progress, 60),
-                        'collection': {
-                            'started_at': hunt_start.isoformat(),
-                            'time_range': time_range,
-                            'queries_done': queries_done,
-                            'queries_total': queries_total,
-                            'events_by_type': dict(collection_stats),
-                            'total_events': total_events,
-                            'window': window,
-                            'total_windows': total_windows,
-                            'elapsed_seconds': elapsed,
-                            'last_query': info['query_name'],
-                        }
-                    }
-
-                    asyncio.run_coroutine_threadsafe(
-                        progress_callback(data), main_loop
-                    )
-
-                elif info.get('type') == 'window_done':
-                    total = info.get('running_total', 0)
-                    window = info.get('window', 1)
-                    total_windows = info.get('total_windows', 1)
-                    elapsed = (datetime.now() - hunt_start).total_seconds()
-
-                    data = {
-                        'stage': 'collect',
-                        'message': (
-                            f"Window {window}/{total_windows} done | "
-                            f"{total:,} total events | {elapsed:.0f}s elapsed"
-                        ),
-                        'progress': 10 + int((window / total_windows) * 50),
-                        'collection': {
-                            'started_at': hunt_start.isoformat(),
-                            'time_range': time_range,
-                            'events_by_type': info.get('events_by_type', {}),
-                            'total_events': total,
-                            'window': window,
-                            'total_windows': total_windows,
-                            'elapsed_seconds': elapsed,
-                        }
-                    }
-
-                    asyncio.run_coroutine_threadsafe(
-                        progress_callback(data), main_loop
-                    )
-
-                stats['collection_stats'] = collection_stats
-
-            # Collect data with progress tracking (uses hunt_executor to avoid
-            # starving the API executor during long Splunk pagination)
-            hunting_data = await asyncio.get_event_loop().run_in_executor(
-                self.hunt_executor,
-                lambda: self.pipeline.collect_hunting_data(
-                    time_range,
-                    progress_callback=collection_progress,
-                )
-            )
-
-            total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
-            logger.info(f"Data collection completed, got {total_events} events")
-
-            collect_elapsed = (datetime.now() - hunt_start).total_seconds()
-            if progress_callback:
-                await progress_callback({
-                    'stage': 'analyze',
-                    'message': f'Collected {total_events:,} events in {collect_elapsed:.0f}s. Running hunting agents...',
-                    'progress': 65,
-                    'collection': {
-                        'total_events': total_events,
-                        'events_by_type': {
-                            k: len(v) for k, v in hunting_data.items()
-                            if isinstance(v, list)
-                        },
-                        'elapsed_seconds': collect_elapsed,
-                        'phase': 'complete',
-                    }
-                })
-
-            if progress_callback:
-                await progress_callback({'stage': 'hunt', 'message': 'Running hunting agents...', 'progress': 70})
-
-            # Execute hunt
-            # coordinator.hunt() signature: hunt(data, initial_signals=None, context_data=None)
-            # It creates NetworkState internally from context_data
-            hunt_result = await asyncio.get_event_loop().run_in_executor(
-                self.hunt_executor,
-                self.coordinator.hunt,
-                hunting_data,  # data: Dict[str, Any] - hunting data for agents
-                None,          # initial_signals: Optional initial alerts
-                None           # context_data: Optional context (hunt() creates NetworkState)
-            )
-
-            if progress_callback:
-                await progress_callback({'stage': 'finalize', 'message': 'Finalizing results...', 'progress': 90})
-
-            # Process results - use total_findings from aggregated assessment
-            findings_count = hunt_result.get('total_findings', 0)
-
-            # Prepare database record
-            hunt_data = {
-                'start_time': self.active_hunts[hunt_id]['start_time'].isoformat(),
-                'end_time': datetime.now().isoformat(),
-                'time_range': time_range,
-                'mode': mode,
-                'status': 'completed',
-                'total_findings': findings_count,
-                'overall_confidence': hunt_result.get('final_confidence', 0.0),
-                'description': description,
-                'agent_results': {}
-            }
-
-            # Extract findings from agent outputs
-            # agent_outputs are already in dict format from to_dict()
-            for agent_output in hunt_result.get('agent_outputs', []):
-                agent_name = agent_output.get('agent_name', 'unknown')
-                hunt_data['agent_results'][agent_name] = {
-                    'confidence': agent_output.get('confidence', 0.0),
-                    'severity': agent_output.get('severity', 'low'),
-                    'findings': agent_output.get('findings', [])
-                }
-
-            # Run enabled plugins against collected data
-            # Plugins run in executor to avoid blocking the event loop
-            # (which would prevent WebSocket progress messages from being sent)
-            loop = asyncio.get_event_loop()
-
-            network_mapper = plugin_manager.get_plugin('network_mapper')
-            if network_mapper:
-                if progress_callback:
-                    await progress_callback({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
+            while True:
+                # Non-blocking poll so the event loop stays responsive
                 try:
-                    await loop.run_in_executor(self.hunt_executor, lambda: network_mapper.execute(
-                        network_connections=hunting_data.get('network_connections', []),
-                        dns_queries=hunting_data.get('dns_queries', [])
-                    ))
-                except Exception as e:
-                    logger.warning(f"Network mapper plugin failed: {e}")
+                    msg = progress_queue.get_nowait()
+                except queue.Empty:
+                    # Check if process died unexpectedly
+                    if not proc.is_alive():
+                        break
+                    await asyncio.sleep(0.3)
+                    continue
 
-            sigma_engine = plugin_manager.get_plugin('sigma_engine')
-            if sigma_engine:
+                # Internal "done" sentinel
+                if msg.get('_done'):
+                    break
+
+                # Update local tracking state
+                self.active_hunts[hunt_id]['last_progress'] = msg
+                if msg.get('progress'):
+                    self.active_hunts[hunt_id]['progress'] = msg['progress']
+
+                # Broadcast to WebSocket clients
                 if progress_callback:
-                    await progress_callback({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
-                try:
-                    sigma_result = await loop.run_in_executor(self.hunt_executor, lambda: sigma_engine.execute(**hunting_data))
-                    sigma_matches = sigma_result.get('matches', [])
-                    if sigma_matches:
-                        logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
-                        # Add sigma matches as hunt findings so they appear in hunt details
-                        sigma_findings = []
-                        max_severity = 'low'
-                        severity_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0}
-                        for match in sigma_matches:
-                            lvl = match.get('level', 'medium')
-                            if severity_rank.get(lvl, 0) > severity_rank.get(max_severity, 0):
-                                max_severity = lvl
-                            sigma_findings.append({
-                                'title': f"Sigma: {match.get('rule_title', 'Unknown Rule')}",
-                                'description': match.get('rule_description', ''),
-                                'severity': lvl,
-                                'confidence': 0.85,
-                                'mitre_tactics': match.get('mitre_tactics', []),
-                                'mitre_techniques': match.get('mitre_techniques', []),
-                                'affected_assets': [],
-                            })
-                        hunt_data['agent_results']['sigma_engine'] = {
-                            'confidence': 0.85,
-                            'severity': max_severity,
-                            'findings': sigma_findings,
-                        }
-                        findings_count += len(sigma_findings)
-                        hunt_data['total_findings'] = findings_count
-                except Exception as e:
-                    logger.warning(f"Sigma engine plugin failed: {e}")
+                    await progress_callback(msg)
 
-            geoip_mapper = plugin_manager.get_plugin('geoip_mapper')
-            if geoip_mapper:
-                if progress_callback:
-                    await progress_callback({'stage': 'finalize', 'message': 'Running GeoIP mapper...', 'progress': 96})
-                try:
-                    await loop.run_in_executor(self.hunt_executor, lambda: geoip_mapper.execute(
-                        network_connections=hunting_data.get('network_connections', []),
-                        dns_queries=hunting_data.get('dns_queries', [])
-                    ))
-                except Exception as e:
-                    logger.warning(f"GeoIP mapper plugin failed: {e}")
-
-            if progress_callback:
-                await progress_callback({'stage': 'finalize', 'message': 'Saving hunt results...', 'progress': 98})
-
-            # Save to database
-            self.db.save_hunt(hunt_id, hunt_data)
-
-            self.active_hunts[hunt_id]['status'] = 'completed'
-            self.active_hunts[hunt_id]['progress'] = 100
-
-            if progress_callback:
-                await progress_callback({
-                    'stage': 'complete',
-                    'message': f'Hunt complete! Found {findings_count} potential threats.',
-                    'progress': 100,
-                    'hunt_id': hunt_id
-                })
-
-            return hunt_data
+                # Terminal states
+                if msg.get('stage') in ('complete', 'error'):
+                    self.active_hunts[hunt_id]['status'] = (
+                        'completed' if msg['stage'] == 'complete' else 'failed'
+                    )
+                    break
 
         except Exception as e:
-            error_msg = f"Hunt {hunt_id} failed: {str(e)}"
-            error_traceback = traceback.format_exc()
+            logger.error(f'Error draining hunt progress queue: {e}')
 
-            # Log error with full traceback
-            logger.error(error_msg)
-            logger.error(f"Traceback:\n{error_traceback}")
+        # Wait for the process to exit (should already be done)
+        proc.join(timeout=10)
+        if proc.is_alive():
+            logger.warning(f'Hunt process {proc.pid} did not exit, terminating')
+            proc.terminate()
 
-            self.active_hunts[hunt_id]['status'] = 'failed'
-            self.active_hunts[hunt_id]['error'] = str(e)
+        # Reload plugin state from disk so API endpoints serve fresh data
+        self._reload_plugins_from_disk(enabled_plugins)
 
-            if progress_callback:
-                await progress_callback({
-                    'stage': 'error',
-                    'message': f'Hunt failed: {str(e)}',
-                    'error_detail': error_traceback,
-                    'progress': 0,
-                    'hunt_id': hunt_id
-                })
+        self.hunt_processes.pop(hunt_id, None)
 
-            # Don't raise - just mark as failed
-            return None
+    def _reload_plugins_from_disk(self, plugin_names):
+        """Re-initialize plugin instances so they load results written by the hunt subprocess."""
+        for name in plugin_names:
+            plugin = plugin_manager.get_plugin(name)
+            if plugin and hasattr(plugin, 'initialize'):
+                try:
+                    plugin.initialize()
+                    logger.info(f'Reloaded plugin "{name}" from disk')
+                except Exception as e:
+                    logger.warning(f'Failed to reload plugin "{name}": {e}')
 
 
 # ============================================================================
@@ -1101,14 +1136,14 @@ def profile_devices(request: ProfileRequest):
     if not plugin:
         return JSONResponse(status_code=404, content={'error': 'Network mapper plugin not enabled'})
 
-    # Get Splunk connector from the hunt manager's pipeline
-    hunt_manager.initialize_pipeline()
-    if not hunt_manager.pipeline or not hunt_manager.pipeline.splunk:
+    # Get Splunk connector for profiling queries
+    splunk = hunt_manager.get_splunk_connector()
+    if not splunk:
         return JSONResponse(status_code=400, content={'error': 'Splunk connection not configured'})
 
     try:
         result = plugin.profile_devices(
-            hunt_manager.pipeline.splunk,
+            splunk,
             time_range=request.time_range,
         )
         return result
