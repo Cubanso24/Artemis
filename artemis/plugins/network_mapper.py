@@ -26,6 +26,7 @@ class NetworkNode:
         'ip', 'sensor_id', 'vlan', 'hostnames', 'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
+        'device_type',
     )
 
     def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
@@ -43,6 +44,7 @@ class NetworkNode:
         self.connections_from: Dict[str, int] = defaultdict(int)  # IP -> count
         self.is_internal = self._is_internal_ip(ip)
         self.roles: Set[str] = set()
+        self.device_type: str = ''
 
     @staticmethod
     def _is_internal_ip(ip: str) -> bool:
@@ -81,6 +83,7 @@ class NetworkNode:
             'bytes_received': self.bytes_received,
             'is_internal': self.is_internal,
             'roles': list(self.roles),
+            'device_type': self.device_type,
             'top_destinations': dict(sorted(
                 self.connections_to.items(),
                 key=lambda x: x[1],
@@ -191,6 +194,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.bytes_sent = node_data.get('bytes_sent', 0)
         node.bytes_received = node_data.get('bytes_received', 0)
         node.roles = set(node_data.get('roles', []))
+        node.device_type = node_data.get('device_type', '')
 
         self.nodes[key] = node
         self.sensors.add(sensor_id)
@@ -392,6 +396,305 @@ class NetworkMapperPlugin(ArtemisPlugin):
             for p in [(25, 'tcp'), (587, 'tcp'), (993, 'tcp')]
         ):
             node.roles.add('mail_server')
+
+    # ------------------------------------------------------------------
+    # Device profiling
+    # ------------------------------------------------------------------
+
+    # Port-to-device-type classification rules.
+    # Checked in order; first match wins. Each entry:
+    #   label, required_ports (need >= min_match), bonus_ports (raise confidence)
+    DEVICE_PROFILES = [
+        {
+            'type': 'domain_controller',
+            'label': 'Domain Controller',
+            'required': {88, 389},       # Kerberos + LDAP
+            'bonus': {636, 445, 53, 135, 464, 3268},
+            'min_match': 2,
+        },
+        {
+            'type': 'dns_server',
+            'label': 'DNS Server',
+            'required': {53},
+            'bonus': set(),
+            'min_match': 1,
+            'min_clients': 5,
+        },
+        {
+            'type': 'web_server',
+            'label': 'Web Server',
+            'required': {80, 443, 8080, 8443},
+            'bonus': set(),
+            'min_match': 1,
+            'min_clients': 3,
+        },
+        {
+            'type': 'database_server',
+            'label': 'Database Server',
+            'required': {3306, 5432, 1433, 27017, 6379, 9200, 5984, 9042},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'mail_server',
+            'label': 'Mail Server',
+            'required': {25, 587, 993, 143, 110, 465},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'file_server',
+            'label': 'File Server',
+            'required': {445, 139, 2049, 21},
+            'bonus': set(),
+            'min_match': 1,
+            'min_clients': 3,
+        },
+        {
+            'type': 'dhcp_server',
+            'label': 'DHCP Server',
+            'required': {67},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'ssh_server',
+            'label': 'SSH Server',
+            'required': {22},
+            'bonus': set(),
+            'min_match': 1,
+            'min_clients': 2,
+        },
+        {
+            'type': 'vpn_gateway',
+            'label': 'VPN Gateway',
+            'required': {500, 4500, 1194, 1723},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'print_server',
+            'label': 'Printer',
+            'required': {9100, 515, 631},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'syslog_server',
+            'label': 'Syslog/SIEM',
+            'required': {514, 1514, 6514},
+            'bonus': set(),
+            'min_match': 1,
+            'min_clients': 3,
+        },
+        {
+            'type': 'monitoring',
+            'label': 'Monitoring',
+            'required': {161, 162, 10050, 10051, 9090},
+            'bonus': set(),
+            'min_match': 1,
+        },
+    ]
+
+    def _classify_device(self, ports_served: set, unique_clients: int,
+                         unique_destinations: int, outbound_conns: int) -> str:
+        """Classify a device based on its traffic profile.
+
+        Args:
+            ports_served: Set of integer port numbers the IP serves
+            unique_clients: Number of unique IPs connecting TO this device
+            unique_destinations: Number of unique IPs this device connects TO
+            outbound_conns: Total outbound connection count
+
+        Returns:
+            Device type string (e.g. 'web_server', 'workstation')
+        """
+        for profile in self.DEVICE_PROFILES:
+            matched = ports_served & profile['required']
+            if len(matched) >= profile.get('min_match', 1):
+                min_clients = profile.get('min_clients', 0)
+                if unique_clients >= min_clients:
+                    return profile['type']
+
+        # Heuristic fallbacks
+        if unique_destinations > 20 and outbound_conns > unique_clients * 3:
+            return 'workstation'
+        if unique_clients > 20 and len(ports_served) == 0:
+            return 'gateway'
+        if len(ports_served) <= 2 and unique_clients <= 3 and unique_destinations <= 5:
+            return 'iot_device'
+
+        return ''
+
+    @staticmethod
+    def _device_label(device_type: str) -> str:
+        """Get human-readable label for a device type."""
+        labels = {
+            'domain_controller': 'DC',
+            'dns_server': 'DNS',
+            'web_server': 'Web',
+            'database_server': 'DB',
+            'mail_server': 'Mail',
+            'file_server': 'Files',
+            'dhcp_server': 'DHCP',
+            'ssh_server': 'SSH',
+            'vpn_gateway': 'VPN',
+            'print_server': 'Printer',
+            'syslog_server': 'SIEM',
+            'monitoring': 'Monitor',
+            'workstation': 'Workstation',
+            'gateway': 'Gateway',
+            'iot_device': 'IoT',
+        }
+        return labels.get(device_type, '')
+
+    def profile_devices(self, splunk_connector, time_range: str = "-24h") -> Dict:
+        """
+        Profile network devices by querying Splunk zeek:conn logs.
+
+        Runs two queries:
+        1. Server profile: what ports each IP serves, how many clients
+        2. Client profile: how many destinations each IP connects to
+
+        Then classifies each device and updates the network map nodes.
+
+        Args:
+            splunk_connector: SplunkConnector instance
+            time_range: Splunk time range to analyze (default -24h)
+
+        Returns:
+            Dict with profiling results summary
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        logger.info(f"Starting device profiling with time_range={time_range}")
+
+        # Query 1: Server perspective — what ports does each IP serve?
+        server_query = '''
+        search index=zeek_conn OR index=suricata
+        | spath
+        | stats dc("id.orig_h") as unique_clients,
+                values("id.resp_p") as ports,
+                count as incoming_count
+          by "id.resp_h"
+        | rename "id.resp_h" as ip
+        | where incoming_count >= 3
+        '''
+
+        # Query 2: Client perspective — how many destinations does each IP reach?
+        client_query = '''
+        search index=zeek_conn OR index=suricata
+        | spath
+        | stats dc("id.resp_h") as unique_destinations,
+                count as outgoing_count
+          by "id.orig_h"
+        | rename "id.orig_h" as ip
+        | where outgoing_count >= 3
+        '''
+
+        # Run both queries in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            server_future = executor.submit(
+                splunk_connector.query, server_query,
+                earliest_time=time_range, latest_time="now"
+            )
+            client_future = executor.submit(
+                splunk_connector.query, client_query,
+                earliest_time=time_range, latest_time="now"
+            )
+
+            server_results = server_future.result(timeout=600)
+            client_results = client_future.result(timeout=600)
+
+        logger.info(
+            f"Device profiling: got {len(server_results)} server profiles, "
+            f"{len(client_results)} client profiles"
+        )
+
+        # Index server data by IP
+        server_data: Dict[str, Dict] = {}
+        for row in server_results:
+            ip = row.get('ip', '')
+            if not ip:
+                continue
+            ports_raw = row.get('ports', [])
+            if isinstance(ports_raw, str):
+                ports_raw = [ports_raw]
+            ports = set()
+            for p in ports_raw:
+                try:
+                    ports.add(int(p))
+                except (ValueError, TypeError):
+                    pass
+            server_data[ip] = {
+                'unique_clients': int(row.get('unique_clients', 0)),
+                'ports': ports,
+                'incoming_count': int(row.get('incoming_count', 0)),
+            }
+
+        # Index client data by IP
+        client_data: Dict[str, Dict] = {}
+        for row in client_results:
+            ip = row.get('ip', '')
+            if not ip:
+                continue
+            client_data[ip] = {
+                'unique_destinations': int(row.get('unique_destinations', 0)),
+                'outgoing_count': int(row.get('outgoing_count', 0)),
+            }
+
+        # Classify each node in the network map
+        classified = 0
+        type_counts: Dict[str, int] = defaultdict(int)
+
+        for key, node in self.nodes.items():
+            if not node.is_internal:
+                continue
+
+            ip = node.ip
+            srv = server_data.get(ip, {})
+            cli = client_data.get(ip, {})
+
+            ports_served = srv.get('ports', set())
+            unique_clients = srv.get('unique_clients', 0)
+            unique_dests = cli.get('unique_destinations', 0)
+            outbound = cli.get('outgoing_count', 0)
+
+            # Also include ports from the node's own services set
+            for port_str, _proto in node.services:
+                try:
+                    ports_served.add(int(port_str))
+                except (ValueError, TypeError):
+                    pass
+
+            device_type = self._classify_device(
+                ports_served, unique_clients, unique_dests, outbound
+            )
+
+            if device_type:
+                node.device_type = device_type
+                classified += 1
+                type_counts[device_type] += 1
+
+        # Save updated map
+        self.save_map()
+
+        result = {
+            'total_internal': sum(1 for n in self.nodes.values() if n.is_internal),
+            'classified': classified,
+            'device_types': dict(type_counts),
+            'unclassified': sum(1 for n in self.nodes.values()
+                                if n.is_internal and not n.device_type),
+        }
+
+        logger.info(
+            f"Device profiling complete: {classified} devices classified "
+            f"across {len(type_counts)} types"
+        )
+        for dtype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+            logger.info(f"  {self._device_label(dtype) or dtype}: {count}")
+
+        return result
 
     # ------------------------------------------------------------------
     # Eviction
@@ -663,6 +966,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
                 'services': len(node.services),
+                'device_type': node.device_type,
+                'device_label': self._device_label(node.device_type),
             })
 
         # Build edges only between top nodes

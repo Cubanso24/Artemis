@@ -1079,6 +1079,38 @@ async def get_network_summary(sensor_id: Optional[str] = None):
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 
+class ProfileRequest(BaseModel):
+    """Request for device profiling."""
+    time_range: str = "-24h"
+
+
+@app.post("/api/network-graph/profile")
+def profile_devices(request: ProfileRequest):
+    """
+    Profile network devices by querying Splunk zeek:conn logs.
+
+    Uses def (not async) so the blocking Splunk queries run in a threadpool.
+    """
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return JSONResponse(status_code=404, content={'error': 'Network mapper plugin not enabled'})
+
+    # Get Splunk connector from the hunt manager's pipeline
+    hunt_manager.initialize_pipeline()
+    if not hunt_manager.pipeline or not hunt_manager.pipeline.splunk:
+        return JSONResponse(status_code=400, content={'error': 'Splunk connection not configured'})
+
+    try:
+        result = plugin.profile_devices(
+            hunt_manager.pipeline.splunk,
+            time_range=request.time_range,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Device profiling failed: {e}")
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
 # ============================================================================
 # Sigma Engine Endpoints
 # ============================================================================

@@ -1183,33 +1183,34 @@
                     <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
+                    <button class="btn" onclick="profileDevices()" id="profile-btn" style="background:#9C27B0;">Profile Devices</button>
                     <select id="graph-layout" onchange="changeGraphLayout()">
                         <option value="forceAtlas2Based">Force Atlas</option>
                         <option value="barnesHut">Barnes Hut</option>
                         <option value="hierarchical">Hierarchical</option>
                     </select>
+                    <select id="profile-time-range" style="padding:8px 12px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#eee;">
+                        <option value="-1h">Last 1h</option>
+                        <option value="-4h">Last 4h</option>
+                        <option value="-24h" selected>Last 24h</option>
+                        <option value="-7d">Last 7d</option>
+                    </select>
                 </div>
 
                 <div id="network-graph"></div>
 
-                <div class="graph-legend">
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #4CAF50;"></div>
-                        <span>Internal Hosts</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #f44336;"></div>
-                        <span>External Hosts</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #FFC107;"></div>
-                        <span>Servers (High Connection Count)</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background: #2196F3;"></div>
-                        <span>Regular Clients</span>
-                    </div>
+                <div class="graph-legend" id="graph-legend">
+                    <div class="legend-item"><div class="legend-color" style="background: #4CAF50;"></div><span>Internal</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #f44336;"></div><span>External</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #FFC107;"></div><span>Server</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #E91E63;"></div><span>DC</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #00BCD4;"></div><span>DNS</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #FF5722;"></div><span>Web</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #9C27B0;"></div><span>Database</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #3F51B5;"></div><span>File/Mail</span></div>
+                    <div class="legend-item"><div class="legend-color" style="background: #607D8B;"></div><span>Workstation</span></div>
                 </div>
+                <div id="profile-status" style="display:none; margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:5px;"></div>
 
                 <div class="card" style="margin-top: 20px;">
                     <h3>Network Summary</h3>
@@ -1812,28 +1813,68 @@
             const maxSize = Math.max(...graphData.nodes.map(n => n.size || 1));
             const nodeCount = graphData.nodes.length;
 
+            // Device type color map
+            const deviceColors = {
+                'domain_controller': '#E91E63',
+                'dns_server': '#00BCD4',
+                'web_server': '#FF5722',
+                'database_server': '#9C27B0',
+                'mail_server': '#3F51B5',
+                'file_server': '#3F51B5',
+                'dhcp_server': '#009688',
+                'ssh_server': '#795548',
+                'vpn_gateway': '#FF9800',
+                'print_server': '#607D8B',
+                'syslog_server': '#8BC34A',
+                'monitoring': '#CDDC39',
+                'workstation': '#607D8B',
+                'gateway': '#FF9800',
+                'iot_device': '#9E9E9E',
+            };
+
+            // Device type shapes
+            const deviceShapes = {
+                'domain_controller': 'diamond',
+                'dns_server': 'triangle',
+                'web_server': 'square',
+                'database_server': 'star',
+                'gateway': 'triangleDown',
+            };
+
             const nodes = graphData.nodes.map(node => {
                 let color = node.group === 'internal' ? '#4CAF50' : '#f44336';
+                let shape = 'dot';
 
                 // Scale node size: smaller when many nodes, larger when few
                 const rawSize = node.size || 1;
                 const scaled = 5 + (rawSize / Math.max(maxSize, 1)) * 20;
 
-                // Highlight high-connection nodes
-                if (node.roles && node.roles.includes('server')) {
+                // Color by device type if profiled, otherwise by role/group
+                if (node.device_type && deviceColors[node.device_type]) {
+                    color = deviceColors[node.device_type];
+                    shape = deviceShapes[node.device_type] || 'dot';
+                } else if (node.roles && node.roles.includes('server')) {
                     color = '#FFC107';
                 }
 
                 const rolesStr = node.roles ? node.roles.join(', ') : 'none';
                 const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
+                const deviceStr = node.device_label || node.device_type || '';
+
+                // Build label: IP + device type tag
+                let label = node.label;
+                if (deviceStr) {
+                    label = `${node.label}\n[${deviceStr}]`;
+                }
 
                 return {
                     id: node.id,
-                    label: node.label,
-                    title: `${node.label}\nServices: ${servicesStr}\nRoles: ${rolesStr}`,
+                    label: label,
+                    title: `${node.label}${deviceStr ? '\nDevice: ' + deviceStr : ''}\nServices: ${servicesStr}\nRoles: ${rolesStr}`,
                     color: color,
+                    shape: shape,
                     size: scaled,
-                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee' }
+                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee', multi: 'md' }
                 };
             });
 
@@ -1908,7 +1949,9 @@
         function showNodeDetails(node) {
             const rolesStr = node.roles ? node.roles.join(', ') : 'none';
             const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
+            const deviceStr = node.device_label || node.device_type || 'Unknown';
             alert(`${node.label}\n` +
+                  `Device: ${deviceStr}\n` +
                   `Type: ${node.group}\n` +
                   `Sensor: ${node.sensor_id || 'default'}\n` +
                   `Services: ${servicesStr}\n` +
@@ -1998,6 +2041,59 @@
                         solver: layout
                     }
                 });
+            }
+        }
+
+        async function profileDevices() {
+            const btn = document.getElementById('profile-btn');
+            const statusDiv = document.getElementById('profile-status');
+            const timeRange = document.getElementById('profile-time-range').value;
+
+            btn.disabled = true;
+            btn.textContent = 'Profiling...';
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = 'Querying Splunk zeek:conn logs to classify devices... This may take a minute.';
+            addLog(`Starting device profiling (${timeRange})...`, 'info');
+
+            try {
+                const response = await fetch('/api/network-graph/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ time_range: timeRange })
+                });
+
+                const result = await response.json();
+
+                if (result.error) {
+                    statusDiv.innerHTML = `<span style="color:#f44336;">Error: ${result.error}</span>`;
+                    addLog(`Device profiling failed: ${result.error}`, 'error');
+                    return;
+                }
+
+                // Show results
+                const types = result.device_types || {};
+                const typeList = Object.entries(types)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([type, count]) => `<strong>${type}</strong>: ${count}`)
+                    .join(' | ');
+
+                statusDiv.innerHTML = `
+                    Profiled <strong>${result.classified}</strong> / ${result.total_internal} internal devices.
+                    ${result.unclassified} unclassified.<br>
+                    <span style="font-size:13px; opacity:0.8;">${typeList}</span>
+                `;
+
+                addLog(`Device profiling complete: ${result.classified} devices classified`, 'info');
+
+                // Refresh the graph to show new labels
+                loadNetworkGraph();
+
+            } catch (error) {
+                statusDiv.innerHTML = `<span style="color:#f44336;">Error: ${error.message}</span>`;
+                addLog(`Device profiling error: ${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Profile Devices';
             }
         }
 
