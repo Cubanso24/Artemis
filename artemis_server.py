@@ -1128,9 +1128,17 @@ async def get_sigma_rules():
 async def get_sigma_results():
     """Get latest Sigma scan results."""
     plugin = plugin_manager.get_plugin('sigma_engine')
-    if not plugin:
-        return {'error': 'Sigma engine plugin not enabled'}
-    return plugin.get_last_results()
+    if plugin:
+        return plugin.get_last_results()
+    # Fall back to reading results file directly even if plugin is disabled
+    results_file = Path('sigma_results') / 'latest.json'
+    if results_file.exists():
+        try:
+            with open(results_file) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {'error': 'Sigma engine plugin not enabled'}
 
 
 @app.post("/api/sigma/reload")
