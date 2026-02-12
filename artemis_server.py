@@ -18,7 +18,7 @@ import sqlite3
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -377,10 +377,9 @@ class PluginManager:
 
         if self.plugins[name]['instance'] is None:
             self.plugins[name]['instance'] = self.plugins[name]['class'](config or {})
-
-        # Initialize the plugin (loads rules, caches, etc.)
-        if hasattr(self.plugins[name]['instance'], 'initialize'):
-            self.plugins[name]['instance'].initialize()
+            # Initialize only on first enable (loads rules, caches, etc.)
+            if hasattr(self.plugins[name]['instance'], 'initialize'):
+                self.plugins[name]['instance'].initialize()
 
         self.plugins[name]['enabled'] = True
         logger.info(f"Enabled plugin: {name}")
@@ -399,14 +398,19 @@ class PluginManager:
 
     def list_plugins(self) -> List[Dict]:
         """List all registered plugins."""
-        return [
-            {
+        result = []
+        for name, info in self.plugins.items():
+            plugin_info = {
                 'name': name,
                 'enabled': info['enabled'],
-                'description': getattr(info['class'], 'DESCRIPTION', 'No description')
+                'description': getattr(info['class'], 'DESCRIPTION', 'No description'),
             }
-            for name, info in self.plugins.items()
-        ]
+            # Add plugin-specific stats
+            instance = info['instance']
+            if instance and hasattr(instance, 'rules'):
+                plugin_info['rules_loaded'] = len(instance.rules)
+            result.append(plugin_info)
+        return result
 
 
 # ============================================================================
@@ -978,20 +982,21 @@ async def list_plugins():
 
 
 @app.post("/api/plugins/{plugin_name}/enable")
-async def enable_plugin(plugin_name: str, config: PluginConfig):
-    """Enable a plugin."""
+def enable_plugin(plugin_name: str, config: PluginConfig):
+    """Enable a plugin. Uses def (not async) so blocking init runs in a threadpool."""
     try:
         plugin_manager.enable_plugin(plugin_name, config.config)
-        return {'status': 'enabled'}
+        return {'status': 'enabled', 'plugin': plugin_name}
     except Exception as e:
-        return {'error': str(e)}, 400
+        logger.error(f"Failed to enable plugin {plugin_name}: {e}")
+        return JSONResponse(status_code=400, content={'error': str(e)})
 
 
 @app.post("/api/plugins/{plugin_name}/disable")
-async def disable_plugin(plugin_name: str):
+def disable_plugin(plugin_name: str):
     """Disable a plugin."""
     plugin_manager.disable_plugin(plugin_name)
-    return {'status': 'disabled'}
+    return {'status': 'disabled', 'plugin': plugin_name}
 
 
 @app.get("/api/network-graph")

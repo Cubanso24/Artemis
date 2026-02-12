@@ -2049,9 +2049,13 @@
                 plugins.forEach(plugin => {
                     const div = document.createElement('div');
                     div.className = 'plugin-card';
+                    const statsHtml = plugin.rules_loaded != null
+                        ? `<p style="color:#667eea; font-size:13px; margin-top:8px;">${plugin.rules_loaded.toLocaleString()} rules loaded</p>`
+                        : '';
                     div.innerHTML = `
                         <h3>${plugin.name}</h3>
                         <p>${plugin.description}</p>
+                        ${statsHtml}
                         <span class="plugin-status ${plugin.enabled ? 'plugin-enabled' : 'plugin-disabled'}">
                             ${plugin.enabled ? 'Enabled' : 'Disabled'}
                         </span>
@@ -2070,15 +2074,21 @@
         async function togglePlugin(name, enable) {
             try {
                 const endpoint = enable ? 'enable' : 'disable';
-                await fetch(`/api/plugins/${name}/${endpoint}`, {
+                const response = await fetch(`/api/plugins/${name}/${endpoint}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name, enabled: enable, config: {} })
                 });
 
+                if (!response.ok) {
+                    const err = await response.json();
+                    addLog(`Failed to ${endpoint} plugin: ${err.error || 'Unknown error'}`, 'error');
+                    return;
+                }
+
                 addLog(`Plugin ${name} ${enable ? 'enabled' : 'disabled'}`, 'info');
-                loadPlugins();
-                loadStats();
+                await loadPlugins();
+                await loadStats();
 
             } catch (error) {
                 console.error('Error toggling plugin:', error);
