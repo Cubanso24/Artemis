@@ -1161,6 +1161,8 @@
 
                 <div class="graph-controls">
                     <span id="graph-live-badge" style="display:none; background:#f44336; color:#fff; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600; animation: pulse 1.5s infinite; margin-right:10px;">LIVE</span>
+                    <input type="text" id="graph-search" placeholder="Search IP address..." onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#eee; width:200px;">
+                    <button class="btn" onclick="searchGraphNode()">Find</button>
                     <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
@@ -1245,6 +1247,7 @@
         let ws = null;
         let currentHuntId = null;
         let networkGraph = null;
+        let networkGraphData = null;  // Store current graph data for search
         let geoipMap = null;
         let allHunts = [];  // Store all hunts for filtering
         let graphLiveInterval = null;  // Live graph refresh during hunts
@@ -1832,6 +1835,7 @@
             };
 
             networkGraph = new vis.Network(container, data, options);
+            networkGraphData = { nodes: data.nodes, edges: data.edges, raw: graphData };
 
             // Stop physics after layout stabilizes so it doesn't keep spinning
             networkGraph.on('stabilized', function() {
@@ -1908,6 +1912,31 @@
                     addLog('Exported network graph as PNG', 'info');
                 }
             }
+        }
+
+        function searchGraphNode() {
+            const query = document.getElementById('graph-search').value.trim().toLowerCase();
+            if (!query || !networkGraph || !networkGraphData) return;
+
+            // Search through nodes for IP match (partial match supported)
+            const matches = networkGraphData.raw.nodes.filter(n =>
+                n.label.toLowerCase().includes(query) || n.id.toLowerCase().includes(query)
+            );
+
+            if (matches.length === 0) {
+                addLog(`No node found matching "${query}"`, 'warning');
+                return;
+            }
+
+            const match = matches[0];
+            addLog(`Found: ${match.label} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
+
+            // Select and zoom to the node
+            networkGraph.selectNodes([match.id]);
+            networkGraph.focus(match.id, {
+                scale: 1.5,
+                animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+            });
         }
 
         function changeGraphLayout() {
