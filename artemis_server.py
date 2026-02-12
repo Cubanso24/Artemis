@@ -1241,4 +1241,11 @@ if __name__ == "__main__":
     print("\n💡 Anyone on your network can access Artemis at the LAN address")
     print("=" * 80 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(
+        "artemis_server:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        reload=True,
+        reload_dirs=[".", "artemis"],
+    )
