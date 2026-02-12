@@ -459,6 +459,11 @@
             background: #666;
         }
 
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
         #log-output {
             background: #000;
             padding: 15px;
@@ -1155,6 +1160,7 @@
                 <h2>Network Topology Graph</h2>
 
                 <div class="graph-controls">
+                    <span id="graph-live-badge" style="display:none; background:#f44336; color:#fff; padding:4px 12px; border-radius:12px; font-size:12px; font-weight:600; animation: pulse 1.5s infinite; margin-right:10px;">LIVE</span>
                     <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
@@ -1241,6 +1247,7 @@
         let networkGraph = null;
         let geoipMap = null;
         let allHunts = [];  // Store all hunts for filtering
+        let graphLiveInterval = null;  // Live graph refresh during hunts
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -1707,29 +1714,53 @@
         }
 
         // Network Graph Functions
-        async function loadNetworkGraph() {
+        async function loadNetworkGraph(silent = false) {
             try {
-                addLog('Loading network topology...', 'info');
+                if (!silent) addLog('Loading network topology...', 'info');
 
                 const response = await fetch('/api/network-graph');
                 const graphData = await response.json();
 
                 if (graphData.error) {
-                    addLog('Network mapper plugin not enabled', 'warning');
-                    document.getElementById('network-graph').innerHTML =
-                        '<p style="text-align:center; padding:50px;">Network mapper plugin not enabled. Enable it in the Plugins tab.</p>';
+                    if (!silent) {
+                        addLog('Network mapper plugin not enabled', 'warning');
+                        document.getElementById('network-graph').innerHTML =
+                            '<p style="text-align:center; padding:50px;">Network mapper plugin not enabled. Enable it in the Plugins tab.</p>';
+                    }
                     return;
                 }
 
                 renderNetworkGraph(graphData);
-                loadNetworkSummary();
+                if (!silent) loadNetworkSummary();
 
-                addLog(`Loaded network graph with ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`, 'info');
+                if (!silent) {
+                    addLog(`Loaded network graph with ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`, 'info');
+                }
 
             } catch (error) {
-                console.error('Error loading network graph:', error);
-                addLog(`Error loading network graph: ${error.message}`, 'error');
+                if (!silent) {
+                    console.error('Error loading network graph:', error);
+                    addLog(`Error loading network graph: ${error.message}`, 'error');
+                }
             }
+        }
+
+        function startLiveGraph() {
+            if (graphLiveInterval) return;  // Already running
+            graphLiveInterval = setInterval(() => loadNetworkGraph(true), 5000);
+            const badge = document.getElementById('graph-live-badge');
+            if (badge) badge.style.display = 'inline-block';
+        }
+
+        function stopLiveGraph() {
+            if (graphLiveInterval) {
+                clearInterval(graphLiveInterval);
+                graphLiveInterval = null;
+            }
+            const badge = document.getElementById('graph-live-badge');
+            if (badge) badge.style.display = 'none';
+            // One final refresh with summary
+            loadNetworkGraph(false);
         }
 
         function renderNetworkGraph(graphData) {
@@ -1991,7 +2022,8 @@
                 progressTitle.textContent = data.stage === 'analyze'
                     ? 'Analyzing Collected Data...'
                     : 'Running Hunting Agents...';
-                // Keep collection stats visible but stop updating
+                // Start live network graph refresh during analysis
+                startLiveGraph();
             } else if (data.stage === 'finalize') {
                 progressTitle.textContent = 'Finalizing Results...';
             }
@@ -2009,6 +2041,7 @@
                 progressTitle.textContent = 'Hunt Complete!';
                 currentHuntId = null;
                 localStorage.removeItem('currentHuntId');
+                stopLiveGraph();
                 setTimeout(() => {
                     document.getElementById('progress').classList.remove('active');
                     collectionDetail.style.display = 'none';
@@ -2023,6 +2056,7 @@
             } else if (data.stage === 'error') {
                 currentHuntId = null;
                 localStorage.removeItem('currentHuntId');
+                stopLiveGraph();
                 setTimeout(() => {
                     document.getElementById('progress').classList.remove('active');
                     collectionDetail.style.display = 'none';

@@ -114,12 +114,38 @@ class GeoIPMapperPlugin(ArtemisPlugin):
         uncached = [ip for ip in external_ips if ip not in self.cache]
 
         if uncached:
-            logger.info(f"GeoIP: {len(uncached)} uncached IPs to resolve ({len(self.cache)} cached)")
-            # Batch lookup in chunks
+            total_batches = (len(uncached) + BATCH_SIZE - 1) // BATCH_SIZE
+            logger.info(
+                f"GeoIP: {len(uncached)} uncached IPs to resolve "
+                f"({len(self.cache)} cached, {total_batches} batches)"
+            )
+            consecutive_failures = 0
+            max_failures = 3  # Stop after 3 consecutive failures
+            resolved_count = 0
+
             for i in range(0, len(uncached), BATCH_SIZE):
                 batch = uncached[i:i + BATCH_SIZE]
                 results = self._lookup_batch(batch)
+
+                # Check if this batch failed
+                batch_failed = all('error' in v for v in results.values())
+                if batch_failed:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_failures:
+                        logger.warning(
+                            f"GeoIP: {max_failures} consecutive failures, "
+                            f"stopping. Resolved {resolved_count}/{len(uncached)} IPs."
+                        )
+                        break
+                else:
+                    consecutive_failures = 0
+                    resolved_count += sum(1 for v in results.values() if 'error' not in v)
+
                 self.cache.update(results)
+
+                batch_num = i // BATCH_SIZE + 1
+                if batch_num % 10 == 0:
+                    logger.info(f"GeoIP: batch {batch_num}/{total_batches}, {resolved_count} resolved")
 
                 if i + BATCH_SIZE < len(uncached):
                     time.sleep(RATE_LIMIT_DELAY)
