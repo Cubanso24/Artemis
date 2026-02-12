@@ -530,6 +530,44 @@
             flex-wrap: wrap;
         }
 
+        /* VLAN sub-tabs */
+        .vlan-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            padding: 6px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+        }
+        .vlan-tab {
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+        .vlan-tab:hover {
+            background: var(--bg-tertiary);
+            color: #ddd;
+        }
+        .vlan-tab.active {
+            background: var(--bg-tertiary);
+            color: #667eea;
+            border-color: #667eea;
+            font-weight: 600;
+        }
+        .vlan-tab .vlan-tab-count {
+            font-size: 10px;
+            opacity: 0.6;
+            margin-left: 4px;
+        }
+
         .graph-legend {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -1192,6 +1230,8 @@
                     </select>
                 </div>
 
+                <div id="vlan-tabs" class="vlan-tabs" style="display:none;"></div>
+
                 <div id="network-graph"></div>
 
                 <div class="graph-legend" id="graph-legend">
@@ -1750,6 +1790,9 @@
         }
 
         // Network Graph Functions
+        let _fullGraphData = null;   // raw API response, kept for VLAN filtering
+        let _activeVlan = null;      // null = "All Networks"
+
         async function loadNetworkGraph(silent = false) {
             try {
                 if (!silent) addLog('Loading network topology...', 'info');
@@ -1766,6 +1809,13 @@
                     return;
                 }
 
+                // Store full data for VLAN filtering
+                _fullGraphData = graphData;
+                _activeVlan = null;
+
+                // Build VLAN sub-tabs
+                buildVlanTabs(graphData);
+
                 renderNetworkGraph(graphData);
                 if (!silent) loadNetworkSummary();
 
@@ -1778,6 +1828,76 @@
                     console.error('Error loading network graph:', error);
                     addLog(`Error loading network graph: ${error.message}`, 'error');
                 }
+            }
+        }
+
+        function buildVlanTabs(graphData) {
+            const tabBar = document.getElementById('vlan-tabs');
+
+            // Collect unique VLANs from internal nodes
+            const vlanCounts = {};
+            graphData.nodes.forEach(n => {
+                if (n.group === 'internet') return;
+                const v = n.vlan || '0';
+                vlanCounts[v] = (vlanCounts[v] || 0) + 1;
+            });
+            const vlans = Object.keys(vlanCounts).sort((a, b) => {
+                // Sort numerically where possible
+                const na = parseInt(a), nb = parseInt(b);
+                if (!isNaN(na) && !isNaN(nb)) return na - nb;
+                return a.localeCompare(b);
+            });
+
+            // Only show tabs if there are 2+ VLANs
+            if (vlans.length < 2) {
+                tabBar.style.display = 'none';
+                return;
+            }
+            tabBar.style.display = 'flex';
+
+            const totalInternal = graphData.nodes.filter(n => n.group !== 'internet').length;
+
+            let html = `<button class="vlan-tab active" onclick="switchVlanTab(null)">All Networks<span class="vlan-tab-count">(${totalInternal})</span></button>`;
+            vlans.forEach(v => {
+                const label = v === '0' ? 'Untagged' : `VLAN ${v}`;
+                html += `<button class="vlan-tab" onclick="switchVlanTab('${v}')">${label}<span class="vlan-tab-count">(${vlanCounts[v]})</span></button>`;
+            });
+            tabBar.innerHTML = html;
+        }
+
+        function switchVlanTab(vlan) {
+            if (!_fullGraphData) return;
+            _activeVlan = vlan;
+
+            // Update active tab styling
+            document.querySelectorAll('#vlan-tabs .vlan-tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            // First child = "All", rest = VLANs in order
+            const tabs = document.querySelectorAll('#vlan-tabs .vlan-tab');
+            if (vlan === null) {
+                tabs[0].classList.add('active');
+            } else {
+                tabs.forEach(btn => {
+                    if (btn.textContent.includes(vlan === '0' ? 'Untagged' : `VLAN ${vlan}`)) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
+
+            // Filter graph data for selected VLAN
+            if (vlan === null) {
+                renderNetworkGraph(_fullGraphData);
+            } else {
+                const filteredNodes = _fullGraphData.nodes.filter(n => {
+                    if (n.group === 'internet') return true;  // keep internet cloud
+                    return (n.vlan || '0') === vlan;
+                });
+                const nodeIds = new Set(filteredNodes.map(n => n.id));
+                const filteredEdges = _fullGraphData.edges.filter(e =>
+                    nodeIds.has(e.from) && nodeIds.has(e.to)
+                );
+                renderNetworkGraph({ nodes: filteredNodes, edges: filteredEdges });
             }
         }
 
@@ -1940,13 +2060,15 @@
             }
 
             networkGraph = new vis.Network(container, data, options);
-            networkGraphData = { nodes: data.nodes, edges: data.edges, raw: graphData };
+            // Store raw reference: use _fullGraphData for click lookups when filtering
+            const rawRef = _fullGraphData || graphData;
+            networkGraphData = { nodes: data.nodes, edges: data.edges, raw: rawRef };
 
             // Add click handler
             networkGraph.on('click', function(params) {
                 if (params.nodes.length > 0) {
                     const nodeId = params.nodes[0];
-                    const node = graphData.nodes.find(n => n.id === nodeId);
+                    const node = rawRef.nodes.find(n => n.id === nodeId);
                     if (node) {
                         showNodeDetails(node);
                     }
@@ -2215,6 +2337,13 @@
             if (matches.length > 0) {
                 const match = matches[0];
                 addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
+                // Auto-switch to the node's VLAN if we're on a different tab
+                if (_activeVlan !== null && match.group !== 'internet') {
+                    const nodeVlan = match.vlan || '0';
+                    if (nodeVlan !== _activeVlan) {
+                        switchVlanTab(nodeVlan);
+                    }
+                }
                 networkGraph.selectNodes([match.id]);
                 networkGraph.focus(match.id, {
                     scale: 1.5,
@@ -2233,6 +2362,13 @@
             });
             if (extMatch) {
                 addLog(`External IP "${query}" found in connections of ${extMatch.label}`, 'info');
+                // Auto-switch VLAN tab if needed
+                if (_activeVlan !== null) {
+                    const nodeVlan = extMatch.vlan || '0';
+                    if (nodeVlan !== _activeVlan) {
+                        switchVlanTab(nodeVlan);
+                    }
+                }
                 networkGraph.selectNodes([extMatch.id]);
                 networkGraph.focus(extMatch.id, {
                     scale: 1.5,
