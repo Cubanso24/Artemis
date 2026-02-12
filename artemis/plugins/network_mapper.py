@@ -84,16 +84,16 @@ class NetworkNode:
             'is_internal': self.is_internal,
             'roles': list(self.roles),
             'device_type': self.device_type,
-            'top_destinations': dict(sorted(
+            'connections_to': dict(sorted(
                 self.connections_to.items(),
                 key=lambda x: x[1],
                 reverse=True
-            )[:10]),
-            'top_sources': dict(sorted(
+            )[:50]),
+            'connections_from': dict(sorted(
                 self.connections_from.items(),
                 key=lambda x: x[1],
                 reverse=True
-            )[:10])
+            )[:50])
         }
 
 
@@ -195,6 +195,19 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.bytes_received = node_data.get('bytes_received', 0)
         node.roles = set(node_data.get('roles', []))
         node.device_type = node_data.get('device_type', '')
+
+        # Restore connection maps (edges)
+        for dst_ip, count in node_data.get('connections_to', {}).items():
+            node.connections_to[dst_ip] = int(count)
+        for src_ip, count in node_data.get('connections_from', {}).items():
+            node.connections_from[src_ip] = int(count)
+        # Backward compat: older maps used top_destinations/top_sources
+        if not node.connections_to:
+            for dst_ip, count in node_data.get('top_destinations', {}).items():
+                node.connections_to[dst_ip] = int(count)
+        if not node.connections_from:
+            for src_ip, count in node_data.get('top_sources', {}).items():
+                node.connections_from[src_ip] = int(count)
 
         self.nodes[key] = node
         self.sensors.add(sensor_id)
@@ -547,6 +560,37 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'iot_device': 'IoT',
         }
         return labels.get(device_type, '')
+
+    @staticmethod
+    def _device_tier(device_type: str, is_internal: bool) -> int:
+        """Get hierarchical tier for network diagram layout.
+
+        Tier 0 (top)   : External / WAN / Internet
+        Tier 1          : Gateways, firewalls, VPN, routers
+        Tier 2          : Core infrastructure (DNS, DHCP, DC)
+        Tier 3          : Servers (web, DB, mail, file, ssh, syslog, monitoring)
+        Tier 4 (bottom) : End devices (workstations, printers, IoT)
+        """
+        if not is_internal:
+            return 0
+        tiers = {
+            'gateway': 1,
+            'vpn_gateway': 1,
+            'domain_controller': 2,
+            'dns_server': 2,
+            'dhcp_server': 2,
+            'web_server': 3,
+            'database_server': 3,
+            'mail_server': 3,
+            'file_server': 3,
+            'ssh_server': 3,
+            'syslog_server': 3,
+            'monitoring': 3,
+            'print_server': 4,
+            'workstation': 4,
+            'iot_device': 4,
+        }
+        return tiers.get(device_type, 3)
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h") -> Dict:
         """
@@ -1009,6 +1053,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'services': len(node.services),
                 'device_type': node.device_type,
                 'device_label': self._device_label(node.device_type),
+                'tier': self._device_tier(node.device_type, node.is_internal),
             })
 
         # Build edges only between top nodes
@@ -1020,7 +1065,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 node.connections_to.items(),
                 key=lambda x: x[1],
                 reverse=True,
-            )[:5]:
+            )[:15]:
                 dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
                 if dst_key not in top_keys:
                     continue

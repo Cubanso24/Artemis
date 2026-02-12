@@ -7,6 +7,7 @@
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
     <style>
         :root {
             --bg-primary: #1a1a2e;
@@ -1183,11 +1184,6 @@
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
                     <button class="btn" onclick="profileDevices()" id="profile-btn" style="background:#9C27B0;">Profile Devices</button>
-                    <select id="graph-layout" onchange="changeGraphLayout()">
-                        <option value="forceAtlas2Based">Force Atlas</option>
-                        <option value="barnesHut">Barnes Hut</option>
-                        <option value="hierarchical">Hierarchical</option>
-                    </select>
                     <select id="profile-time-range" style="padding:8px 12px; border-radius:5px; border:1px solid #444; background:#1a1a2e; color:#eee;">
                         <option value="-1h">Last 1h</option>
                         <option value="-4h">Last 4h</option>
@@ -1199,15 +1195,12 @@
                 <div id="network-graph"></div>
 
                 <div class="graph-legend" id="graph-legend">
-                    <div class="legend-item"><div class="legend-color" style="background: #4CAF50;"></div><span>Internal</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #f44336;"></div><span>External</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #FFC107;"></div><span>Server</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #E91E63;"></div><span>DC</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #00BCD4;"></div><span>DNS</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #FF5722;"></div><span>Web</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #9C27B0;"></div><span>Database</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #3F51B5;"></div><span>File/Mail</span></div>
-                    <div class="legend-item"><div class="legend-color" style="background: #607D8B;"></div><span>Workstation</span></div>
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:6px; font-weight:600;">TIERS (top → bottom)</div>
+                    <div class="legend-item"><i class="fa-solid fa-cloud" style="color:#f44336; width:16px; text-align:center;"></i><span>WAN / External</span></div>
+                    <div class="legend-item"><i class="fa-solid fa-shield-halved" style="color:#FF9800; width:16px; text-align:center;"></i><span>Gateway / Firewall</span></div>
+                    <div class="legend-item"><i class="fa-solid fa-sitemap" style="color:#00BCD4; width:16px; text-align:center;"></i><span>Core Infra (DNS/DC/DHCP)</span></div>
+                    <div class="legend-item"><i class="fa-solid fa-server" style="color:#9C27B0; width:16px; text-align:center;"></i><span>Servers</span></div>
+                    <div class="legend-item"><i class="fa-solid fa-desktop" style="color:#607D8B; width:16px; text-align:center;"></i><span>Endpoints</span></div>
                 </div>
                 <div id="profile-status" style="display:none; margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:5px;"></div>
 
@@ -1789,72 +1782,98 @@
 
             addLog(`Rendering graph: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`, 'info');
 
-            // Prepare nodes for vis.js — scale sizes to avoid overlap
-            const maxSize = Math.max(...graphData.nodes.map(n => n.size || 1));
             const nodeCount = graphData.nodes.length;
 
-            // Device type color map
-            const deviceColors = {
-                'domain_controller': '#E91E63',
-                'dns_server': '#00BCD4',
-                'web_server': '#FF5722',
-                'database_server': '#9C27B0',
-                'mail_server': '#3F51B5',
-                'file_server': '#3F51B5',
-                'dhcp_server': '#009688',
-                'ssh_server': '#795548',
-                'vpn_gateway': '#FF9800',
-                'print_server': '#607D8B',
-                'syslog_server': '#8BC34A',
-                'monitoring': '#CDDC39',
-                'workstation': '#607D8B',
-                'gateway': '#FF9800',
-                'iot_device': '#9E9E9E',
+            // Font Awesome icon map per device type
+            const deviceIcons = {
+                'domain_controller': { code: '\uf0e8', color: '#E91E63' },  // fa-sitemap
+                'dns_server':        { code: '\uf0ac', color: '#00BCD4' },  // fa-globe
+                'web_server':        { code: '\uf233', color: '#FF5722' },  // fa-server
+                'database_server':   { code: '\uf1c0', color: '#9C27B0' },  // fa-database
+                'mail_server':       { code: '\uf0e0', color: '#3F51B5' },  // fa-envelope
+                'file_server':       { code: '\uf07b', color: '#3F51B5' },  // fa-folder
+                'dhcp_server':       { code: '\uf6ff', color: '#009688' },  // fa-network-wired
+                'ssh_server':        { code: '\uf120', color: '#795548' },  // fa-terminal
+                'vpn_gateway':       { code: '\uf3ed', color: '#FF9800' },  // fa-shield-alt
+                'print_server':      { code: '\uf02f', color: '#607D8B' },  // fa-print
+                'syslog_server':     { code: '\uf15c', color: '#8BC34A' },  // fa-file-alt
+                'monitoring':        { code: '\uf201', color: '#CDDC39' },  // fa-chart-line
+                'workstation':       { code: '\uf108', color: '#607D8B' },  // fa-desktop
+                'gateway':           { code: '\uf132', color: '#FF9800' },  // fa-shield
+                'iot_device':        { code: '\uf2db', color: '#9E9E9E' },  // fa-microchip
             };
 
-            // Device type shapes
-            const deviceShapes = {
-                'domain_controller': 'diamond',
-                'dns_server': 'triangle',
-                'web_server': 'square',
-                'database_server': 'star',
-                'gateway': 'triangleDown',
+            // Tier labels for the horizontal separator lines
+            const tierLabels = {
+                0: 'WAN / External',
+                1: 'Gateway / Firewall',
+                2: 'Core Infrastructure',
+                3: 'Servers',
+                4: 'Endpoints',
             };
 
             const nodes = graphData.nodes.map(node => {
-                let color = node.group === 'internal' ? '#4CAF50' : '#f44336';
-                let shape = 'dot';
-
-                // Scale node size: smaller when many nodes, larger when few
-                const rawSize = node.size || 1;
-                const scaled = 5 + (rawSize / Math.max(maxSize, 1)) * 20;
-
-                // Color by device type if profiled, otherwise by role/group
-                if (node.device_type && deviceColors[node.device_type]) {
-                    color = deviceColors[node.device_type];
-                    shape = deviceShapes[node.device_type] || 'dot';
-                } else if (node.roles && node.roles.includes('server')) {
-                    color = '#FFC107';
-                }
-
+                const tier = node.tier !== undefined ? node.tier : (node.group === 'external' ? 0 : 3);
+                const deviceStr = node.device_label || node.device_type || '';
                 const rolesStr = node.roles ? node.roles.join(', ') : 'none';
                 const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
-                const deviceStr = node.device_label || node.device_type || '';
 
-                // Build label: IP + device type tag
                 let label = node.label;
                 if (deviceStr) {
-                    label = `${node.label}\n[${deviceStr}]`;
+                    label = `${node.label}\n${deviceStr}`;
                 }
 
+                const tooltip = `${node.label}${deviceStr ? '\nDevice: ' + deviceStr : ''}\nTier: ${tierLabels[tier] || 'Unknown'}\nServices: ${servicesStr}\nRoles: ${rolesStr}`;
+
+                // Use Font Awesome icon if device type is known
+                const iconDef = deviceIcons[node.device_type];
+                if (iconDef) {
+                    return {
+                        id: node.id,
+                        label: label,
+                        title: tooltip,
+                        level: tier,
+                        shape: 'icon',
+                        icon: {
+                            face: '"Font Awesome 6 Free"',
+                            code: iconDef.code,
+                            size: 30,
+                            color: iconDef.color,
+                            weight: 900,
+                        },
+                        font: { size: 11, color: '#ccc', multi: false, vadjust: 4 },
+                    };
+                }
+
+                // External nodes: cloud icon
+                if (node.group === 'external') {
+                    return {
+                        id: node.id,
+                        label: label,
+                        title: tooltip,
+                        level: 0,
+                        shape: 'icon',
+                        icon: {
+                            face: '"Font Awesome 6 Free"',
+                            code: '\uf0c2',   // fa-cloud
+                            size: 25,
+                            color: '#f44336',
+                            weight: 900,
+                        },
+                        font: { size: 10, color: '#ccc', multi: false, vadjust: 4 },
+                    };
+                }
+
+                // Unclassified internal nodes: green dot
                 return {
                     id: node.id,
                     label: label,
-                    title: `${node.label}${deviceStr ? '\nDevice: ' + deviceStr : ''}\nServices: ${servicesStr}\nRoles: ${rolesStr}`,
-                    color: color,
-                    shape: shape,
-                    size: scaled,
-                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee', multi: 'md' }
+                    title: tooltip,
+                    level: tier,
+                    shape: 'dot',
+                    size: 12,
+                    color: '#4CAF50',
+                    font: { size: 11, color: '#ccc', multi: false, vadjust: 4 },
                 };
             });
 
@@ -1868,46 +1887,44 @@
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
 
-            // Adjust physics spacing based on node count
-            const repulsion = nodeCount > 100 ? -150 : nodeCount > 50 ? -100 : -50;
-            const springLen = nodeCount > 100 ? 250 : nodeCount > 50 ? 180 : 120;
-
             const options = {
                 nodes: {
-                    shape: 'dot',
-                    font: { size: Math.max(8, 14 - Math.floor(nodeCount / 30)), color: '#eee' }
+                    font: { size: 11, color: '#ccc' },
                 },
                 edges: {
-                    color: { color: '#666', highlight: '#667eea' },
-                    smooth: { type: 'continuous' }
+                    color: { color: '#555', highlight: '#667eea', hover: '#888' },
+                    smooth: { type: 'cubicBezier', roundness: 0.4 },
+                    width: 1,
+                    scaling: { min: 1, max: 4 },
+                    arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+                },
+                layout: {
+                    hierarchical: {
+                        enabled: true,
+                        direction: 'UD',
+                        sortMethod: 'directed',
+                        levelSeparation: 150,
+                        nodeSpacing: 100,
+                        treeSpacing: 120,
+                        blockShifting: true,
+                        edgeMinimization: true,
+                        parentCentralization: true,
+                    },
                 },
                 physics: {
-                    enabled: true,
-                    solver: 'forceAtlas2Based',
-                    forceAtlas2Based: {
-                        gravitationalConstant: repulsion,
-                        centralGravity: 0.005,
-                        springLength: springLen,
-                        springConstant: 0.04,
-                        avoidOverlap: 0.8
-                    },
-                    stabilization: {
-                        enabled: true,
-                        iterations: 300,
-                        updateInterval: 25,
-                        fit: true
-                    },
-                    maxVelocity: 50,
-                    minVelocity: 0.75,
+                    enabled: false,
                 },
                 interaction: {
                     hover: true,
                     tooltipDelay: 200,
-                    zoomView: true
-                }
+                    zoomView: true,
+                    dragNodes: true,
+                    navigationButtons: false,
+                    keyboard: { enabled: true },
+                },
             };
 
-            // Destroy previous graph if it exists to avoid lingering timers
+            // Destroy previous graph if it exists
             if (networkGraph) {
                 networkGraph.destroy();
                 networkGraph = null;
@@ -1915,17 +1932,6 @@
 
             networkGraph = new vis.Network(container, data, options);
             networkGraphData = { nodes: data.nodes, edges: data.edges, raw: graphData };
-
-            // Permanently disable physics once stabilization completes
-            networkGraph.once('stabilizationIterationsDone', function() {
-                networkGraph.setOptions({ physics: { enabled: false } });
-            });
-
-            // Hard fallback: kill physics after 4 seconds no matter what
-            const graphRef = networkGraph;
-            setTimeout(() => {
-                try { graphRef.setOptions({ physics: { enabled: false } }); } catch(e) {}
-            }, 4000);
 
             // Add click handler
             networkGraph.on('click', function(params) {
@@ -1943,9 +1949,11 @@
             const rolesStr = node.roles ? node.roles.join(', ') : 'none';
             const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
             const deviceStr = node.device_label || node.device_type || 'Unknown';
+            const tierNames = { 0: 'WAN/External', 1: 'Gateway', 2: 'Core Infra', 3: 'Server', 4: 'Endpoint' };
+            const tierStr = tierNames[node.tier] || node.group;
             alert(`${node.label}\n` +
                   `Device: ${deviceStr}\n` +
-                  `Type: ${node.group}\n` +
+                  `Layer: ${tierStr}\n` +
                   `Sensor: ${node.sensor_id || 'default'}\n` +
                   `Services: ${servicesStr}\n` +
                   `Roles: ${rolesStr}`);
@@ -2089,9 +2097,6 @@
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             if (!query || !networkGraph || !networkGraphData) return;
 
-            // Stop physics so the node doesn't drift after focusing
-            networkGraph.setOptions({ physics: { enabled: false } });
-
             // Search through nodes for IP match (partial match on label, id, device type)
             const matches = networkGraphData.raw.nodes.filter(n => {
                 const lbl = (n.label || '').toLowerCase();
@@ -2119,24 +2124,9 @@
         }
 
         function changeGraphLayout() {
-            const layout = document.getElementById('graph-layout').value;
-            if (networkGraph) {
-                // Briefly enable physics with new solver to re-layout, then stop
-                networkGraph.setOptions({
-                    physics: {
-                        enabled: true,
-                        solver: layout,
-                        stabilization: { enabled: true, iterations: 200 }
-                    }
-                });
-                networkGraph.once('stabilizationIterationsDone', function() {
-                    networkGraph.setOptions({ physics: { enabled: false } });
-                });
-                // Hard fallback
-                const ref = networkGraph;
-                setTimeout(() => {
-                    try { ref.setOptions({ physics: { enabled: false } }); } catch(e) {}
-                }, 4000);
+            // Hierarchical layout is the default; re-render to reset
+            if (networkGraphData && networkGraphData.raw) {
+                renderNetworkGraph(networkGraphData.raw);
             }
         }
 
@@ -2246,6 +2236,11 @@
             const progressMessage = document.getElementById('progress-message');
             const collectionDetail = document.getElementById('collection-detail');
             const progressTitle = document.getElementById('progress-title');
+
+            // Ensure progress panel is visible for active stages
+            if (data.stage !== 'complete' && data.stage !== 'error') {
+                document.getElementById('progress').classList.add('active');
+            }
 
             progressFill.style.width = `${data.progress}%`;
             progressFill.textContent = `${data.progress}%`;
