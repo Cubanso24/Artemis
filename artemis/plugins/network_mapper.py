@@ -692,8 +692,20 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
         '''
 
-        # Run all three queries in parallel
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        # Query 4: Kerberos logs — responder IPs are KDCs (Domain Controllers)
+        kerberos_query = '''
+        search index=zeek_kerberos
+        | spath
+        | stats dc("id.orig_h") as unique_clients,
+                values(service) as services,
+                count as auth_count
+          by "id.resp_h"
+        | rename "id.resp_h" as ip
+        | where auth_count >= 3
+        '''
+
+        # Run all four queries in parallel
+        with ThreadPoolExecutor(max_workers=4) as executor:
             server_future = executor.submit(
                 splunk_connector.query, server_query,
                 earliest_time=time_range, latest_time="now"
@@ -706,6 +718,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 splunk_connector.query, ntlm_query,
                 earliest_time=time_range, latest_time="now"
             )
+            kerberos_future = executor.submit(
+                splunk_connector.query, kerberos_query,
+                earliest_time=time_range, latest_time="now"
+            )
 
             server_results = server_future.result(timeout=600)
             client_results = client_future.result(timeout=600)
@@ -713,6 +729,21 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 ntlm_results = ntlm_future.result(timeout=600)
             except Exception:
                 ntlm_results = []  # NTLM index may not exist
+            try:
+                kerberos_results = kerberos_future.result(timeout=600)
+            except Exception:
+                kerberos_results = []  # Kerberos index may not exist
+
+        # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
+        kdc_ips: set = set()
+        for row in kerberos_results:
+            ip = row.get('ip', '')
+            if ip:
+                kdc_ips.add(ip)
+
+        # Build map of NTLM auth server IPs -> unique client count
+        # Servers receiving NTLM auths from many clients are likely DCs
+        ntlm_server_clients: Dict[str, set] = defaultdict(set)
 
         # Enrich nodes with NTLM data (NetBIOS names + domain)
         ntlm_enriched = 0
@@ -723,6 +754,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             domainname = row.get('domainname', '')
             server_nb = row.get('server_nb_computer_name', '')
             server_dns = row.get('server_dns_computer_name', '')
+
+            # Track which servers receive NTLM auths from many clients
+            if src_ip and dst_ip:
+                ntlm_server_clients[dst_ip].add(src_ip)
 
             # Find matching nodes and enrich
             for key, node in self.nodes.items():
@@ -740,10 +775,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.domain = domainname.upper()
                     ntlm_enriched += 1
 
+        # IPs that are heavy NTLM auth servers (5+ unique clients)
+        ntlm_auth_servers = {
+            ip for ip, clients in ntlm_server_clients.items()
+            if len(clients) >= 5
+        }
+
         logger.info(
             f"Device profiling: got {len(server_results)} server profiles, "
             f"{len(client_results)} client profiles, "
-            f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments)"
+            f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments), "
+            f"{len(kerberos_results)} Kerberos responders, "
+            f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers"
         )
 
         # Index server data by IP
@@ -781,6 +824,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Classify each node in the network map
         classified = 0
         type_counts: Dict[str, int] = defaultdict(int)
+        dc_ports = {88, 389, 636, 3268, 135, 464}  # Kerberos, LDAP, LDAPS, GC, RPC, Kpasswd
 
         for key, node in self.nodes.items():
             if not node.is_internal:
@@ -802,9 +846,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 except (ValueError, TypeError):
                     pass
 
-            device_type = self._classify_device(
-                ports_served, unique_clients, unique_dests, outbound
-            )
+            # DC detection: use Kerberos/NTLM evidence before port-only check
+            device_type = ''
+            if ip in kdc_ips:
+                # Confirmed KDC from Kerberos logs — this IS a DC
+                device_type = 'domain_controller'
+            elif ip in ntlm_auth_servers and ports_served & dc_ports:
+                # Heavy NTLM auth server + at least one DC port
+                device_type = 'domain_controller'
+            else:
+                device_type = self._classify_device(
+                    ports_served, unique_clients, unique_dests, outbound
+                )
 
             if device_type:
                 node.device_type = device_type
@@ -1035,6 +1088,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 device_inventory[n.device_type].append({
                     'ip': n.ip,
                     'hostnames': hostnames,
+                    'netbios_names': sorted(n.netbios_names)[:3],
+                    'domain': n.domain,
                     'services': svcs,
                     'connections': n.total_connections,
                     'sensor_id': n.sensor_id,

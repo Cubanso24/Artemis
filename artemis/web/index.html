@@ -2260,28 +2260,37 @@
 
                     for (const [dtype, devices] of Object.entries(inventory)) {
                         const info = deviceLabels[dtype] || { label: dtype, icon: '❓' };
+                        const isDC = dtype === 'domain_controller';
+                        // DCs open by default — they're critical infrastructure
                         html += `
-                            <details style="margin-bottom:8px; background:var(--bg-tertiary); border-radius:5px; padding:0;">
+                            <details ${isDC ? 'open' : ''} style="margin-bottom:8px; background:var(--bg-tertiary); border-radius:5px; padding:0;${isDC ? ' border-left:3px solid #E91E63;' : ''}">
                                 <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
                                     <span>${info.icon} ${info.label}</span>
-                                    <span style="background:var(--accent); color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${devices.length}</span>
+                                    <span style="background:${isDC ? '#E91E63' : 'var(--accent)'}; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${devices.length}</span>
                                 </summary>
                                 <div style="padding:0 14px 10px 14px;">
                                     <table style="width:100%; font-size:13px; border-collapse:collapse;">
                                         <tr style="opacity:0.7; font-size:11px; text-transform:uppercase;">
                                             <td style="padding:4px 8px;">IP Address</td>
-                                            <td style="padding:4px 8px;">Hostname</td>
+                                            <td style="padding:4px 8px;">Name</td>
+                                            ${isDC ? '<td style="padding:4px 8px;">Domain</td>' : ''}
                                             <td style="padding:4px 8px;">Services</td>
                                             <td style="padding:4px 8px; text-align:right;">Connections</td>
                                         </tr>
-                                        ${devices.map(d => `
+                                        ${devices.map(d => {
+                                            const name = (d.netbios_names && d.netbios_names.length > 0)
+                                                ? d.netbios_names[0]
+                                                : (d.hostnames && d.hostnames.length > 0 ? d.hostnames[0] : '-');
+                                            const domain = d.domain || '-';
+                                            return `
                                             <tr style="border-top:1px solid rgba(255,255,255,0.05);">
                                                 <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}</td>
-                                                <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${d.hostnames.length > 0 ? d.hostnames[0] : '-'}</td>
+                                                <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
+                                                ${isDC ? '<td style="padding:4px 8px; opacity:0.8;">' + escapeHtml(domain) + '</td>' : ''}
                                                 <td style="padding:4px 8px; opacity:0.7; font-size:11px;">${d.services.slice(0, 5).join(', ') || '-'}</td>
                                                 <td style="padding:4px 8px; text-align:right;">${d.connections.toLocaleString()}</td>
-                                            </tr>
-                                        `).join('')}
+                                            </tr>`;
+                                        }).join('')}
                                     </table>
                                 </div>
                             </details>
