@@ -323,7 +323,7 @@ class DataPipeline:
         completed_queries = {}
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 futures = {
                     "network_connections": executor.submit(
                         self.splunk.get_network_connections, earliest, None, latest

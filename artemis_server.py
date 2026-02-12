@@ -432,7 +432,12 @@ class HuntManager:
         self.coordinator = MetaLearnerCoordinator()
         self.pipeline = None
         self.active_hunts = {}
-        self.executor = ThreadPoolExecutor(max_workers=16)  # Maximize parallel hunt execution
+        # Dedicated executor for long-running hunt operations (data collection,
+        # analysis, plugins). Kept separate so hunts never starve HTTP requests.
+        self.hunt_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='hunt')
+        # Lightweight executor for quick API operations (DB reads, plugin queries).
+        # Never used by hunts, so always has threads available.
+        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='api')
 
     def initialize_pipeline(self):
         """Initialize data pipeline."""
@@ -586,9 +591,10 @@ class HuntManager:
 
                 stats['collection_stats'] = collection_stats
 
-            # Collect data with progress tracking
+            # Collect data with progress tracking (uses hunt_executor to avoid
+            # starving the API executor during long Splunk pagination)
             hunting_data = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
+                self.hunt_executor,
                 lambda: self.pipeline.collect_hunting_data(
                     time_range,
                     progress_callback=collection_progress,
@@ -622,7 +628,7 @@ class HuntManager:
             # coordinator.hunt() signature: hunt(data, initial_signals=None, context_data=None)
             # It creates NetworkState internally from context_data
             hunt_result = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
+                self.hunt_executor,
                 self.coordinator.hunt,
                 hunting_data,  # data: Dict[str, Any] - hunting data for agents
                 None,          # initial_signals: Optional initial alerts
@@ -668,7 +674,7 @@ class HuntManager:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
                 try:
-                    await loop.run_in_executor(self.executor, lambda: network_mapper.execute(
+                    await loop.run_in_executor(self.hunt_executor, lambda: network_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
                         dns_queries=hunting_data.get('dns_queries', [])
                     ))
@@ -680,7 +686,7 @@ class HuntManager:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
                 try:
-                    sigma_result = await loop.run_in_executor(self.executor, lambda: sigma_engine.execute(**hunting_data))
+                    sigma_result = await loop.run_in_executor(self.hunt_executor, lambda: sigma_engine.execute(**hunting_data))
                     sigma_matches = sigma_result.get('matches', [])
                     if sigma_matches:
                         logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
@@ -716,7 +722,7 @@ class HuntManager:
                 if progress_callback:
                     await progress_callback({'stage': 'finalize', 'message': 'Running GeoIP mapper...', 'progress': 96})
                 try:
-                    await loop.run_in_executor(self.executor, lambda: geoip_mapper.execute(
+                    await loop.run_in_executor(self.hunt_executor, lambda: geoip_mapper.execute(
                         network_connections=hunting_data.get('network_connections', []),
                         dns_queries=hunting_data.get('dns_queries', [])
                     ))
