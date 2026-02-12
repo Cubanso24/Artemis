@@ -119,38 +119,52 @@ class GeoIPMapperPlugin(ArtemisPlugin):
                 f"GeoIP: {len(uncached)} uncached IPs to resolve "
                 f"({len(self.cache)} cached, {total_batches} batches)"
             )
-            consecutive_failures = 0
-            max_failures = 3  # Stop after 3 consecutive failures
+            total_failures = 0
+            max_total_failures = 5  # Stop after 5 total failures
             resolved_count = 0
+            max_time = 120  # Max 2 minutes for GeoIP resolution
+            start_time = time.time()
 
             for i in range(0, len(uncached), BATCH_SIZE):
+                # Time limit check
+                elapsed = time.time() - start_time
+                if elapsed > max_time:
+                    logger.warning(
+                        f"GeoIP: time limit ({max_time}s) reached. "
+                        f"Resolved {resolved_count}/{len(uncached)} IPs in {elapsed:.0f}s."
+                    )
+                    break
+
                 batch = uncached[i:i + BATCH_SIZE]
                 results = self._lookup_batch(batch)
 
                 # Check if this batch failed
                 batch_failed = all('error' in v for v in results.values())
                 if batch_failed:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_failures:
+                    total_failures += 1
+                    if total_failures >= max_total_failures:
                         logger.warning(
-                            f"GeoIP: {max_failures} consecutive failures, "
-                            f"stopping. Resolved {resolved_count}/{len(uncached)} IPs."
+                            f"GeoIP: {total_failures} failures, stopping. "
+                            f"Resolved {resolved_count}/{len(uncached)} IPs."
                         )
                         break
                 else:
-                    consecutive_failures = 0
                     resolved_count += sum(1 for v in results.values() if 'error' not in v)
 
                 self.cache.update(results)
 
                 batch_num = i // BATCH_SIZE + 1
                 if batch_num % 10 == 0:
-                    logger.info(f"GeoIP: batch {batch_num}/{total_batches}, {resolved_count} resolved")
+                    logger.info(
+                        f"GeoIP: batch {batch_num}/{total_batches}, "
+                        f"{resolved_count} resolved, {elapsed:.0f}s elapsed"
+                    )
 
                 if i + BATCH_SIZE < len(uncached):
                     time.sleep(RATE_LIMIT_DELAY)
 
             self._save_cache()
+            logger.info(f"GeoIP: done. {resolved_count} resolved, {len(self.cache)} total cached.")
 
         return {ip: self.cache.get(ip, {'error': 'not_found'}) for ip in external_ips}
 
