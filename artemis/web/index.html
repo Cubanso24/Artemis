@@ -394,20 +394,24 @@
             border-left: 4px solid;
         }
 
-        .finding-item.severity-CRITICAL {
+        .finding-item.severity-critical, .finding-item.severity-CRITICAL {
             border-color: #dc3545;
         }
 
-        .finding-item.severity-HIGH {
+        .finding-item.severity-high, .finding-item.severity-HIGH {
             border-color: #ff6b35;
         }
 
-        .finding-item.severity-MEDIUM {
+        .finding-item.severity-medium, .finding-item.severity-MEDIUM {
             border-color: #ffc107;
         }
 
-        .finding-item.severity-LOW {
+        .finding-item.severity-low, .finding-item.severity-LOW {
             border-color: #17a2b8;
+        }
+
+        .finding-item.severity-informational {
+            border-color: #6c757d;
         }
 
         .finding-item h4 {
@@ -778,9 +782,11 @@
             border-left: 4px solid #dc3545;
         }
 
+        .sigma-match-item.level-critical { border-left-color: #dc3545; }
         .sigma-match-item.level-high { border-left-color: #ff6b35; }
         .sigma-match-item.level-medium { border-left-color: #ffc107; }
         .sigma-match-item.level-low { border-left-color: #17a2b8; }
+        .sigma-match-item.level-informational { border-left-color: #6c757d; }
 
         .sigma-badge {
             display: inline-block;
@@ -1684,14 +1690,26 @@
                     <p><strong>Time Range:</strong> ${hunt.time_range}</p>
                     <p><strong>Mode:</strong> ${hunt.mode}</p>
                     <p><strong>Status:</strong> ${hunt.status}</p>
-                    <p><strong>Total Findings:</strong> ${hunt.total_findings}</p>
-                    <p><strong>Overall Confidence:</strong> ${hunt.overall_confidence.toFixed(2)}</p>
+                    <p><strong>Total Findings:</strong> ${hunt.total_findings || 0}</p>
+                    <p><strong>Overall Confidence:</strong> ${(hunt.overall_confidence || 0).toFixed(2)}</p>
                     ${hunt.description ? `<p><strong>Description:</strong> ${hunt.description}</p>` : ''}
                     <hr style="margin:20px 0;">
                     <h3>Findings</h3>
                 `;
 
                 if (hunt.findings && hunt.findings.length > 0) {
+                    // Check for sigma findings
+                    const sigmaFindings = hunt.findings.filter(f => f.agent_name === 'sigma_engine');
+                    const agentFindings = hunt.findings.filter(f => f.agent_name !== 'sigma_engine');
+
+                    if (sigmaFindings.length > 0) {
+                        html += `<div style="background:var(--bg-tertiary); padding:12px 16px; border-radius:5px; margin-bottom:15px; border-left:4px solid #ffc107;">
+                            <strong>${sigmaFindings.length} Sigma rule match${sigmaFindings.length > 1 ? 'es' : ''}</strong> detected.
+                            <button class="btn btn-secondary" style="margin-left:10px; padding:4px 12px; font-size:12px;"
+                                onclick="showTab('sigma-tab'); loadSigmaResults();">View Full Sigma Results</button>
+                        </div>`;
+                    }
+
                     hunt.findings.forEach(finding => {
                         // Extract IPs from affected assets
                         const assetsWithCopy = finding.affected_assets && finding.affected_assets.length > 0
@@ -1701,14 +1719,16 @@
                             : '';
 
                         html += `
-                            <div class="finding-item severity-${finding.severity}">
-                                <h4>${finding.title}</h4>
-                                <p>${finding.description}</p>
-                                <p><strong>Agent:</strong> ${finding.agent_name}</p>
+                            <div class="finding-item severity-${finding.severity || 'low'}">
+                                <h4>${finding.title || 'Untitled Finding'}</h4>
+                                <p>${finding.description || ''}</p>
+                                <p><strong>Agent:</strong> ${finding.agent_name || 'unknown'}</p>
                                 ${assetsWithCopy ? `<p><strong>Affected:</strong> ${assetsWithCopy}</p>` : ''}
                                 ${finding.mitre_tactics && finding.mitre_tactics.length > 0 ?
                                     `<p><strong>MITRE Tactics:</strong> ${finding.mitre_tactics.join(', ')}</p>` : ''}
-                                <span class="confidence">Confidence: ${finding.confidence.toFixed(2)}</span>
+                                ${finding.mitre_techniques && finding.mitre_techniques.length > 0 ?
+                                    `<p><strong>MITRE Techniques:</strong> ${finding.mitre_techniques.join(', ')}</p>` : ''}
+                                <span class="confidence">Confidence: ${(finding.confidence || 0).toFixed(2)}</span>
                             </div>
                         `;
                     });
@@ -1724,6 +1744,7 @@
 
             } catch (error) {
                 console.error('Error loading hunt details:', error);
+                addLog(`Error loading hunt details: ${error.message}`, 'error');
             }
         }
 
@@ -1864,6 +1885,13 @@
             networkGraph.on('stabilized', function() {
                 networkGraph.setOptions({ physics: { enabled: false } });
             });
+
+            // Fallback: force-stop physics after 5 seconds regardless
+            setTimeout(() => {
+                if (networkGraph) {
+                    networkGraph.setOptions({ physics: { enabled: false } });
+                }
+            }, 5000);
 
             // Add click handler
             networkGraph.on('click', function(params) {
@@ -2208,8 +2236,18 @@
             // Show selected tab
             document.getElementById(tabName).classList.add('active');
 
-            // Highlight active button
-            event.target.classList.add('active');
+            // Highlight active tab button — use event.target if called from onclick,
+            // otherwise find matching button by tab name
+            if (typeof event !== 'undefined' && event && event.target && event.target.classList) {
+                event.target.classList.add('active');
+            } else {
+                const tabKey = tabName.split('-')[0];
+                document.querySelectorAll('.tab').forEach(btn => {
+                    if (btn.textContent.toLowerCase().includes(tabKey)) {
+                        btn.classList.add('active');
+                    }
+                });
+            }
         }
 
         // ========================================
@@ -2465,12 +2503,16 @@
                 const list = document.getElementById('sigma-results-list');
                 const meta = document.getElementById('sigma-results-meta');
 
+                card.style.display = 'block';
+
                 if (matches.length === 0) {
-                    card.style.display = 'none';
+                    meta.textContent = data.timestamp
+                        ? `Last scan: ${new Date(data.timestamp).toLocaleString()} | ${data.rules_checked || 0}/${data.total_rules || 0} rules checked | No matches`
+                        : 'No scan results yet. Run a hunt with the Sigma Engine plugin enabled.';
+                    list.innerHTML = '<p style="text-align:center; padding:20px; opacity:0.6;">No Sigma rule matches found in the latest scan.</p>';
                     return;
                 }
 
-                card.style.display = 'block';
                 meta.textContent = `Scan: ${data.timestamp ? new Date(data.timestamp).toLocaleString() : 'Unknown'} | ${data.rules_checked || 0}/${data.total_rules || 0} rules checked | ${totalMatches} total matches`;
 
                 list.innerHTML = '';

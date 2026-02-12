@@ -225,7 +225,14 @@ class DatabaseManager:
 
             # Insert findings
             for agent_name, agent_result in hunt_data.get('agent_results', {}).items():
+                # severity and confidence live at agent level, not per-finding
+                agent_severity = agent_result.get('severity', 'low')
+                agent_confidence = agent_result.get('confidence', 0.0)
+                agent_tactics = agent_result.get('mitre_tactics', [])
+
                 for finding in agent_result.get('findings', []):
+                    # Coordinator uses 'activity_type' not 'title'
+                    title = finding.get('title') or finding.get('activity_type') or 'Unknown'
                     cursor.execute("""
                         INSERT INTO findings
                         (hunt_id, agent_name, title, description, severity,
@@ -235,11 +242,11 @@ class DatabaseManager:
                     """, (
                         hunt_id,
                         agent_name,
-                        finding.get('title'),
-                        finding.get('description'),
-                        finding.get('severity'),
-                        finding.get('confidence'),
-                        json.dumps(finding.get('mitre_tactics', [])),
+                        title,
+                        finding.get('description', ''),
+                        finding.get('severity') or agent_severity,
+                        finding.get('confidence') or agent_confidence,
+                        json.dumps(finding.get('mitre_tactics') or agent_tactics),
                         json.dumps(finding.get('mitre_techniques', [])),
                         json.dumps(finding.get('affected_assets', [])),
                         datetime.now()
@@ -674,8 +681,33 @@ class HuntManager:
                     await progress_callback({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
                 try:
                     sigma_result = await loop.run_in_executor(self.executor, lambda: sigma_engine.execute(**hunting_data))
-                    if sigma_result.get('total_matches', 0) > 0:
-                        logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_result.get('matches', []))} rules")
+                    sigma_matches = sigma_result.get('matches', [])
+                    if sigma_matches:
+                        logger.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
+                        # Add sigma matches as hunt findings so they appear in hunt details
+                        sigma_findings = []
+                        max_severity = 'low'
+                        severity_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0}
+                        for match in sigma_matches:
+                            lvl = match.get('level', 'medium')
+                            if severity_rank.get(lvl, 0) > severity_rank.get(max_severity, 0):
+                                max_severity = lvl
+                            sigma_findings.append({
+                                'title': f"Sigma: {match.get('rule_title', 'Unknown Rule')}",
+                                'description': match.get('rule_description', ''),
+                                'severity': lvl,
+                                'confidence': 0.85,
+                                'mitre_tactics': match.get('mitre_tactics', []),
+                                'mitre_techniques': match.get('mitre_techniques', []),
+                                'affected_assets': [],
+                            })
+                        hunt_data['agent_results']['sigma_engine'] = {
+                            'confidence': 0.85,
+                            'severity': max_severity,
+                            'findings': sigma_findings,
+                        }
+                        findings_count += len(sigma_findings)
+                        hunt_data['total_findings'] = findings_count
                 except Exception as e:
                     logger.warning(f"Sigma engine plugin failed: {e}")
 
