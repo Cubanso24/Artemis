@@ -1008,8 +1008,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """
         Get network graph suitable for visualization.
 
-        Only returns the top `max_nodes` by connection count to keep
-        the response bounded for large maps.
+        External IPs are collapsed into a single "Internet" cloud node.
+        Each internal node includes its external connection details so the
+        UI can display them on click.
 
         Args:
             sensor_id: Optional sensor filter
@@ -1026,15 +1027,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
         else:
             filtered = list(self.nodes.values())
 
-        # Take top N nodes by connection count
+        # Separate internal and external nodes
+        internal_nodes = [n for n in filtered if n.is_internal]
+        external_keys = {
+            self._node_key(n.sensor_id, n.vlan, n.ip)
+            for n in filtered if not n.is_internal
+        }
+
+        # Take top N internal nodes by connection count
         top = sorted(
-            filtered, key=lambda n: n.total_connections, reverse=True
+            internal_nodes, key=lambda n: n.total_connections, reverse=True
         )[:max_nodes]
         top_keys = {
             self._node_key(n.sensor_id, n.vlan, n.ip) for n in top
         }
 
         nodes = []
+        internet_total_conns = 0
+        internet_unique_ips = set()
+
         for node in top:
             # Show VLAN in label when tagged (non-zero)
             label = (
@@ -1042,21 +1053,76 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 if node.vlan != '0'
                 else node.ip
             )
+
+            # Collect external connections for this node
+            ext_conns_out = []
+            for dst_ip, count in sorted(
+                node.connections_to.items(),
+                key=lambda x: x[1], reverse=True,
+            ):
+                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
+                if dst_key in external_keys:
+                    ext_conns_out.append({'ip': dst_ip, 'count': count})
+                    internet_unique_ips.add(dst_ip)
+                    internet_total_conns += count
+
+            ext_conns_in = []
+            for src_ip, count in sorted(
+                node.connections_from.items(),
+                key=lambda x: x[1], reverse=True,
+            ):
+                src_key = self._node_key(node.sensor_id, node.vlan, src_ip)
+                if src_key in external_keys:
+                    ext_conns_in.append({'ip': src_ip, 'count': count})
+                    internet_unique_ips.add(src_ip)
+
+            # Collect internal peer connections for click details
+            int_conns = []
+            for dst_ip, count in sorted(
+                node.connections_to.items(),
+                key=lambda x: x[1], reverse=True,
+            )[:20]:
+                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
+                if dst_key in top_keys and dst_key != self._node_key(node.sensor_id, node.vlan, node.ip):
+                    int_conns.append({'ip': dst_ip, 'count': count})
+
             nodes.append({
                 'id': self._node_key(node.sensor_id, node.vlan, node.ip),
                 'label': label,
                 'sensor_id': node.sensor_id,
                 'vlan': node.vlan,
-                'group': 'internal' if node.is_internal else 'external',
+                'group': 'internal',
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
                 'services': len(node.services),
                 'device_type': node.device_type,
                 'device_label': self._device_label(node.device_type),
                 'tier': self._device_tier(node.device_type, node.is_internal),
+                'external_connections_out': ext_conns_out[:50],
+                'external_connections_in': ext_conns_in[:50],
+                'internal_connections': int_conns,
             })
 
-        # Build edges only between top nodes
+        # Add a single "Internet" cloud node if there are external connections
+        has_external = len(internet_unique_ips) > 0
+        internet_node_id = '__internet__'
+
+        if has_external:
+            nodes.append({
+                'id': internet_node_id,
+                'label': f"Internet\n{len(internet_unique_ips)} IPs",
+                'group': 'internet',
+                'size': 50,
+                'roles': [],
+                'services': 0,
+                'device_type': 'internet',
+                'device_label': 'Internet',
+                'tier': 0,
+                'unique_ips': len(internet_unique_ips),
+                'total_connections': internet_total_conns,
+            })
+
+        # Build edges between internal nodes
         edges = []
         seen_edges: Set[tuple] = set()
         for node in top:
@@ -1079,6 +1145,22 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'title': f"{count} connections",
                 })
                 seen_edges.add(edge_key)
+
+        # Build edges from internal nodes to the Internet cloud
+        if has_external:
+            for node in top:
+                src_key = self._node_key(node.sensor_id, node.vlan, node.ip)
+                ext_count = sum(
+                    count for dst_ip, count in node.connections_to.items()
+                    if self._node_key(node.sensor_id, node.vlan, dst_ip) in external_keys
+                )
+                if ext_count > 0:
+                    edges.append({
+                        'from': src_key,
+                        'to': internet_node_id,
+                        'value': ext_count,
+                        'title': f"{ext_count} external connections",
+                    })
 
         return {
             'nodes': nodes,

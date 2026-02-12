@@ -1196,13 +1196,22 @@
 
                 <div class="graph-legend" id="graph-legend">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:6px; font-weight:600;">TIERS (top → bottom)</div>
-                    <div class="legend-item"><i class="fa-solid fa-cloud" style="color:#f44336; width:16px; text-align:center;"></i><span>WAN / External</span></div>
+                    <div class="legend-item"><i class="fa-solid fa-cloud" style="color:#f44336; width:16px; text-align:center;"></i><span>Internet (click to expand)</span></div>
                     <div class="legend-item"><i class="fa-solid fa-shield-halved" style="color:#FF9800; width:16px; text-align:center;"></i><span>Gateway / Firewall</span></div>
                     <div class="legend-item"><i class="fa-solid fa-sitemap" style="color:#00BCD4; width:16px; text-align:center;"></i><span>Core Infra (DNS/DC/DHCP)</span></div>
                     <div class="legend-item"><i class="fa-solid fa-server" style="color:#9C27B0; width:16px; text-align:center;"></i><span>Servers</span></div>
                     <div class="legend-item"><i class="fa-solid fa-desktop" style="color:#607D8B; width:16px; text-align:center;"></i><span>Endpoints</span></div>
                 </div>
                 <div id="profile-status" style="display:none; margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:5px;"></div>
+
+                <!-- Node details panel (shown on click) -->
+                <div id="node-details-panel" style="display:none; margin-top:15px; background:var(--bg-secondary); border:1px solid #333; border-radius:8px; overflow:hidden;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:var(--bg-tertiary); border-bottom:1px solid #333;">
+                        <h3 id="node-details-title" style="margin:0; font-size:15px;"></h3>
+                        <button onclick="document.getElementById('node-details-panel').style.display='none'" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:18px; padding:0 4px;">&times;</button>
+                    </div>
+                    <div id="node-details-body" style="padding:16px; max-height:400px; overflow-y:auto;"></div>
+                </div>
 
                 <div class="card" style="margin-top: 20px;">
                     <h3>Network Summary</h3>
@@ -1819,11 +1828,30 @@
                 const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
 
                 let label = node.label;
-                if (deviceStr) {
+                if (deviceStr && node.group !== 'internet') {
                     label = `${node.label}\n${deviceStr}`;
                 }
 
                 const tooltip = `${node.label}${deviceStr ? '\nDevice: ' + deviceStr : ''}\nTier: ${tierLabels[tier] || 'Unknown'}\nServices: ${servicesStr}\nRoles: ${rolesStr}`;
+
+                // Aggregated Internet cloud node
+                if (node.group === 'internet') {
+                    return {
+                        id: node.id,
+                        label: node.label,
+                        title: `Internet\n${node.unique_ips || 0} unique external IPs\n${(node.total_connections || 0).toLocaleString()} total connections`,
+                        level: 0,
+                        shape: 'icon',
+                        icon: {
+                            face: '"Font Awesome 6 Free"',
+                            code: '\uf0c2',   // fa-cloud
+                            size: 50,
+                            color: '#f44336',
+                            weight: 900,
+                        },
+                        font: { size: 13, color: '#f44336', multi: false, vadjust: 6 },
+                    };
+                }
 
                 // Use Font Awesome icon if device type is known
                 const iconDef = deviceIcons[node.device_type];
@@ -1842,25 +1870,6 @@
                             weight: 900,
                         },
                         font: { size: 11, color: '#ccc', multi: false, vadjust: 4 },
-                    };
-                }
-
-                // External nodes: cloud icon
-                if (node.group === 'external') {
-                    return {
-                        id: node.id,
-                        label: label,
-                        title: tooltip,
-                        level: 0,
-                        shape: 'icon',
-                        icon: {
-                            face: '"Font Awesome 6 Free"',
-                            code: '\uf0c2',   // fa-cloud
-                            size: 25,
-                            color: '#f44336',
-                            weight: 900,
-                        },
-                        font: { size: 10, color: '#ccc', multi: false, vadjust: 4 },
                     };
                 }
 
@@ -1946,17 +1955,113 @@
         }
 
         function showNodeDetails(node) {
+            const panel = document.getElementById('node-details-panel');
+            const title = document.getElementById('node-details-title');
+            const body = document.getElementById('node-details-body');
+
+            const tierNames = { 0: 'WAN/External', 1: 'Gateway', 2: 'Core Infra', 3: 'Server', 4: 'Endpoint' };
+
+            // Internet cloud node
+            if (node.group === 'internet') {
+                title.textContent = `Internet (${node.unique_ips || 0} external IPs)`;
+                // Collect all external IPs across all internal nodes
+                const allExtIps = {};
+                (networkGraphData.raw.nodes || []).forEach(n => {
+                    if (n.group === 'internet') return;
+                    (n.external_connections_out || []).forEach(c => {
+                        if (!allExtIps[c.ip]) allExtIps[c.ip] = { out: 0, in: 0, peers: [] };
+                        allExtIps[c.ip].out += c.count;
+                        allExtIps[c.ip].peers.push(n.label);
+                    });
+                    (n.external_connections_in || []).forEach(c => {
+                        if (!allExtIps[c.ip]) allExtIps[c.ip] = { out: 0, in: 0, peers: [] };
+                        allExtIps[c.ip].in += c.count;
+                    });
+                });
+                const sorted = Object.entries(allExtIps).sort((a, b) => (b[1].out + b[1].in) - (a[1].out + a[1].in));
+                let html = `<div style="font-size:13px; opacity:0.7; margin-bottom:12px;">${(node.total_connections || 0).toLocaleString()} total connections to ${node.unique_ips || 0} unique external IPs</div>`;
+                html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">`;
+                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">External IP</td><td style="padding:4px 8px; text-align:right;">Conns Out</td><td style="padding:4px 8px; text-align:right;">Conns In</td><td style="padding:4px 8px;">Internal Peers</td></tr>`;
+                sorted.slice(0, 100).forEach(([ip, info]) => {
+                    const peers = [...new Set(info.peers)].slice(0, 3).join(', ');
+                    html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                        <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(ip)}</td>
+                        <td style="padding:4px 8px; text-align:right;">${info.out.toLocaleString()}</td>
+                        <td style="padding:4px 8px; text-align:right;">${info.in.toLocaleString()}</td>
+                        <td style="padding:4px 8px; opacity:0.7; font-size:12px;">${escapeHtml(peers)}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+                if (sorted.length > 100) html += `<p style="opacity:0.5; font-size:12px; margin-top:8px;">Showing 100 of ${sorted.length}</p>`;
+                body.innerHTML = html;
+                panel.style.display = 'block';
+                panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                return;
+            }
+
+            // Internal node
+            const deviceStr = node.device_label || node.device_type || 'Unknown';
             const rolesStr = node.roles ? node.roles.join(', ') : 'none';
             const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
-            const deviceStr = node.device_label || node.device_type || 'Unknown';
-            const tierNames = { 0: 'WAN/External', 1: 'Gateway', 2: 'Core Infra', 3: 'Server', 4: 'Endpoint' };
             const tierStr = tierNames[node.tier] || node.group;
-            alert(`${node.label}\n` +
-                  `Device: ${deviceStr}\n` +
-                  `Layer: ${tierStr}\n` +
-                  `Sensor: ${node.sensor_id || 'default'}\n` +
-                  `Services: ${servicesStr}\n` +
-                  `Roles: ${rolesStr}`);
+
+            title.textContent = `${node.label}${deviceStr !== 'Unknown' ? ' — ' + deviceStr : ''}`;
+
+            let html = `
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; font-size:13px; margin-bottom:16px;">
+                    <div><span style="opacity:0.6;">Device:</span> <strong>${escapeHtml(deviceStr)}</strong></div>
+                    <div><span style="opacity:0.6;">Layer:</span> <strong>${escapeHtml(tierStr)}</strong></div>
+                    <div><span style="opacity:0.6;">Sensor:</span> ${escapeHtml(node.sensor_id || 'default')}</div>
+                    <div><span style="opacity:0.6;">Services:</span> ${escapeHtml(servicesStr)}</div>
+                    <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
+                </div>
+            `;
+
+            // Internal connections table
+            const intConns = node.internal_connections || [];
+            if (intConns.length > 0) {
+                html += `<h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;">Internal Connections</h4>`;
+                html += `<table style="width:100%; font-size:13px; border-collapse:collapse; margin-bottom:16px;">`;
+                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">IP</td><td style="padding:4px 8px; text-align:right;">Connections</td></tr>`;
+                intConns.forEach(c => {
+                    html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                        <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${c.ip}'; searchGraphNode();">${escapeHtml(c.ip)}</td>
+                        <td style="padding:4px 8px; text-align:right;">${c.count.toLocaleString()}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+            }
+
+            // External connections table
+            const extOut = node.external_connections_out || [];
+            const extIn = node.external_connections_in || [];
+            const allExt = {};
+            extOut.forEach(c => { allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0 }; allExt[c.ip].out = c.count; });
+            extIn.forEach(c => { allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0 }; allExt[c.ip].in = c.count; });
+            const extSorted = Object.entries(allExt).sort((a, b) => (b[1].out + b[1].in) - (a[1].out + a[1].in));
+
+            if (extSorted.length > 0) {
+                html += `<h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;">External Connections (${extSorted.length} IPs)</h4>`;
+                html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">`;
+                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">External IP</td><td style="padding:4px 8px; text-align:right;">Out</td><td style="padding:4px 8px; text-align:right;">In</td></tr>`;
+                extSorted.slice(0, 50).forEach(([ip, info]) => {
+                    html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                        <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(ip)}</td>
+                        <td style="padding:4px 8px; text-align:right;">${info.out.toLocaleString()}</td>
+                        <td style="padding:4px 8px; text-align:right;">${info.in.toLocaleString()}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+                if (extSorted.length > 50) html += `<p style="opacity:0.5; font-size:12px; margin-top:8px;">Showing 50 of ${extSorted.length}</p>`;
+            }
+
+            if (intConns.length === 0 && extSorted.length === 0) {
+                html += '<p style="opacity:0.5; font-size:13px;">No connection details available. Run a hunt to collect data.</p>';
+            }
+
+            body.innerHTML = html;
+            panel.style.display = 'block';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
         async function loadNetworkSummary() {
@@ -2107,20 +2212,37 @@
                        dtype.includes(query) || dlabel.includes(query);
             });
 
-            if (matches.length === 0) {
-                addLog(`No node found matching "${query}"`, 'warning');
+            if (matches.length > 0) {
+                const match = matches[0];
+                addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
+                networkGraph.selectNodes([match.id]);
+                networkGraph.focus(match.id, {
+                    scale: 1.5,
+                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+                });
+                showNodeDetails(match);
                 return;
             }
 
-            const match = matches[0];
-            addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
-
-            // Highlight the node with a distinct border
-            networkGraph.selectNodes([match.id]);
-            networkGraph.focus(match.id, {
-                scale: 1.5,
-                animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+            // If no direct node match, check if the query matches an external IP
+            // inside a node's connection data and show that node's details
+            const extMatch = networkGraphData.raw.nodes.find(n => {
+                if (n.group === 'internet') return false;
+                return (n.external_connections_out || []).some(c => c.ip.includes(query)) ||
+                       (n.external_connections_in || []).some(c => c.ip.includes(query));
             });
+            if (extMatch) {
+                addLog(`External IP "${query}" found in connections of ${extMatch.label}`, 'info');
+                networkGraph.selectNodes([extMatch.id]);
+                networkGraph.focus(extMatch.id, {
+                    scale: 1.5,
+                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+                });
+                showNodeDetails(extMatch);
+                return;
+            }
+
+            addLog(`No node found matching "${query}"`, 'warning');
         }
 
         function changeGraphLayout() {
