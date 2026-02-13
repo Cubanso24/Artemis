@@ -1056,6 +1056,14 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="storage-mode">Log Storage</label>
+                        <select id="storage-mode">
+                            <option value="ram">RAM (faster, uses more memory)</option>
+                            <option value="sqlite">SQLite (slower, low memory usage)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
                         <label for="description">Description (optional)</label>
                         <textarea id="description" rows="3" placeholder="e.g., Investigating suspicious activity on subnet 10.0.1.0/24"></textarea>
                     </div>
@@ -2451,12 +2459,13 @@
             const timeRange = document.getElementById('time-range').value;
             const mode = document.getElementById('hunt-mode').value;
             const description = document.getElementById('description').value;
+            const storageMode = document.getElementById('storage-mode').value;
 
             try {
                 const response = await fetch('/api/hunt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ time_range: timeRange, mode, description })
+                    body: JSON.stringify({ time_range: timeRange, mode, description, storage_mode: storageMode })
                 });
 
                 const data = await response.json();

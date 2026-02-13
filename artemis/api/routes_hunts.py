@@ -21,7 +21,7 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
     hunt_id = f"hunt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     logger.info(
         f"Starting hunt {hunt_id}: time_range={request.time_range}, "
-        f"mode={request.mode}"
+        f"mode={request.mode}, storage={request.storage_mode}"
     )
     background_tasks.add_task(
         hunt_manager.execute_hunt,
@@ -29,6 +29,7 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
         request.time_range,
         request.mode,
         request.description,
+        request.storage_mode,
     )
     return {'hunt_id': hunt_id, 'status': 'started'}
 

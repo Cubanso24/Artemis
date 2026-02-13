@@ -10,6 +10,7 @@ class HuntRequest(BaseModel):
     time_range: str = "-1h"
     mode: str = "PARALLEL"
     description: Optional[str] = None
+    storage_mode: str = "ram"   # "ram" or "sqlite"
 
 
 class BulkHuntRequest(BaseModel):

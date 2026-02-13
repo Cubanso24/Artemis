@@ -105,7 +105,8 @@ class DataPipeline:
         time_range: str = "-1h",
         include_pcap: bool = False,
         suspicious_ips: Optional[List[str]] = None,
-        progress_callback=None
+        progress_callback=None,
+        storage_mode: str = "ram",
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
@@ -115,18 +116,33 @@ class DataPipeline:
             include_pcap: Whether to retrieve and analyze PCAP
             suspicious_ips: Optional list of IPs to focus on
             progress_callback: Optional callable(info_dict) for live progress updates
+            storage_mode: "ram" (default) keeps events in Python lists.
+                          "sqlite" spills to a temp SQLite file so very
+                          large collections don't exhaust memory.
 
         Returns:
-            Comprehensive hunting data dictionary
+            Hunting data (dict or SqliteEventStore).
         """
-        self.logger.info(f"Collecting hunting data for time range: {time_range}")
+        self.logger.info(
+            f"Collecting hunting data for time range: {time_range} "
+            f"(storage={storage_mode})"
+        )
 
-        hunting_data = {}
+        use_sqlite = storage_mode == "sqlite"
+        if use_sqlite:
+            from artemis.integrations.event_store import SqliteEventStore
+            hunting_data = SqliteEventStore()
+        else:
+            hunting_data = {}
 
-        # Collect from Splunk (if available)
+        # Collect from Splunk (if available).
+        # When using SQLite storage the Splunk collector writes directly
+        # into the store so per-window data is freed immediately.
         if self.splunk:
-            splunk_data = self._collect_from_splunk(time_range, progress_callback=progress_callback)
-            hunting_data.update(splunk_data)
+            self._collect_from_splunk(
+                time_range, progress_callback=progress_callback,
+                store=hunting_data,
+            )
 
         # Collect from Security Onion
         if self.security_onion:
@@ -137,13 +153,18 @@ class DataPipeline:
             )
             hunting_data.update(so_data)
 
-        # Merge and deduplicate
-        hunting_data = self._merge_data_sources(hunting_data)
+        # Merge and deduplicate (only for plain dicts — the SQLite store
+        # accumulates via extend() and doesn't need a separate merge pass).
+        if isinstance(hunting_data, dict):
+            hunting_data = self._merge_data_sources(hunting_data)
 
-        total_events = sum(
-            len(v) if isinstance(v, list) else 0
-            for v in hunting_data.values()
-        )
+        if hasattr(hunting_data, 'total_count'):
+            total_events = hunting_data.total_count()
+        else:
+            total_events = sum(
+                len(v) if isinstance(v, list) else 0
+                for v in hunting_data.values()
+            )
         self.logger.info(f"Collected {total_events} total events")
 
         return hunting_data
@@ -222,27 +243,34 @@ class DataPipeline:
     # Splunk collection
     # ------------------------------------------------------------------
 
-    def _collect_from_splunk(self, time_range: str, progress_callback=None) -> Dict[str, Any]:
+    def _collect_from_splunk(self, time_range: str, progress_callback=None,
+                             store=None) -> None:
         """
-        Collect data from Splunk.
+        Collect data from Splunk and merge into *store*.
 
         For time ranges > 24 hours, the query is broken into 24-hour
         windows so the Splunk search head isn't overwhelmed by a single
-        massive job.  Each window's 8 data-type queries run in parallel,
-        then results are merged before returning.
+        massive job.  Each window's per-type queries run in parallel,
+        then results are merged into *store* before the next window so
+        that per-window memory is freed immediately (important when
+        *store* is a SqliteEventStore).
 
         Args:
             time_range: Time range for queries (e.g. "-1h", "-30d")
             progress_callback: Optional callable(info_dict) for progress updates
-
-        Returns:
-            Splunk data dictionary
+            store: Dict-like container to merge results into.  Must support
+                   ``.update(dict)`` and, for count helpers,
+                   ``.count(key)`` / ``.total_count()``.
         """
         total_hours = self._parse_time_range_hours(time_range)
 
         if total_hours <= 24:
-            # Short range — single pass (existing fast path)
-            return self._collect_splunk_window(time_range, "now", progress_callback=progress_callback)
+            # Short range — single pass
+            window = self._collect_splunk_window(
+                time_range, "now", progress_callback=progress_callback,
+            )
+            store.update(window)
+            return
 
         # Long range — split into 24h windows
         windows = self._generate_time_windows(time_range, window_hours=24)
@@ -250,8 +278,6 @@ class DataPipeline:
             f"Large time range ({time_range} = {total_hours:.0f}h): "
             f"splitting into {len(windows)} x 24h windows"
         )
-
-        merged: Dict[str, List] = {}
 
         for idx, (earliest, latest) in enumerate(windows, 1):
             self.logger.info(
@@ -265,17 +291,26 @@ class DataPipeline:
                 total_windows=len(windows),
             )
 
-            # Merge into combined result
-            for key, events in window_data.items():
-                if key not in merged:
-                    merged[key] = []
-                if isinstance(events, list):
-                    merged[key].extend(events)
-
             window_total = sum(
                 len(v) for v in window_data.values() if isinstance(v, list)
             )
-            running_total = sum(len(v) for v in merged.values())
+
+            # Merge into the caller's store — for SqliteEventStore this
+            # writes to disk and frees the per-window dict.
+            store.update(window_data)
+
+            # Compute running total from the store
+            if hasattr(store, 'total_count'):
+                running_total = store.total_count()
+                events_by_type = store.counts_by_type()
+            else:
+                running_total = sum(
+                    len(v) for v in store.values() if isinstance(v, list)
+                )
+                events_by_type = {
+                    k: len(v) for k, v in store.items() if isinstance(v, list)
+                }
+
             self.logger.info(
                 f"    Window {idx} returned {window_total} events "
                 f"(running total: {running_total})"
@@ -288,10 +323,8 @@ class DataPipeline:
                     'total_windows': len(windows),
                     'window_events': window_total,
                     'running_total': running_total,
-                    'events_by_type': {k: len(v) for k, v in merged.items()},
+                    'events_by_type': events_by_type,
                 })
-
-        return merged
 
     def _collect_splunk_window(
         self,

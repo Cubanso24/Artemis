@@ -27,13 +27,19 @@ logger = logging.getLogger("artemis.hunt")
 # Hunt worker — runs in its own process
 # ---------------------------------------------------------------------------
 
-def _hunt_worker_process(hunt_id, time_range, mode, description, db_path):
+def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
+                         storage_mode="ram"):
     """
     Run a complete hunt in a separate process.
 
     Creates its own Splunk pipeline, coordinator, and plugins so the main
     web server process stays entirely free for HTTP requests.  All progress
     is written to the ``hunt_progress`` table in SQLite.
+
+    Args:
+        storage_mode: "ram" keeps collected logs in memory (fast, default).
+                      "sqlite" spills them to a temporary SQLite database so
+                      very large collections don't exhaust RAM.
     """
     import os, json, logging, traceback
     from datetime import datetime
@@ -84,15 +90,32 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path):
             'window': 0, 'total_windows': 0,
         })
 
-        collection_stats = {}
+        # Tracks the running total of events *across* all windows.
+        # Per-window query counts overwrite the same keys in window_stats,
+        # so we snapshot the cumulative totals at each window boundary.
+        cumulative_by_type = {}   # query_name -> total events across all windows
+        window_stats = {}         # query_name -> events in *current* window only
+        prev_window = [0]         # mutable so the closure can update it
 
         def on_collection_progress(info):
             if info.get('type') == 'query_done':
-                collection_stats[info['query_name']] = info['query_events']
-                total_events = sum(collection_stats.values())
+                w = info.get('window', 1)
+                # Detect window transition: reset the per-window dict and
+                # fold its counts into the cumulative totals.
+                if w != prev_window[0]:
+                    for k, v in window_stats.items():
+                        cumulative_by_type[k] = cumulative_by_type.get(k, 0) + v
+                    window_stats.clear()
+                    prev_window[0] = w
+
+                window_stats[info['query_name']] = info['query_events']
+
+                # Running total = prior windows + current window
+                total_events = (sum(cumulative_by_type.values())
+                                + sum(window_stats.values()))
+
                 qd = info['queries_done']
                 qt = info['queries_total']
-                w = info.get('window', 1)
                 tw = info.get('total_windows', 1)
                 if tw > 1:
                     pct = 10 + int(((w - 1) / tw + qd / qt / tw) * 50)
@@ -105,17 +128,24 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path):
                 parts += [f'Queries: {qd}/{qt}',
                           f'{total_events:,} events collected',
                           f'{elapsed:.0f}s elapsed']
+
+                # Merge cumulative + current-window for per-type breakdown
+                merged_by_type = dict(cumulative_by_type)
+                for k, v in window_stats.items():
+                    merged_by_type[k] = merged_by_type.get(k, 0) + v
+
                 send('collect', ' | '.join(parts), min(pct, 60), {
                     'started_at': hunt_start.isoformat(),
                     'time_range': time_range,
                     'queries_done': qd, 'queries_total': qt,
-                    'events_by_type': dict(collection_stats),
+                    'events_by_type': merged_by_type,
                     'total_events': total_events,
                     'window': w, 'total_windows': tw,
                     'elapsed_seconds': elapsed,
                     'last_query': info['query_name'],
                 })
             elif info.get('type') == 'window_done':
+                # The pipeline already computed the true running_total
                 total = info.get('running_total', 0)
                 w = info.get('window', 1)
                 tw = info.get('total_windows', 1)
@@ -134,15 +164,21 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path):
 
         hunting_data = pipeline.collect_hunting_data(
             time_range, progress_callback=on_collection_progress,
+            storage_mode=storage_mode,
         )
-        total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
+        if hasattr(hunting_data, 'total_count'):
+            total_events = hunting_data.total_count()
+            events_by_type = hunting_data.counts_by_type()
+        else:
+            total_events = sum(len(v) for v in hunting_data.values() if isinstance(v, list))
+            events_by_type = {k: len(v) for k, v in hunting_data.items() if isinstance(v, list)}
         collect_elapsed = (datetime.now() - hunt_start).total_seconds()
         log.info(f'Data collection done: {total_events} events in {collect_elapsed:.0f}s')
         send('analyze',
              f'Collected {total_events:,} events in {collect_elapsed:.0f}s. Running hunting agents...',
              65, {
                  'total_events': total_events,
-                 'events_by_type': {k: len(v) for k, v in hunting_data.items() if isinstance(v, list)},
+                 'events_by_type': events_by_type,
                  'elapsed_seconds': collect_elapsed,
                  'phase': 'complete',
              })
@@ -305,6 +341,7 @@ class HuntManager:
         time_range: str,
         mode: str,
         description: str,
+        storage_mode: str = "ram",
     ):
         """Spawn a non-daemon subprocess for the hunt and begin monitoring."""
         import multiprocessing
@@ -319,7 +356,8 @@ class HuntManager:
 
         proc = multiprocessing.Process(
             target=_hunt_worker_process,
-            args=(hunt_id, time_range, mode, description, self.db.db_path),
+            args=(hunt_id, time_range, mode, description, self.db.db_path,
+                  storage_mode),
             daemon=False,  # survives server restart
         )
         proc.start()
