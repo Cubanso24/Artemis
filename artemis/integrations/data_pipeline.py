@@ -355,9 +355,15 @@ class DataPipeline:
                     ),
                 }
 
-                for key, future in futures.items():
+                # Map future -> key so we can process in completion order
+                future_to_key = {f: k for k, f in futures.items()}
+
+                for future in concurrent.futures.as_completed(
+                    future_to_key.keys(), timeout=3600
+                ):
+                    key = future_to_key[future]
                     try:
-                        data[key] = future.result(timeout=3600)
+                        data[key] = future.result()
                         completed_queries[key] = len(data[key])
 
                         # Report per-query progress
