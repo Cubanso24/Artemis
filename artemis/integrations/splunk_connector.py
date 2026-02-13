@@ -212,25 +212,42 @@ class SplunkConnector:
             f"  Job {job.sid} finished: {total_results:,} results in {elapsed:.1f}s"
         )
 
-        # Fetch all results in a single call (max_count already set on the job)
-        results_stream = job.results(output_mode="json", count=0)
-        raw = results_stream.read()
-        if isinstance(raw, bytes):
-            raw = raw.decode('utf-8')
-
+        # Fetch results in 2M-event pages
         events = []
-        for line in raw.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if 'results' in obj:
-                    events.extend(obj['results'])
-                elif 'result' in obj:
-                    events.append(obj['result'])
-            except json.JSONDecodeError:
-                continue
+        batch_size = 2_000_000
+        offset = 0
+
+        while offset < total_results:
+            results_stream = job.results(
+                output_mode="json", count=batch_size, offset=offset
+            )
+            raw = results_stream.read()
+            if isinstance(raw, bytes):
+                raw = raw.decode('utf-8')
+
+            batch = []
+            for line in raw.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if 'results' in obj:
+                        batch.extend(obj['results'])
+                    elif 'result' in obj:
+                        batch.append(obj['result'])
+                except json.JSONDecodeError:
+                    continue
+
+            if not batch:
+                break
+
+            events.extend(batch)
+            offset += len(batch)
+            if total_results > batch_size:
+                self.logger.info(
+                    f"  Retrieved {len(events):,} / {total_results:,} events"
+                )
 
         elapsed = time.time() - start_time
         self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
