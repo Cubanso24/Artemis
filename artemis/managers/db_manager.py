@@ -54,6 +54,12 @@ class DatabaseManager:
             )
         """)
 
+        # Migrate older databases that lack the fingerprint column
+        try:
+            cursor.execute("ALTER TABLE findings ADD COLUMN fingerprint TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_findings_fingerprint
             ON findings(fingerprint)
