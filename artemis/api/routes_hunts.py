@@ -17,7 +17,7 @@ router = APIRouter()
 
 @router.post("/api/hunt")
 async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
-    """Start a new threat hunt."""
+    """Start a new threat hunt (or queue it if 2 are already running)."""
     hunt_id = f"hunt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     time_label = (f"{request.earliest_time} → {request.latest_time}"
                   if request.earliest_time and request.latest_time
@@ -36,6 +36,13 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
         request.earliest_time,
         request.latest_time,
     )
+    running = hunt_manager._running_count()
+    if running >= hunt_manager.MAX_CONCURRENT:
+        return {
+            'hunt_id': hunt_id,
+            'status': 'queued',
+            'queue_position': len(hunt_manager._queue) + 1,
+        }
     return {'hunt_id': hunt_id, 'status': 'started'}
 
 
@@ -47,13 +54,14 @@ async def list_hunts(limit: int = 50):
 
 @router.get("/api/hunts/active")
 async def get_active_hunts():
-    """Get currently running hunts with their latest progress state."""
+    """Get currently running and queued hunts with their latest progress state."""
     active = []
     for hunt_id, state in hunt_manager.active_hunts.items():
-        if state.get('status') == 'running':
+        status = state.get('status')
+        if status in ('running', 'queued'):
             entry = {
                 'hunt_id': hunt_id,
-                'status': 'running',
+                'status': status,
                 'progress': state.get('progress', 0),
                 'start_time': (
                     state['start_time'].isoformat()
@@ -62,8 +70,32 @@ async def get_active_hunts():
                 ),
                 'last_progress': state.get('last_progress'),
             }
+            if status == 'queued':
+                entry['queue_position'] = state.get('queue_position', 0)
             active.append(entry)
     return active
+
+
+@router.get("/api/hunt/queue")
+async def get_hunt_queue():
+    """Get the current hunt queue."""
+    return {
+        'queue': hunt_manager.get_queue(),
+        'running': hunt_manager._running_count(),
+        'max_concurrent': hunt_manager.MAX_CONCURRENT,
+    }
+
+
+@router.delete("/api/hunt/queue/{hunt_id}")
+async def remove_from_queue(hunt_id: str):
+    """Remove a hunt from the queue (before it starts running)."""
+    removed = hunt_manager.remove_from_queue(hunt_id)
+    if not removed:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'Hunt not found in queue'},
+        )
+    return {'status': 'removed', 'hunt_id': hunt_id}
 
 
 @router.get("/api/hunts/{hunt_id}")

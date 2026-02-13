@@ -240,7 +240,7 @@
             border-radius: 6px;
             border: 1px solid var(--border-color);
             padding: 16px;
-            margin-top: 16px;
+            margin-bottom: 10px;
             display: none;
         }
 
@@ -1117,38 +1117,13 @@
                     <button type="submit" class="btn">Start Hunt</button>
                 </form>
 
-                <div id="progress" class="progress-container">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <h3 id="progress-title" style="font-size:13px; font-weight:600; margin:0;">Hunt in Progress</h3>
-                        <span id="progress-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div id="progress-fill" class="progress-fill"></div>
-                    </div>
-                    <p id="progress-message" style="font-size:13px; color:var(--text-secondary); margin-top:8px;">Initializing...</p>
+                <!-- Multi-hunt progress tracker -->
+                <div id="active-hunts-container" style="margin-top:16px;"></div>
 
-                    <div id="collection-detail" style="display:none;">
-                        <div class="collection-stats">
-                            <div class="collection-stat">
-                                <div class="stat-label">Total Events</div>
-                                <div class="stat-value" id="coll-total-events">0</div>
-                            </div>
-                            <div class="collection-stat">
-                                <div class="stat-label">Queries Done</div>
-                                <div class="stat-value" id="coll-queries-done">0 / 9</div>
-                            </div>
-                            <div class="collection-stat">
-                                <div class="stat-label">Window</div>
-                                <div class="stat-value" id="coll-window">-</div>
-                            </div>
-                            <div class="collection-stat">
-                                <div class="stat-label">Elapsed</div>
-                                <div class="stat-value" id="coll-elapsed">0s</div>
-                            </div>
-                        </div>
-
-                        <div class="query-tracker" id="query-tracker"></div>
-                    </div>
+                <!-- Queue display -->
+                <div id="queue-container" style="display:none; margin-top:12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+                    <h4 style="margin:0 0 8px 0; font-size:12px; text-transform:uppercase; opacity:0.6;">Queued Hunts</h4>
+                    <div id="queue-list"></div>
                 </div>
             </div>
         </div>
@@ -1333,10 +1308,13 @@
     <script>
         // WebSocket connection
         let ws = null;
-        let currentHuntId = null;
+        let trackedHunts = {};  // hunt_id -> { status, progress, ... }
         let networkGraph = null;
         let networkGraphData = null;  // Store current graph data for search
         let allHunts = [];  // Store all hunts for filtering
+
+        // Backward compat shim: some code still references currentHuntId
+        let currentHuntId = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -1349,8 +1327,15 @@
             initializeTheme();
             checkActiveHunts();
 
-            // Restore current hunt ID from localStorage
-            currentHuntId = localStorage.getItem('currentHuntId') || null;
+            // Restore tracked hunts from localStorage
+            try {
+                const saved = JSON.parse(localStorage.getItem('trackedHunts') || '{}');
+                for (const [hid, info] of Object.entries(saved)) {
+                    if (info.status === 'running' || info.status === 'queued') {
+                        trackedHunts[hid] = info;
+                    }
+                }
+            } catch(e) {}
 
             // Setup form handler
             document.getElementById('hunt-form').addEventListener('submit', startHunt);
@@ -1362,6 +1347,10 @@
             // Setup keyboard shortcuts
             document.addEventListener('keydown', handleKeyboardShortcut);
         });
+
+        function saveTrackedHunts() {
+            localStorage.setItem('trackedHunts', JSON.stringify(trackedHunts));
+        }
 
         // Theme management
         function initializeTheme() {
@@ -1598,11 +1587,15 @@
 
                 // Handle different message types
                 if (data.type === 'server_log') {
-                    // Server-side log message
                     addLog(data.message, data.log_type);
                 } else {
-                    // Progress update message
+                    // Progress update — route to per-hunt panel
                     handleProgress(data);
+                    // When a queued hunt transitions to running (init stage),
+                    // update the queue display so it disappears from the queue.
+                    if (data.stage === 'init' || data.stage === 'complete' || data.stage === 'error') {
+                        refreshQueueDisplay();
+                    }
                 }
             };
 
@@ -1617,26 +1610,26 @@
                 const response = await fetch('/api/hunts/active');
                 const active = await response.json();
 
-                if (active.length > 0) {
-                    const hunt = active[0];
-                    currentHuntId = hunt.hunt_id;
-                    localStorage.setItem('currentHuntId', hunt.hunt_id);
-
-                    // Show progress container and restore last known state
-                    document.getElementById('progress').classList.add('active');
-
-                    if (hunt.last_progress) {
-                        handleProgress(hunt.last_progress);
-                    } else {
-                        document.getElementById('progress-message').textContent =
-                            `Hunt ${hunt.hunt_id} is running (${hunt.progress}%)...`;
-                        document.getElementById('progress-fill').style.width = `${hunt.progress}%`;
-                        const pctEl2 = document.getElementById('progress-pct');
-                        if (pctEl2) pctEl2.textContent = `${hunt.progress}%`;
+                for (const hunt of active) {
+                    trackedHunts[hunt.hunt_id] = {
+                        status: hunt.status,
+                        progress: hunt.progress || 0,
+                    };
+                    ensureHuntPanel(hunt.hunt_id);
+                    if (hunt.status === 'running' && hunt.last_progress) {
+                        handleProgress({ ...hunt.last_progress, hunt_id: hunt.hunt_id });
+                    } else if (hunt.status === 'queued') {
+                        handleProgress({
+                            hunt_id: hunt.hunt_id,
+                            stage: 'queued',
+                            message: `Queued — position ${hunt.queue_position || '?'}`,
+                            progress: 0,
+                        });
                     }
-
-                    addLog(`Reconnected to active hunt: ${hunt.hunt_id}`, 'info');
+                    addLog(`Reconnected to ${hunt.status} hunt: ${hunt.hunt_id}`, 'info');
                 }
+                saveTrackedHunts();
+                refreshQueueDisplay();
             } catch (error) {
                 console.error('Error checking active hunts:', error);
             }
@@ -2583,12 +2576,28 @@
                 });
 
                 const data = await response.json();
-                currentHuntId = data.hunt_id;
-                localStorage.setItem('currentHuntId', currentHuntId);
+                const huntId = data.hunt_id;
+                const isQueued = data.status === 'queued';
 
-                // Show progress
-                document.getElementById('progress').classList.add('active');
-                addLog(`Started hunt: ${currentHuntId}`, 'info');
+                trackedHunts[huntId] = {
+                    status: isQueued ? 'queued' : 'running',
+                    progress: 0,
+                };
+                saveTrackedHunts();
+                ensureHuntPanel(huntId);
+
+                if (isQueued) {
+                    addLog(`Hunt ${huntId} queued (position ${data.queue_position})`, 'info');
+                    handleProgress({
+                        hunt_id: huntId,
+                        stage: 'queued',
+                        message: `Queued — position ${data.queue_position}`,
+                        progress: 0,
+                    });
+                    refreshQueueDisplay();
+                } else {
+                    addLog(`Started hunt: ${huntId}`, 'info');
+                }
 
             } catch (error) {
                 console.error('Error starting hunt:', error);
@@ -2615,62 +2624,172 @@
             'registry_changes': 'Registry Changes',
         };
 
+        /**
+         * Ensure a progress panel exists for a given hunt.
+         * Each panel is a self-contained progress card keyed by hunt_id.
+         */
+        function ensureHuntPanel(huntId) {
+            const container = document.getElementById('active-hunts-container');
+            if (document.getElementById('hp-' + huntId)) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'hp-' + huntId;
+            panel.className = 'progress-container active';
+            panel.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <h3 class="hp-title" style="font-size:13px; font-weight:600; margin:0;">Hunt in Progress</h3>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="hp-id" style="font-size:11px; opacity:0.5; font-family:monospace;">${huntId}</span>
+                        <span class="hp-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
+                    </div>
+                </div>
+                <div class="progress-bar">
+                    <div class="hp-fill progress-fill"></div>
+                </div>
+                <p class="hp-msg" style="font-size:13px; color:var(--text-secondary); margin-top:8px;">Initializing...</p>
+
+                <div class="hp-coll-detail" style="display:none;">
+                    <div class="collection-stats">
+                        <div class="collection-stat">
+                            <div class="stat-label">Total Events</div>
+                            <div class="stat-value hp-coll-total">0</div>
+                        </div>
+                        <div class="collection-stat">
+                            <div class="stat-label">Queries Done</div>
+                            <div class="stat-value hp-coll-queries">0 / 9</div>
+                        </div>
+                        <div class="collection-stat">
+                            <div class="stat-label">Window</div>
+                            <div class="stat-value hp-coll-window">-</div>
+                        </div>
+                        <div class="collection-stat">
+                            <div class="stat-label">Elapsed</div>
+                            <div class="stat-value hp-coll-elapsed">0s</div>
+                        </div>
+                    </div>
+                    <div class="query-tracker hp-query-tracker"></div>
+                </div>
+            `;
+            container.appendChild(panel);
+        }
+
+        /**
+         * Remove a hunt panel from the DOM.
+         */
+        function removeHuntPanel(huntId) {
+            const el = document.getElementById('hp-' + huntId);
+            if (el) el.remove();
+        }
+
+        /**
+         * Refresh the queue display from the current tracked hunts.
+         */
+        async function refreshQueueDisplay() {
+            try {
+                const resp = await fetch('/api/hunt/queue');
+                const data = await resp.json();
+                const qc = document.getElementById('queue-container');
+                const ql = document.getElementById('queue-list');
+                if (data.queue.length === 0) {
+                    qc.style.display = 'none';
+                    return;
+                }
+                qc.style.display = 'block';
+                ql.innerHTML = data.queue.map(q => `
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px;">
+                        <div>
+                            <span style="font-family:monospace; opacity:0.7;">#${q.position}</span>
+                            <span style="margin-left:8px;">${escapeHtml(q.hunt_id)}</span>
+                            ${q.description ? '<span style="margin-left:8px; opacity:0.5;">' + escapeHtml(q.description) + '</span>' : ''}
+                        </div>
+                        <button onclick="cancelQueuedHunt('${q.hunt_id}')" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;">Cancel</button>
+                    </div>
+                `).join('');
+            } catch(e) {
+                console.error('Error refreshing queue:', e);
+            }
+        }
+
+        async function cancelQueuedHunt(huntId) {
+            try {
+                await fetch('/api/hunt/queue/' + huntId, { method: 'DELETE' });
+                delete trackedHunts[huntId];
+                removeHuntPanel(huntId);
+                saveTrackedHunts();
+                refreshQueueDisplay();
+                addLog(`Cancelled queued hunt: ${huntId}`, 'info');
+            } catch(e) {
+                addLog(`Error cancelling: ${e.message}`, 'error');
+            }
+        }
+
         function handleProgress(data) {
             if (!data.stage) return;
+            const huntId = data.hunt_id;
 
-            const progressFill = document.getElementById('progress-fill');
-            const progressMessage = document.getElementById('progress-message');
-            const collectionDetail = document.getElementById('collection-detail');
-            const progressTitle = document.getElementById('progress-title');
+            // Ensure a panel exists for this hunt
+            if (huntId) ensureHuntPanel(huntId);
 
-            // Ensure progress panel is visible for active stages
-            if (data.stage !== 'complete' && data.stage !== 'error') {
-                document.getElementById('progress').classList.add('active');
+            const panel = huntId ? document.getElementById('hp-' + huntId) : null;
+            if (!panel) return;
+
+            const fill = panel.querySelector('.hp-fill');
+            const pct = panel.querySelector('.hp-pct');
+            const msg = panel.querySelector('.hp-msg');
+            const title = panel.querySelector('.hp-title');
+            const collDetail = panel.querySelector('.hp-coll-detail');
+
+            fill.style.width = `${data.progress}%`;
+            pct.textContent = `${data.progress}%`;
+            msg.textContent = data.message;
+
+            addLog(`[${huntId}] ${data.message}`, data.stage === 'error' ? 'error' : 'info');
+
+            // Update tracked state
+            if (trackedHunts[huntId]) {
+                trackedHunts[huntId].progress = data.progress;
+                if (data.stage !== 'queued') trackedHunts[huntId].status = 'running';
             }
 
-            progressFill.style.width = `${data.progress}%`;
-            const pctEl = document.getElementById('progress-pct');
-            if (pctEl) pctEl.textContent = `${data.progress}%`;
-            progressMessage.textContent = data.message;
+            // Queued state
+            if (data.stage === 'queued') {
+                title.textContent = 'Queued';
+                fill.style.background = 'var(--text-secondary)';
+                pct.textContent = '';
+                return;
+            }
 
-            addLog(data.message, data.stage === 'error' ? 'error' : 'info');
+            // Restore accent color if it was queued before
+            fill.style.background = '';
 
             // Show detailed collection stats
             if (data.stage === 'collect' && data.collection) {
-                collectionDetail.style.display = 'block';
-                progressTitle.textContent = 'Collecting Data from Splunk...';
+                collDetail.style.display = 'block';
+                title.textContent = 'Collecting Data from Splunk...';
 
                 const c = data.collection;
-
-                // Update stat boxes
-                document.getElementById('coll-total-events').textContent =
-                    (c.total_events || 0).toLocaleString();
-                document.getElementById('coll-queries-done').textContent =
-                    `${c.queries_done || 0} / ${c.queries_total || 9}`;
+                panel.querySelector('.hp-coll-total').textContent = (c.total_events || 0).toLocaleString();
+                panel.querySelector('.hp-coll-queries').textContent = `${c.queries_done || 0} / ${c.queries_total || 9}`;
 
                 if (c.total_windows && c.total_windows > 1) {
-                    document.getElementById('coll-window').textContent =
-                        `${c.window || 0} / ${c.total_windows}`;
+                    panel.querySelector('.hp-coll-window').textContent = `${c.window || 0} / ${c.total_windows}`;
                 } else {
-                    document.getElementById('coll-window').textContent = '1 / 1';
+                    panel.querySelector('.hp-coll-window').textContent = '1 / 1';
                 }
 
                 if (c.elapsed_seconds) {
                     const mins = Math.floor(c.elapsed_seconds / 60);
                     const secs = Math.floor(c.elapsed_seconds % 60);
-                    document.getElementById('coll-elapsed').textContent =
-                        mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                    panel.querySelector('.hp-coll-elapsed').textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
                 }
 
-                // Mark total events green when queries are all done
                 if (c.queries_done >= (c.queries_total || 9)) {
-                    document.getElementById('coll-total-events').classList.add('done');
-                    document.getElementById('coll-queries-done').classList.add('done');
+                    panel.querySelector('.hp-coll-total').classList.add('done');
+                    panel.querySelector('.hp-coll-queries').classList.add('done');
                 }
 
-                // Update per-query tracker chips
                 if (c.events_by_type) {
-                    const tracker = document.getElementById('query-tracker');
+                    const tracker = panel.querySelector('.hp-query-tracker');
                     tracker.innerHTML = '';
                     for (const [key, label] of Object.entries(QUERY_LABELS)) {
                         const count = c.events_by_type[key];
@@ -2685,46 +2804,43 @@
                     }
                 }
             } else if (data.stage === 'analyze' || data.stage === 'hunt') {
-                progressTitle.textContent = data.stage === 'analyze'
-                    ? 'Analyzing Collected Data...'
-                    : 'Running Hunting Agents...';
+                title.textContent = data.stage === 'analyze' ? 'Analyzing Collected Data...' : 'Running Hunting Agents...';
             } else if (data.stage === 'finalize') {
-                progressTitle.textContent = 'Finalizing Results...';
+                title.textContent = 'Finalizing Results...';
             }
 
             // Error handling
-            if (data.stage === 'error' && data.error_detail) {
-                progressTitle.textContent = 'Hunt Failed';
-                addLog('Error details:', 'error');
-                data.error_detail.split('\n').forEach(line => {
-                    if (line.trim()) addLog(line, 'error');
-                });
+            if (data.stage === 'error') {
+                title.textContent = 'Hunt Failed';
+                fill.style.background = '#e53935';
+                if (data.error_detail) {
+                    data.error_detail.split('\n').forEach(line => {
+                        if (line.trim()) addLog(line, 'error');
+                    });
+                }
             }
 
+            // Terminal states — remove panel after a delay
             if (data.stage === 'complete') {
-                progressTitle.textContent = 'Hunt Complete!';
-                currentHuntId = null;
-                localStorage.removeItem('currentHuntId');
+                title.textContent = 'Hunt Complete!';
+                fill.style.background = '#43a047';
+                delete trackedHunts[huntId];
+                saveTrackedHunts();
                 setTimeout(() => {
-                    document.getElementById('progress').classList.remove('active');
-                    collectionDetail.style.display = 'none';
-                    progressFill.style.width = '0%';
-                    // Reset stat classes
-                    document.getElementById('coll-total-events').classList.remove('done');
-                    document.getElementById('coll-queries-done').classList.remove('done');
+                    removeHuntPanel(huntId);
                     loadRecentHunts();
                     loadStats();
-                    viewHuntDetails(data.hunt_id);
-                }, 2000);
+                    refreshQueueDisplay();
+                    viewHuntDetails(huntId);
+                }, 2500);
             } else if (data.stage === 'error') {
-                currentHuntId = null;
-                localStorage.removeItem('currentHuntId');
+                delete trackedHunts[huntId];
+                saveTrackedHunts();
                 setTimeout(() => {
-                    document.getElementById('progress').classList.remove('active');
-                    collectionDetail.style.display = 'none';
-                    progressFill.style.width = '0%';
+                    removeHuntPanel(huntId);
                     loadRecentHunts();
                     loadStats();
+                    refreshQueueDisplay();
                 }, 5000);
             }
         }

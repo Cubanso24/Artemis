@@ -295,7 +295,11 @@ class HuntManager:
 
     Hunts run in non-daemon subprocesses and write progress to SQLite.
     The manager polls the DB and broadcasts updates to WebSocket clients.
+    Supports up to ``max_concurrent`` hunts running simultaneously; extras
+    are placed in a FIFO queue and auto-launched when a slot opens.
     """
+
+    MAX_CONCURRENT = 2  # how many hunts can run at the same time
 
     def __init__(self, db_manager):
         self.db = db_manager
@@ -303,6 +307,9 @@ class HuntManager:
         self._monitored_hunts: dict = {}      # hunt_id -> pid
         self._poll_task: Optional[asyncio.Task] = None
         self._splunk = None
+
+        # Hunt queue: list of dicts with hunt params, FIFO order
+        self._queue: list = []  # [{'hunt_id': ..., 'time_range': ..., ...}, ...]
 
         # Continuous hunting state
         self._continuous_task = None
@@ -337,7 +344,18 @@ class HuntManager:
         return self._splunk
 
     # ------------------------------------------------------------------
-    # Launch a hunt
+    # Running-hunt count
+    # ------------------------------------------------------------------
+
+    def _running_count(self) -> int:
+        """Return the number of hunts currently executing."""
+        return sum(
+            1 for s in self.active_hunts.values()
+            if s.get('status') == 'running'
+        )
+
+    # ------------------------------------------------------------------
+    # Launch / queue a hunt
     # ------------------------------------------------------------------
 
     async def execute_hunt(
@@ -350,8 +368,47 @@ class HuntManager:
         earliest_time: str = None,
         latest_time: str = None,
     ):
-        """Spawn a non-daemon subprocess for the hunt and begin monitoring."""
+        """Launch a hunt immediately if a slot is free, else queue it."""
+        params = dict(
+            hunt_id=hunt_id,
+            time_range=time_range,
+            mode=mode,
+            description=description,
+            storage_mode=storage_mode,
+            earliest_time=earliest_time,
+            latest_time=latest_time,
+        )
+
+        if self._running_count() < self.MAX_CONCURRENT:
+            await self._launch_hunt(params)
+        else:
+            self._queue.append(params)
+            self.active_hunts[hunt_id] = {
+                'status': 'queued',
+                'progress': 0,
+                'start_time': None,
+                'collection_stats': {},
+                'last_progress': None,
+                'queue_position': len(self._queue),
+            }
+            logger.info(
+                f'Hunt {hunt_id} queued (position {len(self._queue)}, '
+                f'{self._running_count()} running)'
+            )
+            # Broadcast queue state so the UI updates immediately
+            if self._broadcast_fn:
+                await self._broadcast_fn({
+                    'hunt_id': hunt_id,
+                    'stage': 'queued',
+                    'message': f'Queued — position {len(self._queue)}',
+                    'progress': 0,
+                })
+
+    async def _launch_hunt(self, params: dict):
+        """Actually spawn the subprocess for a hunt."""
         import multiprocessing
+
+        hunt_id = params['hunt_id']
 
         self.active_hunts[hunt_id] = {
             'status': 'running',
@@ -363,16 +420,71 @@ class HuntManager:
 
         proc = multiprocessing.Process(
             target=_hunt_worker_process,
-            args=(hunt_id, time_range, mode, description, self.db.db_path,
-                  storage_mode, earliest_time, latest_time),
-            daemon=False,  # survives server restart
+            args=(
+                hunt_id,
+                params['time_range'],
+                params['mode'],
+                params['description'],
+                self.db.db_path,
+                params['storage_mode'],
+                params['earliest_time'],
+                params['latest_time'],
+            ),
+            daemon=False,
         )
         proc.start()
         self._monitored_hunts[hunt_id] = proc.pid
         logger.info(f'Hunt {hunt_id} started in subprocess (pid {proc.pid})')
 
-        # Ensure the polling loop is running
         self._ensure_poll_task()
+
+    async def _drain_queue(self):
+        """Launch queued hunts until all slots are filled or queue is empty."""
+        while self._queue and self._running_count() < self.MAX_CONCURRENT:
+            params = self._queue.pop(0)
+            hunt_id = params['hunt_id']
+            logger.info(
+                f'Dequeuing hunt {hunt_id} '
+                f'({len(self._queue)} still queued)'
+            )
+            await self._launch_hunt(params)
+        # Update queue positions for remaining entries
+        for idx, params in enumerate(self._queue, 1):
+            hid = params['hunt_id']
+            if hid in self.active_hunts:
+                self.active_hunts[hid]['queue_position'] = idx
+
+    # ------------------------------------------------------------------
+    # Queue management helpers
+    # ------------------------------------------------------------------
+
+    def get_queue(self) -> list:
+        """Return the current queue in FIFO order."""
+        return [
+            {
+                'hunt_id': p['hunt_id'],
+                'position': idx,
+                'time_range': p.get('time_range', ''),
+                'mode': p.get('mode', ''),
+                'description': p.get('description', ''),
+            }
+            for idx, p in enumerate(self._queue, 1)
+        ]
+
+    def remove_from_queue(self, hunt_id: str) -> bool:
+        """Remove a queued hunt by ID.  Returns True if found."""
+        for i, p in enumerate(self._queue):
+            if p['hunt_id'] == hunt_id:
+                self._queue.pop(i)
+                self.active_hunts.pop(hunt_id, None)
+                # Re-index remaining positions
+                for idx, pp in enumerate(self._queue, 1):
+                    hid = pp['hunt_id']
+                    if hid in self.active_hunts:
+                        self.active_hunts[hid]['queue_position'] = idx
+                logger.info(f'Removed {hunt_id} from queue')
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Progress polling loop
@@ -440,7 +552,17 @@ class HuntManager:
                 for hid in finished:
                     self._monitored_hunts.pop(hid, None)
 
+                # When a slot opens, launch the next queued hunt(s)
+                if finished:
+                    await self._drain_queue()
+
                 await asyncio.sleep(0.5)
+
+                # Keep polling while there are queued hunts even if
+                # nothing is currently monitored (queue drain just
+                # added new entries to _monitored_hunts).
+                if not self._monitored_hunts and not self._queue:
+                    break
 
         except asyncio.CancelledError:
             pass
