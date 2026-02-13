@@ -588,13 +588,14 @@ def _hunt_worker_process(hunt_id, time_range, mode, description,
             send({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
             try:
                 from artemis.plugins.network_mapper import NetworkMapperPlugin
-                nm = NetworkMapperPlugin({})
+                nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
                 nm.initialize()
                 nm.execute(
                     network_connections=hunting_data.get('network_connections', []),
                     dns_queries=hunting_data.get('dns_queries', []),
                     ntlm_logs=hunting_data.get('ntlm_logs', []),
                 )
+                nm.save_map()
             except Exception as e:
                 log.warning(f'Network mapper failed: {e}')
 
