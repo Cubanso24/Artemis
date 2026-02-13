@@ -212,10 +212,13 @@ class SplunkConnector:
             f"  Job {job.sid} finished: {total_results:,} results in {elapsed:.1f}s"
         )
 
-        # Fetch results in 2M-event pages
+        # Fetch results in pages.
+        # We request up to 2M per call, but Splunk's server-side
+        # maxresultrows (default 50k) caps each response.
         events = []
         batch_size = 2_000_000
         offset = 0
+        next_log_at = max(total_results // 10, 500_000)  # log at ~10% intervals, min 500k
 
         while offset < total_results:
             results_stream = job.results(
@@ -244,10 +247,12 @@ class SplunkConnector:
 
             events.extend(batch)
             offset += len(batch)
-            if total_results > batch_size:
+            if len(events) >= next_log_at and offset < total_results:
+                pct = len(events) * 100 // total_results
                 self.logger.info(
-                    f"  Retrieved {len(events):,} / {total_results:,} events"
+                    f"  Fetching results: {len(events):,} / {total_results:,} ({pct}%)"
                 )
+                next_log_at = len(events) + max(total_results // 10, 500_000)
 
         elapsed = time.time() - start_time
         self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
