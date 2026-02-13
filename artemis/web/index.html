@@ -1220,7 +1220,7 @@
                 <h2>Network Topology Graph</h2>
 
                 <div class="graph-controls">
-                    <input type="text" id="graph-search" placeholder="Search IP address..." onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:200px;">
+                    <input type="text" id="graph-search" placeholder="Search IP, hostname, domain, vendor..." onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:260px;">
                     <button class="btn" onclick="searchGraphNode()">Find</button>
                     <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
@@ -2182,6 +2182,11 @@
 
             title.textContent = `${node.label}${deviceStr !== 'Unknown' ? ' — ' + deviceStr : ''}`;
 
+            // Extract IP from the node id (format: "sensor:vlan:ip")
+            const nodeIp = node.id ? node.id.split(':').pop() : '';
+            const macAddr = node.mac_address || '';
+            const macIpCount = node.mac_ip_count || 0;
+
             let html = `
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; font-size:13px; margin-bottom:16px;">
                     <div><span style="opacity:0.6;">Device:</span> <strong>${escapeHtml(deviceStr)}</strong></div>
@@ -2189,6 +2194,7 @@
                     ${nbNames ? `<div><span style="opacity:0.6;">NetBIOS:</span> <strong>${escapeHtml(nbNames)}</strong></div>` : ''}
                     ${domainStr ? `<div><span style="opacity:0.6;">Domain:</span> <strong>${escapeHtml(domainStr)}</strong></div>` : ''}
                     ${hostnamesStr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Hostnames:</span> ${escapeHtml(hostnamesStr)}</div>` : ''}
+                    ${macAddr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">MAC:</span> <strong style="font-family:monospace;">${escapeHtml(macAddr)}</strong>${macIpCount > 1 ? ` <span style="color:#FF9800; font-size:11px; font-weight:600;"><i class="fa-solid fa-shuffle"></i> ${macIpCount} IPs</span>` : ''}</div>` : ''}
                     ${vendorStr ? `<div><span style="opacity:0.6;">Vendor:</span> <strong>${escapeHtml(vendorStr)}</strong></div>` : ''}
                     ${deviceModel ? `<div><span style="opacity:0.6;">Model:</span> <strong>${escapeHtml(deviceModel)}</strong></div>` : ''}
                     ${osInfo ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">OS / Platform:</span> <strong>${escapeHtml(osInfo)}</strong></div>` : ''}
@@ -2197,6 +2203,12 @@
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
                     ${softwareList.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Software:</span> ${escapeHtml(softwareList.join(', '))}</div>` : ''}
                 </div>
+                <div style="margin-bottom:16px;">
+                    <button class="btn btn-secondary" onclick="loadDeviceIdentity('${escapeHtml(nodeIp)}')" style="font-size:12px; padding:5px 12px;">
+                        <i class="fa-solid fa-fingerprint"></i> Device Identity (MAC History)
+                    </button>
+                </div>
+                <div id="device-identity-inline" style="display:none; margin-bottom:16px;"></div>
             `;
 
             // Internal connections table
@@ -2244,6 +2256,55 @@
             body.innerHTML = html;
             panel.style.display = 'block';
             panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        async function loadDeviceIdentity(ip) {
+            const container = document.getElementById('device-identity-inline');
+            if (!container) return;
+            container.style.display = 'block';
+            container.innerHTML = '<p style="opacity:0.6; font-size:13px;">Loading MAC history...</p>';
+            try {
+                const resp = await fetch(`/api/network-graph/device-identity/${encodeURIComponent(ip)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    container.innerHTML = `<p style="opacity:0.5; font-size:13px;">No MAC history found for ${escapeHtml(ip)}. Run <strong>Profile Devices</strong> to collect DHCP data.</p>`;
+                    return;
+                }
+                let html = '';
+                data.macs.forEach(m => {
+                    const multiIp = m.ip_count > 1;
+                    html += `<div style="background:var(--bg-tertiary); border-radius:6px; padding:10px 14px; margin-bottom:8px; ${multiIp ? 'border-left:3px solid #FF9800;' : ''}">`;
+                    html += `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">`;
+                    html += `<span style="font-family:monospace; font-weight:600; font-size:13px;">${escapeHtml(m.mac)}</span>`;
+                    html += `<span style="font-size:12px; opacity:0.7;">${escapeHtml(m.vendor || 'Unknown vendor')}</span>`;
+                    html += `</div>`;
+                    if (multiIp) {
+                        html += `<div style="font-size:12px; color:#FF9800; margin-bottom:8px;"><i class="fa-solid fa-triangle-exclamation"></i> This device has used <strong>${m.ip_count}</strong> different IPs</div>`;
+                    }
+                    html += `<table style="width:100%; font-size:12px; border-collapse:collapse;">`;
+                    html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                        <td style="padding:3px 6px;">IP Address</td>
+                        <td style="padding:3px 6px;">VLAN</td>
+                        <td style="padding:3px 6px;">Hostname</td>
+                        <td style="padding:3px 6px;">First Seen</td>
+                        <td style="padding:3px 6px;">Last Seen</td>
+                    </tr>`;
+                    m.bindings.forEach(b => {
+                        const isCurrent = b.ip === ip;
+                        html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); ${isCurrent ? 'background:rgba(0,188,212,0.1);' : ''}">
+                            <td style="padding:3px 6px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${b.ip}'; searchGraphNode();">${escapeHtml(b.ip)} ${isCurrent ? '<span style="color:var(--accent-primary); font-size:10px;">(current)</span>' : ''}</td>
+                            <td style="padding:3px 6px; opacity:0.7;">${escapeHtml(b.vlan || '0')}</td>
+                            <td style="padding:3px 6px; opacity:0.7;">${escapeHtml(b.hostname || '-')}</td>
+                            <td style="padding:3px 6px; opacity:0.7; font-size:11px;">${escapeHtml(b.first_seen ? b.first_seen.replace('T', ' ').slice(0, 19) : '-')}</td>
+                            <td style="padding:3px 6px; opacity:0.7; font-size:11px;">${escapeHtml(b.last_seen ? b.last_seen.replace('T', ' ').slice(0, 19) : '-')}</td>
+                        </tr>`;
+                    });
+                    html += `</table></div>`;
+                });
+                container.innerHTML = html;
+            } catch (err) {
+                container.innerHTML = `<p style="color:#f44336; font-size:13px;">Error loading device identity: ${escapeHtml(err.message)}</p>`;
+            }
         }
 
         async function loadNetworkSummary() {
@@ -2296,6 +2357,15 @@
                             <div style="font-size:20px; font-weight:700;">${summary.total_services}</div>
                             <div style="font-size:11px; opacity:0.7;">Services</div>
                         </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:20px; font-weight:700;">${(summary.mac_tracking || {}).total_macs || 0}</div>
+                            <div style="font-size:11px; opacity:0.7;">MACs Tracked</div>
+                        </div>
+                        ${((summary.mac_tracking || {}).multi_ip_count || 0) > 0 ? `
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #FF9800;">
+                            <div style="font-size:20px; font-weight:700; color:#FF9800;">${summary.mac_tracking.multi_ip_count}</div>
+                            <div style="font-size:11px; opacity:0.7;">Multi-IP Devices</div>
+                        </div>` : ''}
                     </div>
                 `;
 
@@ -2372,10 +2442,174 @@
                     html += '</table>';
                 }
 
+                // MAC tracking / Device Identity section
+                html += `<div id="mac-tracking-section" style="margin-top:15px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h4 style="margin:0;">Device Identity (MAC Tracking)</h4>
+                        <button class="btn btn-secondary" onclick="loadMacTracking()" style="font-size:12px; padding:4px 10px;">Load MAC Data</button>
+                    </div>
+                    <p style="font-size:12px; opacity:0.6; margin:4px 0 0 0;">Tracks MAC addresses across IP changes — identifies devices moving between networks or getting new DHCP leases.</p>
+                    <div id="mac-tracking-body" style="margin-top:10px;"></div>
+                </div>`;
+
                 document.getElementById('network-summary').innerHTML = html;
 
             } catch (error) {
                 console.error('Error loading network summary:', error);
+            }
+        }
+
+        async function loadMacTracking() {
+            const body = document.getElementById('mac-tracking-body');
+            if (!body) return;
+            body.innerHTML = '<p style="opacity:0.6; font-size:13px;">Loading MAC tracking data...</p>';
+
+            try {
+                const resp = await fetch('/api/network-graph/mac-tracking');
+                const data = await resp.json();
+
+                if (data.error) {
+                    body.innerHTML = `<p style="opacity:0.5; font-size:13px;">${escapeHtml(data.error)}</p>`;
+                    return;
+                }
+
+                let html = `<div style="display:flex; gap:20px; margin-bottom:12px; font-size:13px;">
+                    <span><strong>${data.total_macs}</strong> unique MACs tracked</span>
+                    <span style="color:#FF9800;"><strong>${data.multi_ip_count}</strong> devices with multiple IPs</span>
+                </div>`;
+
+                // Show multi-IP devices first (most interesting for threat hunting)
+                if (data.multi_ip_devices && data.multi_ip_devices.length > 0) {
+                    html += `<details open style="margin-bottom:10px; background:var(--bg-tertiary); border-radius:5px; border-left:3px solid #FF9800;">
+                        <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+                            <span><i class="fa-solid fa-shuffle"></i> Devices with Multiple IPs</span>
+                            <span style="background:#FF9800; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${data.multi_ip_count}</span>
+                        </summary>
+                        <div style="padding:0 14px 10px 14px;">
+                            <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                                <tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                                    <td style="padding:4px 8px;">MAC Address</td>
+                                    <td style="padding:4px 8px;">Vendor</td>
+                                    <td style="padding:4px 8px; text-align:center;">IPs</td>
+                                    <td style="padding:4px 8px;">IP Addresses</td>
+                                    <td style="padding:4px 8px;">Last Seen</td>
+                                </tr>`;
+
+                    data.multi_ip_devices.forEach(d => {
+                        const lastSeen = d.bindings.length > 0 ? d.bindings[0].last_seen || '' : '';
+                        const ipsStr = d.ips.slice(0, 5).join(', ') + (d.ips.length > 5 ? ` +${d.ips.length - 5} more` : '');
+                        html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); cursor:pointer;" onclick="expandMacDetail(this, '${escapeHtml(d.mac)}')">
+                            <td style="padding:4px 8px; font-family:monospace; font-weight:600;">${escapeHtml(d.mac)}</td>
+                            <td style="padding:4px 8px; opacity:0.7;">${escapeHtml(d.vendor || '-')}</td>
+                            <td style="padding:4px 8px; text-align:center; color:#FF9800; font-weight:600;">${d.ip_count}</td>
+                            <td style="padding:4px 8px; font-family:monospace; font-size:11px; opacity:0.8;">${escapeHtml(ipsStr)}</td>
+                            <td style="padding:4px 8px; opacity:0.6; font-size:11px;">${escapeHtml(lastSeen ? lastSeen.replace('T', ' ').slice(0, 19) : '-')}</td>
+                        </tr>
+                        <tr class="mac-detail-row" style="display:none;">
+                            <td colspan="5" style="padding:0;"><div class="mac-detail-content" style="padding:8px 12px; background:var(--bg-primary); border-top:1px solid rgba(255,255,255,0.05);"></div></td>
+                        </tr>`;
+                    });
+                    html += `</table></div></details>`;
+                }
+
+                // All tracked devices (collapsed by default)
+                if (data.all_devices && data.all_devices.length > 0) {
+                    html += `<details style="margin-bottom:10px; background:var(--bg-tertiary); border-radius:5px;">
+                        <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+                            <span><i class="fa-solid fa-network-wired"></i> All Tracked Devices</span>
+                            <span style="background:var(--accent); color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${data.total_macs}</span>
+                        </summary>
+                        <div style="padding:0 14px 10px 14px;">
+                            <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                                <tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                                    <td style="padding:4px 8px;">MAC Address</td>
+                                    <td style="padding:4px 8px;">Vendor</td>
+                                    <td style="padding:4px 8px; text-align:center;">IPs</td>
+                                    <td style="padding:4px 8px;">Current IP</td>
+                                </tr>`;
+                    data.all_devices.slice(0, 200).forEach(d => {
+                        const currentIp = d.bindings.length > 0 ? d.bindings[0].ip : '-';
+                        html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); cursor:pointer;" onclick="expandMacDetail(this, '${escapeHtml(d.mac)}')">
+                            <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(d.mac)}</td>
+                            <td style="padding:4px 8px; opacity:0.7;">${escapeHtml(d.vendor || '-')}</td>
+                            <td style="padding:4px 8px; text-align:center; ${d.ip_count > 1 ? 'color:#FF9800; font-weight:600;' : ''}">${d.ip_count}</td>
+                            <td style="padding:4px 8px; font-family:monospace; font-size:11px; cursor:pointer;" onclick="event.stopPropagation(); document.getElementById('graph-search').value='${currentIp}'; searchGraphNode();">${escapeHtml(currentIp)}</td>
+                        </tr>
+                        <tr class="mac-detail-row" style="display:none;">
+                            <td colspan="4" style="padding:0;"><div class="mac-detail-content" style="padding:8px 12px; background:var(--bg-primary); border-top:1px solid rgba(255,255,255,0.05);"></div></td>
+                        </tr>`;
+                    });
+                    html += `</table></div></details>`;
+                }
+
+                if (data.total_macs === 0) {
+                    html += `<p style="opacity:0.5; font-size:13px;">No MAC data collected yet. Run <strong>Profile Devices</strong> to collect DHCP lease data.</p>`;
+                }
+
+                body.innerHTML = html;
+            } catch (err) {
+                body.innerHTML = `<p style="color:#f44336; font-size:13px;">Error: ${escapeHtml(err.message)}</p>`;
+            }
+        }
+
+        async function expandMacDetail(row, mac) {
+            const detailRow = row.nextElementSibling;
+            if (!detailRow || !detailRow.classList.contains('mac-detail-row')) return;
+
+            // Toggle visibility
+            if (detailRow.style.display !== 'none') {
+                detailRow.style.display = 'none';
+                return;
+            }
+            detailRow.style.display = '';
+
+            const content = detailRow.querySelector('.mac-detail-content');
+            content.innerHTML = '<span style="opacity:0.6; font-size:12px;">Loading...</span>';
+
+            try {
+                const resp = await fetch(`/api/network-graph/mac-history/${encodeURIComponent(mac)}`);
+                const data = await resp.json();
+                if (data.error) {
+                    content.innerHTML = `<span style="opacity:0.5; font-size:12px;">${escapeHtml(data.error)}</span>`;
+                    return;
+                }
+
+                let html = `<div style="font-size:12px; margin-bottom:6px;"><strong>${escapeHtml(data.mac)}</strong> — ${escapeHtml(data.vendor || 'Unknown vendor')} — <strong>${data.ip_count}</strong> IPs observed</div>`;
+                html += `<table style="width:100%; font-size:11px; border-collapse:collapse;">
+                    <tr style="opacity:0.6; text-transform:uppercase;">
+                        <td style="padding:2px 6px;">IP</td>
+                        <td style="padding:2px 6px;">VLAN</td>
+                        <td style="padding:2px 6px;">Sensor</td>
+                        <td style="padding:2px 6px;">Hostname</td>
+                        <td style="padding:2px 6px;">First Seen</td>
+                        <td style="padding:2px 6px;">Last Seen</td>
+                    </tr>`;
+                data.bindings.forEach(b => {
+                    html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                        <td style="padding:2px 6px; font-family:monospace; cursor:pointer;" onclick="event.stopPropagation(); document.getElementById('graph-search').value='${b.ip}'; searchGraphNode();">${escapeHtml(b.ip)}</td>
+                        <td style="padding:2px 6px; opacity:0.7;">${escapeHtml(b.vlan || '0')}</td>
+                        <td style="padding:2px 6px; opacity:0.7;">${escapeHtml(b.sensor_id || 'default')}</td>
+                        <td style="padding:2px 6px; opacity:0.7;">${escapeHtml(b.hostname || '-')}</td>
+                        <td style="padding:2px 6px; opacity:0.7;">${escapeHtml(b.first_seen ? b.first_seen.replace('T', ' ').slice(0, 19) : '-')}</td>
+                        <td style="padding:2px 6px; opacity:0.7;">${escapeHtml(b.last_seen ? b.last_seen.replace('T', ' ').slice(0, 19) : '-')}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+
+                // Show associated nodes if available
+                if (data.associated_nodes && data.associated_nodes.length > 0) {
+                    html += `<div style="margin-top:8px; font-size:11px; opacity:0.7;">`;
+                    html += `<strong>Associated nodes:</strong> `;
+                    html += data.associated_nodes.map(n => {
+                        const label = n.hostnames.length > 0 ? n.hostnames[0] : (n.netbios_names.length > 0 ? n.netbios_names[0] : n.ip);
+                        return `<span style="cursor:pointer; text-decoration:underline;" onclick="event.stopPropagation(); document.getElementById('graph-search').value='${n.ip}'; searchGraphNode();">${escapeHtml(label)} (${escapeHtml(n.ip)})</span>`;
+                    }).join(', ');
+                    html += `</div>`;
+                }
+
+                content.innerHTML = html;
+            } catch (err) {
+                content.innerHTML = `<span style="color:#f44336; font-size:12px;">Error: ${escapeHtml(err.message)}</span>`;
             }
         }
 
@@ -2403,7 +2637,7 @@
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             if (!query || !networkGraph || !networkGraphData) return;
 
-            // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, vendor, model, OS, software)
+            // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, MAC, vendor, model, OS, software)
             const matches = networkGraphData.raw.nodes.filter(n => {
                 const lbl = (n.label || '').toLowerCase();
                 const nid = (n.id || '').toLowerCase();
@@ -2412,6 +2646,7 @@
                 const nbNames = (n.netbios_names || []).join(' ').toLowerCase();
                 const domain = (n.domain || '').toLowerCase();
                 const hostnames = (n.hostnames || []).join(' ').toLowerCase();
+                const mac = (n.mac_address || '').toLowerCase();
                 const vendor = (n.vendor || '').toLowerCase();
                 const model = (n.device_model || '').toLowerCase();
                 const osInfo = (n.os_info || '').toLowerCase();
@@ -2419,9 +2654,9 @@
                 return lbl.includes(query) || nid.includes(query) ||
                        dtype.includes(query) || dlabel.includes(query) ||
                        nbNames.includes(query) || domain.includes(query) ||
-                       hostnames.includes(query) || vendor.includes(query) ||
-                       model.includes(query) || osInfo.includes(query) ||
-                       sw.includes(query);
+                       hostnames.includes(query) || mac.includes(query) ||
+                       vendor.includes(query) || model.includes(query) ||
+                       osInfo.includes(query) || sw.includes(query);
             });
 
             if (matches.length > 0) {

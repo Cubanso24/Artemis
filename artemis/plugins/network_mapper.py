@@ -19,6 +19,31 @@ from artemis.plugins import ArtemisPlugin
 logger = logging.getLogger("artemis.plugins.network_mapper")
 
 
+class MacIpBinding:
+    """A single MAC-to-IP binding observed at a point in time."""
+
+    __slots__ = ('ip', 'vlan', 'sensor_id', 'hostname', 'first_seen', 'last_seen')
+
+    def __init__(self, ip: str, vlan: str = "0", sensor_id: str = "default",
+                 hostname: str = "", first_seen: str = "", last_seen: str = ""):
+        self.ip = ip
+        self.vlan = vlan
+        self.sensor_id = sensor_id
+        self.hostname = hostname
+        self.first_seen = first_seen or datetime.now().isoformat()
+        self.last_seen = last_seen or self.first_seen
+
+    def to_dict(self) -> Dict:
+        return {
+            'ip': self.ip,
+            'vlan': self.vlan,
+            'sensor_id': self.sensor_id,
+            'hostname': self.hostname,
+            'first_seen': self.first_seen,
+            'last_seen': self.last_seen,
+        }
+
+
 class NetworkNode:
     """Represents a network host observed by a specific sensor on a specific VLAN."""
 
@@ -133,6 +158,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         self.max_nodes = config.get('max_nodes', 500_000)
         self.last_save = datetime.now()
 
+        # MAC-to-IP history: tracks all IPs a MAC has been assigned over time.
+        # key = normalized MAC (upper, colon-separated), value = list[MacIpBinding]
+        self.mac_history: Dict[str, List[MacIpBinding]] = {}
+
         # Incremental role inference: only re-evaluate touched nodes
         self._dirty_nodes: Set[str] = set()
 
@@ -147,6 +176,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         logger.info(f"Network Mapper initialized. Output: {self.output_dir}")
         self.enabled = True
         self._load_existing_map()
+        self._load_mac_history()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -235,6 +265,82 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         self.nodes[key] = node
         self.sensors.add(sensor_id)
+
+    # ------------------------------------------------------------------
+    # MAC history persistence
+    # ------------------------------------------------------------------
+
+    def _load_mac_history(self):
+        """Load MAC-to-IP history from disk."""
+        hist_file = self.output_dir / "mac_history.json"
+        if not hist_file.exists():
+            return
+        try:
+            with open(hist_file) as f:
+                data = json.load(f)
+            for mac, bindings in data.items():
+                mac = mac.upper()
+                self.mac_history[mac] = [
+                    MacIpBinding(
+                        ip=b['ip'],
+                        vlan=b.get('vlan', '0'),
+                        sensor_id=b.get('sensor_id', 'default'),
+                        hostname=b.get('hostname', ''),
+                        first_seen=b.get('first_seen', ''),
+                        last_seen=b.get('last_seen', ''),
+                    )
+                    for b in bindings
+                ]
+            logger.info(
+                f"Loaded MAC history: {len(self.mac_history)} MACs, "
+                f"{sum(len(v) for v in self.mac_history.values())} bindings"
+            )
+        except Exception as e:
+            logger.error(f"Error loading MAC history: {e}")
+
+    def _save_mac_history(self):
+        """Save MAC-to-IP history to disk."""
+        hist_file = self.output_dir / "mac_history.json"
+        data = {}
+        for mac, bindings in self.mac_history.items():
+            data[mac] = [b.to_dict() for b in bindings]
+        try:
+            with open(hist_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.error(f"Error saving MAC history: {e}")
+
+    def _update_mac_history(self, mac: str, ip: str, vlan: str = "0",
+                            sensor_id: str = "default", hostname: str = "",
+                            timestamp: str = ""):
+        """Record a MAC-to-IP binding observation.
+
+        If the same MAC+IP+VLAN+sensor combination already exists, update
+        last_seen.  Otherwise append a new binding.
+        """
+        mac = mac.strip().upper().replace('-', ':')
+        if not mac or len(mac) < 8:
+            return
+
+        bindings = self.mac_history.setdefault(mac, [])
+        ts = timestamp or datetime.now().isoformat()
+
+        for b in bindings:
+            if b.ip == ip and b.vlan == vlan and b.sensor_id == sensor_id:
+                # Update last_seen if this timestamp is later
+                if ts > b.last_seen:
+                    b.last_seen = ts
+                if ts < b.first_seen:
+                    b.first_seen = ts
+                if hostname and not b.hostname:
+                    b.hostname = hostname
+                return
+
+        # New binding
+        bindings.append(MacIpBinding(
+            ip=ip, vlan=vlan, sensor_id=sensor_id,
+            hostname=hostname, first_seen=ts, last_seen=ts,
+        ))
 
     # ------------------------------------------------------------------
     # Core execution
@@ -902,14 +1008,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | where auth_count >= 3
         '''
 
-        # Query 5: DHCP logs — IP-to-MAC address mappings
+        # Query 5: DHCP logs — IP-to-MAC address mappings with timestamps
         dhcp_query = '''
         search index=zeek_dhcp
         | spath
         | where isnotnull(assigned_addr) AND isnotnull(mac)
-        | stats latest(mac) as mac,
-                latest(host_name) as dhcp_hostname
-          by assigned_addr
+        | eval vlan=coalesce(vlan, "0")
+        | stats min(_time) as first_seen,
+                max(_time) as last_seen,
+                latest(host_name) as dhcp_hostname,
+                latest(host) as sensor_id
+          by assigned_addr, mac, vlan
         | rename assigned_addr as ip
         '''
 
@@ -1095,22 +1204,44 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if len(clients) >= 5
         }
 
-        # Enrich nodes with DHCP data (MAC address + OUI vendor lookup)
+        # Enrich nodes with DHCP data (MAC address + OUI vendor + MAC history)
         dhcp_enriched = 0
+        mac_bindings_recorded = 0
         for row in dhcp_results:
             ip = _sv(row.get('ip'))
             mac = _sv(row.get('mac'))
             dhcp_hostname = _sv(row.get('dhcp_hostname'))
+            vlan = _sv(row.get('vlan'), '0')
+            sensor_id = _sv(row.get('sensor_id'), 'default')
+            first_seen = _sv(row.get('first_seen'))
+            last_seen = _sv(row.get('last_seen'))
             if not ip or not mac:
                 continue
             # Normalize MAC to colon-separated uppercase
             mac = mac.strip().upper().replace('-', ':')
+
+            # Record MAC-to-IP binding for device tracking
+            hn = ''
+            if dhcp_hostname and dhcp_hostname != '-' and dhcp_hostname != 'null':
+                hn = dhcp_hostname.lower()
+            self._update_mac_history(
+                mac, ip, vlan=vlan, sensor_id=sensor_id,
+                hostname=hn, timestamp=first_seen,
+            )
+            # Update last_seen separately if different
+            if last_seen and last_seen != first_seen:
+                self._update_mac_history(
+                    mac, ip, vlan=vlan, sensor_id=sensor_id,
+                    hostname=hn, timestamp=last_seen,
+                )
+            mac_bindings_recorded += 1
+
             for key, node in self.nodes.items():
                 if node.ip == ip:
                     node.mac_address = mac
                     node.vendor = self._lookup_oui(mac)
-                    if dhcp_hostname and dhcp_hostname != '-' and dhcp_hostname != 'null':
-                        node.hostnames.add(dhcp_hostname.lower())
+                    if hn:
+                        node.hostnames.add(hn)
                     dhcp_enriched += 1
 
         # Build IP -> [node keys] lookup for fast enrichment
@@ -1239,7 +1370,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments), "
             f"{len(kerberos_results)} Kerberos responders, "
             f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers, "
-            f"{len(dhcp_results)} DHCP leases ({dhcp_enriched} MAC enrichments), "
+            f"{len(dhcp_results)} DHCP leases ({dhcp_enriched} MAC enrichments, "
+            f"{mac_bindings_recorded} MAC-IP bindings recorded, "
+            f"{len(self.mac_history)} unique MACs tracked), "
             f"{len(snmp_results)} SNMP hosts ({snmp_enriched} enrichments), "
             f"{len(smb_results)} SMB hosts ({smb_enriched} NetBIOS names), "
             f"{len(software_results)} software detections ({software_enriched} enrichments), "
@@ -1386,6 +1519,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"Saved network map with {len(self.nodes)} nodes to {map_file}"
         )
 
+        # Persist MAC history alongside the map
+        self._save_mac_history()
+
         self._generate_summary()
         return str(map_file)
 
@@ -1496,6 +1632,101 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # API helpers
     # ------------------------------------------------------------------
 
+    def get_mac_tracking(self) -> Dict:
+        """Get MAC-to-IP tracking summary for the UI.
+
+        Returns MACs that have been seen with multiple IPs (device mobility)
+        and a full listing for drill-down.
+        """
+        multi_ip_macs = []
+        all_macs = []
+
+        for mac, bindings in self.mac_history.items():
+            unique_ips = {b.ip for b in bindings}
+            vendor = self._lookup_oui(mac)
+            entry = {
+                'mac': mac,
+                'vendor': vendor,
+                'ip_count': len(unique_ips),
+                'ips': sorted(unique_ips),
+                'bindings': [b.to_dict() for b in sorted(
+                    bindings, key=lambda x: x.last_seen, reverse=True
+                )],
+            }
+            all_macs.append(entry)
+            if len(unique_ips) > 1:
+                multi_ip_macs.append(entry)
+
+        # Sort: devices with most IPs first (likely DHCP / mobile)
+        multi_ip_macs.sort(key=lambda x: x['ip_count'], reverse=True)
+        all_macs.sort(key=lambda x: x['ip_count'], reverse=True)
+
+        return {
+            'total_macs': len(self.mac_history),
+            'multi_ip_count': len(multi_ip_macs),
+            'multi_ip_devices': multi_ip_macs[:100],
+            'all_devices': all_macs[:500],
+        }
+
+    def get_mac_history_detail(self, mac: str) -> Optional[Dict]:
+        """Get detailed MAC history for a single MAC address."""
+        mac = mac.strip().upper().replace('-', ':')
+        bindings = self.mac_history.get(mac)
+        if not bindings:
+            return None
+        unique_ips = {b.ip for b in bindings}
+        vendor = self._lookup_oui(mac)
+
+        # Find all nodes associated with this MAC
+        associated_nodes = []
+        for key, node in self.nodes.items():
+            if node.mac_address == mac or node.ip in unique_ips:
+                associated_nodes.append({
+                    'ip': node.ip,
+                    'sensor_id': node.sensor_id,
+                    'vlan': node.vlan,
+                    'hostnames': sorted(node.hostnames)[:5],
+                    'netbios_names': sorted(node.netbios_names)[:5],
+                    'device_type': node.device_type,
+                    'domain': node.domain,
+                })
+
+        return {
+            'mac': mac,
+            'vendor': vendor,
+            'ip_count': len(unique_ips),
+            'bindings': [b.to_dict() for b in sorted(
+                bindings, key=lambda x: x.last_seen, reverse=True
+            )],
+            'associated_nodes': associated_nodes,
+        }
+
+    def get_device_identity(self, ip: str) -> Optional[Dict]:
+        """Given an IP, find all MACs associated with it and their other IPs.
+
+        This helps answer: "What other IPs has this device used?"
+        """
+        result_macs = []
+        for mac, bindings in self.mac_history.items():
+            ip_match = any(b.ip == ip for b in bindings)
+            if ip_match:
+                unique_ips = {b.ip for b in bindings}
+                vendor = self._lookup_oui(mac)
+                result_macs.append({
+                    'mac': mac,
+                    'vendor': vendor,
+                    'ip_count': len(unique_ips),
+                    'bindings': [b.to_dict() for b in sorted(
+                        bindings, key=lambda x: x.last_seen, reverse=True
+                    )],
+                })
+        if not result_macs:
+            return None
+        return {
+            'ip': ip,
+            'macs': result_macs,
+        }
+
     def get_summary(self, sensor_id: Optional[str] = None) -> Dict:
         """
         Get summary statistics, optionally filtered by sensor.
@@ -1602,6 +1833,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
             },
             'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
             'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
+            'mac_tracking': {
+                'total_macs': len(self.mac_history),
+                'multi_ip_count': sum(
+                    1 for bindings in self.mac_history.values()
+                    if len({b.ip for b in bindings}) > 1
+                ),
+            },
         }
 
         self._stats_cache = summary
@@ -1696,6 +1934,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 if dst_key in top_keys and dst_key != self._node_key(node.sensor_id, node.vlan, node.ip):
                     int_conns.append({'ip': dst_ip, 'count': count})
 
+            # Count how many IPs this MAC has been seen with
+            mac_ip_count = 0
+            if node.mac_address and node.mac_address in self.mac_history:
+                mac_ip_count = len({b.ip for b in self.mac_history[node.mac_address]})
+
             nodes.append({
                 'id': self._node_key(node.sensor_id, node.vlan, node.ip),
                 'label': label,
@@ -1711,6 +1954,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'netbios_names': sorted(node.netbios_names)[:3],
                 'domain': node.domain,
                 'hostnames': sorted(node.hostnames)[:3],
+                'mac_address': node.mac_address,
+                'mac_ip_count': mac_ip_count,
                 'os_info': node.os_info,
                 'device_model': node.device_model,
                 'software': node.software[:5],

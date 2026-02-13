@@ -234,6 +234,56 @@ async def profile_status():
     return hunt_manager.get_profile_status()
 
 
+# --- MAC-to-IP tracking ---------------------------------------------------
+
+@router.get("/api/network-graph/mac-tracking")
+async def get_mac_tracking():
+    """Get MAC-to-IP device tracking summary."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'Network mapper plugin not enabled'},
+        )
+    return plugin.get_mac_tracking()
+
+
+@router.get("/api/network-graph/mac-history/{mac:path}")
+async def get_mac_history(mac: str):
+    """Get detailed MAC history for a specific MAC address."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'Network mapper plugin not enabled'},
+        )
+    result = plugin.get_mac_history_detail(mac)
+    if not result:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'MAC address not found in history'},
+        )
+    return result
+
+
+@router.get("/api/network-graph/device-identity/{ip}")
+async def get_device_identity(ip: str):
+    """Given an IP, find all MACs and their other IPs over time."""
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'Network mapper plugin not enabled'},
+        )
+    result = plugin.get_device_identity(ip)
+    if not result:
+        return JSONResponse(
+            status_code=404,
+            content={'error': 'No MAC history found for this IP'},
+        )
+    return result
+
+
 # --- Sigma rules ----------------------------------------------------------
 
 @router.get("/api/sigma/rules")
