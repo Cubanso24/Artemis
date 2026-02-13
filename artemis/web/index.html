@@ -1992,6 +1992,7 @@
                 }
 
                 let tooltip = node.label;
+                if (node.is_virtual) tooltip += `\n[VM: ${node.virtual_platform}]`;
                 if (nbNames) tooltip += `\nNetBIOS: ${nbNames}`;
                 if (domainStr) tooltip += `\nDomain: ${domainStr}`;
                 if (deviceStr) tooltip += `\nDevice: ${deviceStr}`;
@@ -2185,15 +2186,22 @@
             const nodeIp = node.id ? node.id.split(':').pop() : '';
             const macAddr = node.mac_address || '';
             const macIpCount = node.mac_ip_count || 0;
+            const isVirtual = node.is_virtual || false;
+            const virtualPlatform = node.virtual_platform || '';
 
             let html = `
+                ${isVirtual ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(156,39,176,0.15); border:1px solid rgba(156,39,176,0.4); border-radius:6px; padding:6px 12px; margin-bottom:12px; font-size:13px;">
+                    <i class="fa-solid fa-cloud" style="color:#CE93D8;"></i>
+                    <strong style="color:#CE93D8;">Virtual Machine</strong>
+                    <span style="opacity:0.7;">— ${escapeHtml(virtualPlatform)}</span>
+                </div>` : ''}
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; font-size:13px; margin-bottom:16px;">
                     <div><span style="opacity:0.6;">Device:</span> <strong>${escapeHtml(deviceStr)}</strong></div>
                     <div><span style="opacity:0.6;">Layer:</span> <strong>${escapeHtml(tierStr)}</strong></div>
                     ${nbNames ? `<div><span style="opacity:0.6;">NetBIOS:</span> <strong>${escapeHtml(nbNames)}</strong></div>` : ''}
                     ${domainStr ? `<div><span style="opacity:0.6;">Domain:</span> <strong>${escapeHtml(domainStr)}</strong></div>` : ''}
                     ${hostnamesStr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Hostnames:</span> ${escapeHtml(hostnamesStr)}</div>` : ''}
-                    ${macAddr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">MAC:</span> <strong style="font-family:monospace;">${escapeHtml(macAddr)}</strong>${macIpCount > 1 ? ` <span style="color:#FF9800; font-size:11px; font-weight:600;"><i class="fa-solid fa-shuffle"></i> ${macIpCount} IPs</span>` : ''}</div>` : ''}
+                    ${macAddr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">MAC:</span> <strong style="font-family:monospace;">${escapeHtml(macAddr)}</strong>${isVirtual ? ` <span style="color:#CE93D8; font-size:11px; font-weight:600;"><i class="fa-solid fa-cloud"></i> ${escapeHtml(virtualPlatform)}</span>` : ''}${macIpCount > 1 ? ` <span style="color:#FF9800; font-size:11px; font-weight:600;"><i class="fa-solid fa-shuffle"></i> ${macIpCount} IPs</span>` : ''}</div>` : ''}
                     ${vendorStr ? `<div><span style="opacity:0.6;">Vendor:</span> <strong>${escapeHtml(vendorStr)}</strong></div>` : ''}
                     ${deviceModel ? `<div><span style="opacity:0.6;">Model:</span> <strong>${escapeHtml(deviceModel)}</strong></div>` : ''}
                     ${osInfo ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">OS / Platform:</span> <strong>${escapeHtml(osInfo)}</strong></div>` : ''}
@@ -2360,6 +2368,11 @@
                             <div style="font-size:20px; font-weight:700;">${(summary.mac_tracking || {}).total_macs || 0}</div>
                             <div style="font-size:11px; opacity:0.7;">MACs Tracked</div>
                         </div>
+                        ${(summary.virtual_machines || 0) > 0 ? `
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #CE93D8;">
+                            <div style="font-size:20px; font-weight:700; color:#CE93D8;">${summary.virtual_machines}</div>
+                            <div style="font-size:11px; opacity:0.7;">Virtual Machines</div>
+                        </div>` : ''}
                         ${((summary.mac_tracking || {}).multi_ip_count || 0) > 0 ? `
                         <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #FF9800;">
                             <div style="font-size:20px; font-weight:700; color:#FF9800;">${summary.mac_tracking.multi_ip_count}</div>
@@ -2405,9 +2418,10 @@
                                             const osInfo = d.os_info || '';
                                             const sw = (d.software || []).slice(0, 2).join(', ');
                                             const osSw = [osInfo, sw].filter(Boolean).join(' — ') || '-';
+                                            const vmBadge = d.is_virtual ? ` <span style="color:#CE93D8; font-size:10px; font-weight:600;" title="${escapeHtml(d.virtual_platform || 'VM')}"><i class="fa-solid fa-cloud"></i> VM</span>` : '';
                                             return `
                                             <tr style="border-top:1px solid rgba(255,255,255,0.05);">
-                                                <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}</td>
+                                                <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}${vmBadge}</td>
                                                 <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
                                                 ${isDC ? '<td style="padding:4px 8px; opacity:0.8;">' + escapeHtml(domain) + '</td>' : ''}
                                                 <td style="padding:4px 8px; opacity:0.7; font-size:12px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(vendorModel)}">${escapeHtml(vendorModel)}</td>
@@ -2649,7 +2663,7 @@
             // Clear any previous search feedback
             searchInput.style.borderColor = '';
 
-            // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, MAC, vendor, model, OS, software)
+            // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, MAC, vendor, model, OS, software, virtual platform)
             const matches = networkGraphData.raw.nodes.filter(n => {
                 const lbl = (n.label || '').toLowerCase();
                 const nid = (n.id || '').toLowerCase();
@@ -2663,12 +2677,16 @@
                 const model = (n.device_model || '').toLowerCase();
                 const osInfo = (n.os_info || '').toLowerCase();
                 const sw = (n.software || []).join(' ').toLowerCase();
+                const virt = (n.virtual_platform || '').toLowerCase();
+                // Allow searching "virtual" or "vm" to find all VMs
+                const isVmQuery = query === 'virtual' || query === 'vm' || query === 'virtual machine';
                 return lbl.includes(query) || nid.includes(query) ||
                        dtype.includes(query) || dlabel.includes(query) ||
                        nbNames.includes(query) || domain.includes(query) ||
                        hostnames.includes(query) || mac.includes(query) ||
                        vendor.includes(query) || model.includes(query) ||
-                       osInfo.includes(query) || sw.includes(query);
+                       osInfo.includes(query) || sw.includes(query) ||
+                       virt.includes(query) || (isVmQuery && n.is_virtual);
             });
 
             if (matches.length > 0) {

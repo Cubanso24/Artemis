@@ -49,7 +49,7 @@ class NetworkNode:
 
     __slots__ = (
         'ip', 'sensor_id', 'vlan', 'hostnames', 'netbios_names', 'domain',
-        'mac_address', 'vendor',
+        'mac_address', 'vendor', 'is_virtual', 'virtual_platform',
         'os_info', 'device_model', 'software',
         'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
@@ -66,6 +66,8 @@ class NetworkNode:
         self.domain: str = ''  # AD domain or workgroup name
         self.mac_address: str = ''  # MAC address (from DHCP/L2 logs)
         self.vendor: str = ''  # Hardware vendor from OUI lookup
+        self.is_virtual: bool = False  # True if MAC OUI indicates a virtual machine
+        self.virtual_platform: str = ''  # Hypervisor platform (VMware, Hyper-V, etc.)
         self.os_info: str = ''  # OS / system description (from SNMP sysDescr, SSH banner, etc.)
         self.device_model: str = ''  # Device model (from SNMP sysObjectID OID mapping)
         self.software: List[str] = []  # Detected software names/versions
@@ -114,6 +116,8 @@ class NetworkNode:
             'domain': self.domain,
             'mac_address': self.mac_address,
             'vendor': self.vendor,
+            'is_virtual': self.is_virtual,
+            'virtual_platform': self.virtual_platform,
             'os_info': self.os_info,
             'device_model': self.device_model,
             'software': self.software[:10],
@@ -236,6 +240,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.domain = node_data.get('domain', '')
         node.mac_address = node_data.get('mac_address', '')
         node.vendor = node_data.get('vendor', '')
+        node.is_virtual = node_data.get('is_virtual', False)
+        node.virtual_platform = node_data.get('virtual_platform', '')
+        # Backward compat: detect virtualization for maps saved before this field existed
+        if not node.is_virtual and node.mac_address:
+            virt = self._detect_virtual(node.mac_address)
+            if virt:
+                node.is_virtual = True
+                node.virtual_platform = virt
         node.os_info = node_data.get('os_info', '')
         node.device_model = node_data.get('device_model', '')
         node.software = node_data.get('software', [])
@@ -584,6 +596,19 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # Device profiling
     # ------------------------------------------------------------------
 
+    # MAC OUI prefixes that indicate the host is a virtual machine.
+    # Maps OUI prefix -> hypervisor platform name.
+    VIRTUAL_OUI = {
+        '00:50:56': 'VMware', '00:0C:29': 'VMware', '00:05:69': 'VMware',
+        '00:1C:14': 'VMware',
+        '00:15:5D': 'Hyper-V',
+        '52:54:00': 'QEMU/KVM',
+        '00:16:3E': 'Xen',
+        '08:00:27': 'VirtualBox',
+        '00:1C:42': 'Parallels',
+        '02:42:AC': 'Docker',  # Default Docker bridge (02:42:xx)
+    }
+
     # OUI (Organizationally Unique Identifier) lookup table.
     # Maps the first 3 octets of a MAC address to the hardware vendor.
     # Covers major enterprise, networking, virtualization, and IoT vendors.
@@ -592,7 +617,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         '00:50:56': 'VMware', '00:0C:29': 'VMware', '00:05:69': 'VMware',
         '00:1C:14': 'VMware', '00:15:5D': 'Microsoft Hyper-V',
         '52:54:00': 'QEMU/KVM', '00:16:3E': 'Xen',
-        '08:00:27': 'VirtualBox',
+        '08:00:27': 'VirtualBox', '00:1C:42': 'Parallels',
         # Networking equipment
         '00:1A:A1': 'Cisco', '00:1B:0D': 'Cisco', '00:1E:BD': 'Cisco',
         '00:22:55': 'Cisco', '00:24:50': 'Cisco', '00:26:0B': 'Cisco',
@@ -882,6 +907,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
             return ''
         prefix = mac[:8].upper()
         return cls.OUI_TABLE.get(prefix, '')
+
+    @classmethod
+    def _detect_virtual(cls, mac: str) -> str:
+        """Detect virtualization platform from MAC address OUI.
+
+        Returns the hypervisor platform name (e.g. 'VMware', 'Hyper-V') if
+        the MAC belongs to a known virtual NIC, or empty string otherwise.
+        Docker containers using the default bridge (02:42:xx) are also detected.
+        """
+        if not mac or len(mac) < 8:
+            return ''
+        prefix = mac[:8].upper()
+        platform = cls.VIRTUAL_OUI.get(prefix)
+        if platform:
+            return platform
+        # Docker uses locally-administered MACs starting with 02:42
+        if prefix.startswith('02:42:'):
+            return 'Docker'
+        return ''
 
     @staticmethod
     def _device_label(device_type: str) -> str:
@@ -1240,6 +1284,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 if node.ip == ip:
                     node.mac_address = mac
                     node.vendor = self._lookup_oui(mac)
+                    virt = self._detect_virtual(mac)
+                    if virt:
+                        node.is_virtual = True
+                        node.virtual_platform = virt
                     if hn:
                         node.hostnames.add(hn)
                     dhcp_enriched += 1
@@ -1780,6 +1828,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'domain': n.domain,
                     'mac_address': n.mac_address,
                     'vendor': n.vendor,
+                    'is_virtual': n.is_virtual,
+                    'virtual_platform': n.virtual_platform,
                     'os_info': n.os_info,
                     'device_model': n.device_model,
                     'software': n.software[:5],
@@ -1833,6 +1883,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
             },
             'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
             'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
+            'virtual_machines': sum(1 for n in nodes if n.is_internal and n.is_virtual),
             'mac_tracking': {
                 'total_macs': len(self.mac_history),
                 'multi_ip_count': sum(
@@ -1956,6 +2007,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'hostnames': sorted(node.hostnames)[:3],
                 'mac_address': node.mac_address,
                 'mac_ip_count': mac_ip_count,
+                'is_virtual': node.is_virtual,
+                'virtual_platform': node.virtual_platform,
                 'os_info': node.os_info,
                 'device_model': node.device_model,
                 'software': node.software[:5],
