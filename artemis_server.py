@@ -817,11 +817,13 @@ db_manager = DatabaseManager()
 hunt_manager = HuntManager(db_manager)
 plugin_manager = PluginManager()
 
-# Register built-in plugins
+# Register and auto-enable built-in plugins
 from artemis.plugins.network_mapper import NetworkMapperPlugin
 from artemis.plugins.sigma_engine import SigmaEnginePlugin
 plugin_manager.register_plugin('network_mapper', NetworkMapperPlugin)
 plugin_manager.register_plugin('sigma_engine', SigmaEnginePlugin)
+plugin_manager.enable_plugin('network_mapper', {'output_dir': 'network_maps'})
+plugin_manager.enable_plugin('sigma_engine', {})
 
 # WebSocket connections
 active_connections: List[WebSocket] = []
