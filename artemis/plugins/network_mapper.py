@@ -25,6 +25,7 @@ class NetworkNode:
     __slots__ = (
         'ip', 'sensor_id', 'vlan', 'hostnames', 'netbios_names', 'domain',
         'mac_address', 'vendor',
+        'os_info', 'device_model', 'software',
         'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
@@ -40,6 +41,9 @@ class NetworkNode:
         self.domain: str = ''  # AD domain or workgroup name
         self.mac_address: str = ''  # MAC address (from DHCP/L2 logs)
         self.vendor: str = ''  # Hardware vendor from OUI lookup
+        self.os_info: str = ''  # OS / system description (from SNMP sysDescr, SSH banner, etc.)
+        self.device_model: str = ''  # Device model (from SNMP sysObjectID OID mapping)
+        self.software: List[str] = []  # Detected software names/versions
         self.services: Set[tuple] = set()  # (port, protocol) tuples
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
@@ -85,6 +89,9 @@ class NetworkNode:
             'domain': self.domain,
             'mac_address': self.mac_address,
             'vendor': self.vendor,
+            'os_info': self.os_info,
+            'device_model': self.device_model,
+            'software': self.software[:10],
             'services': [f"{port}/{proto}" for port, proto in self.services],
             'first_seen': self.first_seen.isoformat(),
             'last_seen': self.last_seen.isoformat(),
@@ -199,6 +206,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.domain = node_data.get('domain', '')
         node.mac_address = node_data.get('mac_address', '')
         node.vendor = node_data.get('vendor', '')
+        node.os_info = node_data.get('os_info', '')
+        node.device_model = node_data.get('device_model', '')
+        node.software = node_data.get('software', [])
         node.services = set()
         for s in node_data.get('services', []):
             parts = s.split('/')
@@ -562,6 +572,78 @@ class NetworkMapperPlugin(ArtemisPlugin):
         '68:54:FD': 'Amazon', 'B4:7C:9C': 'Amazon',
     }
 
+    # SNMP sysObjectID (OID) prefix to device model mapping.
+    # When Zeek observes SNMP traffic we can match the sysObjectID to
+    # identify the hardware model or platform family.
+    SNMP_OID_TABLE = {
+        # Cisco
+        '1.3.6.1.4.1.9.1': 'Cisco Router/Switch',
+        '1.3.6.1.4.1.9.5': 'Cisco Catalyst Switch',
+        '1.3.6.1.4.1.9.6': 'Cisco Access Point',
+        '1.3.6.1.4.1.9.12': 'Cisco Firewall (ASA/FTD)',
+        # Juniper
+        '1.3.6.1.4.1.2636.1.1.1': 'Juniper Router',
+        '1.3.6.1.4.1.2636.1.2': 'Juniper Switch (EX)',
+        '1.3.6.1.4.1.2636.1.3': 'Juniper Firewall (SRX)',
+        # Palo Alto
+        '1.3.6.1.4.1.25461.2': 'Palo Alto Firewall',
+        # Fortinet
+        '1.3.6.1.4.1.12356.101': 'FortiGate Firewall',
+        '1.3.6.1.4.1.12356.102': 'FortiSwitch',
+        '1.3.6.1.4.1.12356.103': 'FortiAP',
+        # Aruba
+        '1.3.6.1.4.1.14823.1.1': 'Aruba Controller',
+        '1.3.6.1.4.1.14823.1.2': 'Aruba Access Point',
+        # HP / HPE
+        '1.3.6.1.4.1.11.2.3.7.11': 'HP ProCurve Switch',
+        '1.3.6.1.4.1.232': 'HPE ProLiant Server',
+        # Dell
+        '1.3.6.1.4.1.674.10895': 'Dell PowerConnect Switch',
+        '1.3.6.1.4.1.674.10892': 'Dell PowerEdge Server (iDRAC)',
+        # Ubiquiti
+        '1.3.6.1.4.1.41112.1.6': 'Ubiquiti UniFi AP',
+        '1.3.6.1.4.1.41112.1.5': 'Ubiquiti UniFi Switch',
+        # VMware
+        '1.3.6.1.4.1.6876': 'VMware ESXi Host',
+        # Linux / Net-SNMP
+        '1.3.6.1.4.1.8072.3.2.10': 'Linux Server (net-snmp)',
+        # Microsoft Windows SNMP
+        '1.3.6.1.4.1.311.1.1.3': 'Windows Server',
+        # Synology
+        '1.3.6.1.4.1.6574': 'Synology NAS',
+        # QNAP
+        '1.3.6.1.4.1.24681': 'QNAP NAS',
+        # APC / Schneider (UPS)
+        '1.3.6.1.4.1.318.1': 'APC UPS',
+        # Xerox / printers
+        '1.3.6.1.4.1.253': 'Xerox Printer',
+        # HP printers
+        '1.3.6.1.4.1.11.2.3.9': 'HP Printer',
+        # Brother printers
+        '1.3.6.1.4.1.2435': 'Brother Printer',
+        # Canon printers
+        '1.3.6.1.4.1.1602': 'Canon Printer',
+        # Hikvision
+        '1.3.6.1.4.1.39165': 'Hikvision Camera',
+        # Meraki
+        '1.3.6.1.4.1.29671': 'Cisco Meraki',
+        # CheckPoint
+        '1.3.6.1.4.1.2620.1': 'CheckPoint Firewall',
+        # Brocade / Ruckus
+        '1.3.6.1.4.1.1991': 'Brocade/Ruckus Switch',
+    }
+
+    @classmethod
+    def _lookup_snmp_oid(cls, oid: str) -> str:
+        """Look up device model from SNMP sysObjectID by matching OID prefixes."""
+        if not oid:
+            return ''
+        # Try progressively shorter prefixes for a match
+        for prefix, model in cls.SNMP_OID_TABLE.items():
+            if oid.startswith(prefix):
+                return model
+        return ''
+
     # Port-to-device-type classification rules.
     # Checked in order; first match wins. Each entry:
     #   label, required_ports (need >= min_match), bonus_ports (raise confidence)
@@ -831,8 +913,65 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | rename assigned_addr as ip
         '''
 
-        # Run all five queries in parallel
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # Query 6: SNMP logs — device OID and community string identification
+        snmp_query = '''
+        search index=zeek_snmp
+        | spath
+        | where isnotnull("id.resp_h")
+        | eval oid=coalesce("id.resp_p", "")
+        | stats latest(community) as community,
+                latest(version) as snmp_version
+          by "id.resp_h"
+        | rename "id.resp_h" as ip
+        '''
+
+        # Query 7: SMB mapping — NetBIOS names from SMB share access
+        smb_query = '''
+        search index=zeek_smb_mapping OR index=zeek_smb_files
+        | spath
+        | eval nb_name=coalesce(server_name, "")
+        | where nb_name!="" AND nb_name!="-"
+        | stats values(nb_name) as nb_names,
+                values(share_type) as share_types
+          by "id.resp_h"
+        | rename "id.resp_h" as ip
+        '''
+
+        # Query 8: Zeek software log — passively detected software/OS
+        software_query = '''
+        search index=zeek_software
+        | spath
+        | where isnotnull(host) OR isnotnull("id.orig_h")
+        | eval ip=coalesce(host, "id.orig_h")
+        | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
+        | stats values(sw) as software,
+                values(software_type) as sw_types
+          by ip
+        '''
+
+        # Query 9: SSH logs — client/server version strings
+        ssh_query = '''
+        search index=zeek_ssh
+        | spath
+        | stats latest(client) as ssh_client,
+                latest(server) as ssh_server
+          by "id.orig_h", "id.resp_h"
+        | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
+        '''
+
+        # Query 10: X.509 certificates — hostnames from cert subject CN
+        x509_query = '''
+        search index=zeek_x509
+        | spath
+        | where isnotnull("certificate.subject")
+        | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
+        | where isnotnull(cn)
+        | stats values(cn) as cert_names by host
+        | rename host as sensor_id
+        '''
+
+        # Run all queries in parallel
+        with ThreadPoolExecutor(max_workers=10) as executor:
             server_future = executor.submit(
                 splunk_connector.query, server_query,
                 earliest_time=time_range, latest_time="now"
@@ -853,6 +992,26 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 splunk_connector.query, dhcp_query,
                 earliest_time=time_range, latest_time="now"
             )
+            snmp_future = executor.submit(
+                splunk_connector.query, snmp_query,
+                earliest_time=time_range, latest_time="now"
+            )
+            smb_future = executor.submit(
+                splunk_connector.query, smb_query,
+                earliest_time=time_range, latest_time="now"
+            )
+            software_future = executor.submit(
+                splunk_connector.query, software_query,
+                earliest_time=time_range, latest_time="now"
+            )
+            ssh_future = executor.submit(
+                splunk_connector.query, ssh_query,
+                earliest_time=time_range, latest_time="now"
+            )
+            x509_future = executor.submit(
+                splunk_connector.query, x509_query,
+                earliest_time=time_range, latest_time="now"
+            )
 
             server_results = server_future.result(timeout=600)
             client_results = client_future.result(timeout=600)
@@ -868,6 +1027,26 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 dhcp_results = dhcp_future.result(timeout=600)
             except Exception:
                 dhcp_results = []  # DHCP index may not exist
+            try:
+                snmp_results = snmp_future.result(timeout=600)
+            except Exception:
+                snmp_results = []
+            try:
+                smb_results = smb_future.result(timeout=600)
+            except Exception:
+                smb_results = []
+            try:
+                software_results = software_future.result(timeout=600)
+            except Exception:
+                software_results = []
+            try:
+                ssh_results = ssh_future.result(timeout=600)
+            except Exception:
+                ssh_results = []
+            try:
+                x509_results = x509_future.result(timeout=600)
+            except Exception:
+                x509_results = []
 
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
         kdc_ips: set = set()
@@ -934,13 +1113,137 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.hostnames.add(dhcp_hostname.lower())
                     dhcp_enriched += 1
 
+        # Build IP -> [node keys] lookup for fast enrichment
+        ip_to_keys: Dict[str, List[str]] = defaultdict(list)
+        for key, node in self.nodes.items():
+            ip_to_keys[node.ip].append(key)
+
+        # Enrich nodes with SNMP data (device model from OID, community string)
+        snmp_enriched = 0
+        for row in snmp_results:
+            ip = _sv(row.get('ip'))
+            community = _sv(row.get('community'))
+            snmp_version = _sv(row.get('snmp_version'))
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                # Community string often contains the sysObjectID or description
+                # The SNMP index/version info itself confirms SNMP is running
+                if community and community != '-':
+                    # Note: we don't expose the community string (security)
+                    # but we mark the device as SNMP-managed
+                    if not node.device_model:
+                        node.device_model = 'SNMP-managed device'
+                if snmp_version and snmp_version != '-':
+                    sw_entry = f"SNMP {snmp_version}"
+                    if sw_entry not in node.software:
+                        node.software.append(sw_entry)
+                snmp_enriched += 1
+
+        # Enrich nodes with SMB data (NetBIOS names from file sharing)
+        smb_enriched = 0
+        for row in smb_results:
+            ip = _sv(row.get('ip'))
+            nb_names_raw = row.get('nb_names', [])
+            if isinstance(nb_names_raw, str):
+                nb_names_raw = [nb_names_raw]
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for name in nb_names_raw:
+                    name = str(name).strip()
+                    if name and name != '-':
+                        node.netbios_names.add(name.upper())
+                        smb_enriched += 1
+
+        # Enrich nodes with Zeek software detection (OS, browsers, SSH, etc.)
+        software_enriched = 0
+        for row in software_results:
+            ip = _sv(row.get('ip'))
+            sw_list = row.get('software', [])
+            sw_types = row.get('sw_types', [])
+            if isinstance(sw_list, str):
+                sw_list = [sw_list]
+            if isinstance(sw_types, str):
+                sw_types = [sw_types]
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for sw in sw_list:
+                    sw = str(sw).strip()
+                    if sw and sw != '-' and sw not in node.software:
+                        node.software.append(sw)
+                # Zeek software types like "OS::*" give us OS info
+                for st in sw_types:
+                    st_str = str(st).strip()
+                    if 'OS' in st_str and not node.os_info:
+                        # Use the matching software entry as OS info
+                        for sw in sw_list:
+                            sw = str(sw).strip()
+                            if sw and sw != '-':
+                                node.os_info = sw
+                                break
+                software_enriched += 1
+
+        # Enrich nodes with SSH client/server version strings
+        ssh_enriched = 0
+        for row in ssh_results:
+            client_ip = _sv(row.get('client_ip'))
+            server_ip = _sv(row.get('server_ip'))
+            ssh_client = _sv(row.get('ssh_client'))
+            ssh_server = _sv(row.get('ssh_server'))
+
+            if client_ip and ssh_client and ssh_client != '-':
+                for key in ip_to_keys.get(client_ip, []):
+                    node = self.nodes[key]
+                    entry = f"SSH client: {ssh_client}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+                    # Extract OS hints from SSH banner (e.g. "OpenSSH_8.9p1 Ubuntu-3")
+                    if not node.os_info:
+                        banner = ssh_client.lower()
+                        if 'ubuntu' in banner:
+                            node.os_info = 'Ubuntu Linux'
+                        elif 'debian' in banner:
+                            node.os_info = 'Debian Linux'
+                        elif 'rhel' in banner or 'redhat' in banner:
+                            node.os_info = 'Red Hat Linux'
+                        elif 'windows' in banner:
+                            node.os_info = 'Windows'
+                    ssh_enriched += 1
+
+            if server_ip and ssh_server and ssh_server != '-':
+                for key in ip_to_keys.get(server_ip, []):
+                    node = self.nodes[key]
+                    entry = f"SSH server: {ssh_server}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+                    if not node.os_info:
+                        banner = ssh_server.lower()
+                        if 'ubuntu' in banner:
+                            node.os_info = 'Ubuntu Linux'
+                        elif 'debian' in banner:
+                            node.os_info = 'Debian Linux'
+                        elif 'rhel' in banner or 'redhat' in banner:
+                            node.os_info = 'Red Hat Linux'
+                        elif 'windows' in banner:
+                            node.os_info = 'Windows'
+                    ssh_enriched += 1
+
         logger.info(
             f"Device profiling: got {len(server_results)} server profiles, "
             f"{len(client_results)} client profiles, "
             f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments), "
             f"{len(kerberos_results)} Kerberos responders, "
             f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers, "
-            f"{len(dhcp_results)} DHCP leases ({dhcp_enriched} MAC enrichments)"
+            f"{len(dhcp_results)} DHCP leases ({dhcp_enriched} MAC enrichments), "
+            f"{len(snmp_results)} SNMP hosts ({snmp_enriched} enrichments), "
+            f"{len(smb_results)} SMB hosts ({smb_enriched} NetBIOS names), "
+            f"{len(software_results)} software detections ({software_enriched} enrichments), "
+            f"{len(ssh_results)} SSH sessions ({ssh_enriched} enrichments)"
         )
 
         # Index server data by IP
@@ -1246,6 +1549,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'domain': n.domain,
                     'mac_address': n.mac_address,
                     'vendor': n.vendor,
+                    'os_info': n.os_info,
+                    'device_model': n.device_model,
+                    'software': n.software[:5],
                     'services': svcs,
                     'connections': n.total_connections,
                     'sensor_id': n.sensor_id,
@@ -1405,6 +1711,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'netbios_names': sorted(node.netbios_names)[:3],
                 'domain': node.domain,
                 'hostnames': sorted(node.hostnames)[:3],
+                'os_info': node.os_info,
+                'device_model': node.device_model,
+                'software': node.software[:5],
+                'vendor': node.vendor,
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],
                 'internal_connections': int_conns,

@@ -2169,6 +2169,10 @@
             const nbNames = (node.netbios_names || []).join(', ');
             const domainStr = node.domain || '';
             const hostnamesStr = (node.hostnames || []).join(', ');
+            const osInfo = node.os_info || '';
+            const deviceModel = node.device_model || '';
+            const vendorStr = node.vendor || '';
+            const softwareList = node.software || [];
 
             title.textContent = `${node.label}${deviceStr !== 'Unknown' ? ' — ' + deviceStr : ''}`;
 
@@ -2179,9 +2183,13 @@
                     ${nbNames ? `<div><span style="opacity:0.6;">NetBIOS:</span> <strong>${escapeHtml(nbNames)}</strong></div>` : ''}
                     ${domainStr ? `<div><span style="opacity:0.6;">Domain:</span> <strong>${escapeHtml(domainStr)}</strong></div>` : ''}
                     ${hostnamesStr ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Hostnames:</span> ${escapeHtml(hostnamesStr)}</div>` : ''}
+                    ${vendorStr ? `<div><span style="opacity:0.6;">Vendor:</span> <strong>${escapeHtml(vendorStr)}</strong></div>` : ''}
+                    ${deviceModel ? `<div><span style="opacity:0.6;">Model:</span> <strong>${escapeHtml(deviceModel)}</strong></div>` : ''}
+                    ${osInfo ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">OS / Platform:</span> <strong>${escapeHtml(osInfo)}</strong></div>` : ''}
                     <div><span style="opacity:0.6;">Sensor:</span> ${escapeHtml(node.sensor_id || 'default')}</div>
                     <div><span style="opacity:0.6;">Services:</span> ${escapeHtml(servicesStr)}</div>
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
+                    ${softwareList.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Software:</span> ${escapeHtml(softwareList.join(', '))}</div>` : ''}
                 </div>
             `;
 
@@ -2306,7 +2314,8 @@
                                             <td style="padding:4px 8px;">IP Address</td>
                                             <td style="padding:4px 8px;">Name</td>
                                             ${isDC ? '<td style="padding:4px 8px;">Domain</td>' : ''}
-                                            <td style="padding:4px 8px;">Vendor</td>
+                                            <td style="padding:4px 8px;">Vendor / Model</td>
+                                            <td style="padding:4px 8px;">OS / Software</td>
                                             <td style="padding:4px 8px;">Services</td>
                                             <td style="padding:4px 8px; text-align:right;">Connections</td>
                                         </tr>
@@ -2315,13 +2324,19 @@
                                                 ? d.netbios_names[0]
                                                 : (d.hostnames && d.hostnames.length > 0 ? d.hostnames[0] : '-');
                                             const domain = d.domain || '-';
-                                            const vendor = d.vendor || '-';
+                                            const vendor = d.vendor || '';
+                                            const model = d.device_model || '';
+                                            const vendorModel = [vendor, model].filter(Boolean).join(' / ') || '-';
+                                            const osInfo = d.os_info || '';
+                                            const sw = (d.software || []).slice(0, 2).join(', ');
+                                            const osSw = [osInfo, sw].filter(Boolean).join(' — ') || '-';
                                             return `
                                             <tr style="border-top:1px solid rgba(255,255,255,0.05);">
                                                 <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}</td>
                                                 <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
                                                 ${isDC ? '<td style="padding:4px 8px; opacity:0.8;">' + escapeHtml(domain) + '</td>' : ''}
-                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px;">${escapeHtml(vendor)}</td>
+                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(vendorModel)}">${escapeHtml(vendorModel)}</td>
+                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(osSw)}">${escapeHtml(osSw)}</td>
                                                 <td style="padding:4px 8px; opacity:0.7; font-size:11px;">${d.services.slice(0, 5).join(', ') || '-'}</td>
                                                 <td style="padding:4px 8px; text-align:right;">${d.connections.toLocaleString()}</td>
                                             </tr>`;
@@ -2382,7 +2397,7 @@
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             if (!query || !networkGraph || !networkGraphData) return;
 
-            // Search through nodes (IP, label, device type, NetBIOS name, domain, hostname)
+            // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, vendor, model, OS, software)
             const matches = networkGraphData.raw.nodes.filter(n => {
                 const lbl = (n.label || '').toLowerCase();
                 const nid = (n.id || '').toLowerCase();
@@ -2391,10 +2406,16 @@
                 const nbNames = (n.netbios_names || []).join(' ').toLowerCase();
                 const domain = (n.domain || '').toLowerCase();
                 const hostnames = (n.hostnames || []).join(' ').toLowerCase();
+                const vendor = (n.vendor || '').toLowerCase();
+                const model = (n.device_model || '').toLowerCase();
+                const osInfo = (n.os_info || '').toLowerCase();
+                const sw = (n.software || []).join(' ').toLowerCase();
                 return lbl.includes(query) || nid.includes(query) ||
                        dtype.includes(query) || dlabel.includes(query) ||
                        nbNames.includes(query) || domain.includes(query) ||
-                       hostnames.includes(query);
+                       hostnames.includes(query) || vendor.includes(query) ||
+                       model.includes(query) || osInfo.includes(query) ||
+                       sw.includes(query);
             });
 
             if (matches.length > 0) {
