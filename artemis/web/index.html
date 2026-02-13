@@ -8,6 +8,9 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css" />
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
         :root {
             --bg-primary: #0f1117;
@@ -906,6 +909,35 @@
             margin-top: 8px;
         }
 
+        /* Flatpickr overrides to match Artemis dark theme */
+        .flatpickr-calendar.dark {
+            background: var(--bg-secondary);
+            border-color: var(--border-color);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        .flatpickr-calendar.dark .flatpickr-month,
+        .flatpickr-calendar.dark .flatpickr-weekdays,
+        .flatpickr-calendar.dark .flatpickr-weekday {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+        }
+        .flatpickr-calendar.dark .flatpickr-day {
+            color: var(--text-primary);
+        }
+        .flatpickr-calendar.dark .flatpickr-day.selected {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+        }
+        .flatpickr-calendar.dark .flatpickr-day:hover {
+            background: var(--bg-tertiary);
+        }
+        .flatpickr-calendar.dark .numInputWrapper span {
+            border-color: var(--border-color);
+        }
+        .flatpickr-calendar.dark .flatpickr-time input {
+            color: var(--text-primary);
+        }
+
     </style>
 </head>
 <body>
@@ -1051,11 +1083,11 @@
                         <div class="form-group" style="display:flex; gap:12px;">
                             <div style="flex:1;">
                                 <label for="earliest-time">Start Date/Time</label>
-                                <input type="datetime-local" id="earliest-time" style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+                                <input type="text" id="earliest-time" placeholder="Click to pick start..." readonly style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px; cursor:pointer;">
                             </div>
                             <div style="flex:1;">
                                 <label for="latest-time">End Date/Time</label>
-                                <input type="datetime-local" id="latest-time" style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+                                <input type="text" id="latest-time" placeholder="Click to pick end..." readonly style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px; cursor:pointer;">
                             </div>
                         </div>
                     </div>
@@ -1473,8 +1505,8 @@
                 document.getElementById('time-range').value = template.timeRange;
                 document.getElementById('hunt-mode').value = template.mode;
                 document.getElementById('description').value = template.description;
-                if (template.earliestTime) document.getElementById('earliest-time').value = template.earliestTime;
-                if (template.latestTime) document.getElementById('latest-time').value = template.latestTime;
+                if (template.earliestTime && fpEarliest) fpEarliest.setDate(template.earliestTime, true);
+                if (template.latestTime && fpLatest) fpLatest.setDate(template.latestTime, true);
                 toggleCustomTimeRange();
                 addLog(`Loaded template: ${name}`, 'info');
             }
@@ -2472,6 +2504,23 @@
             }
         }
 
+        // -- Flatpickr calendar pickers for custom date/time range ----------
+        let fpEarliest, fpLatest;
+        document.addEventListener('DOMContentLoaded', function() {
+            const fpOpts = {
+                enableTime: true,
+                time_24hr: true,
+                dateFormat: 'Y-m-d H:i',
+                altInput: true,
+                altFormat: 'M j, Y  H:i',
+                theme: 'dark',
+                allowInput: false,
+                disableMobile: true,
+            };
+            fpEarliest = flatpickr('#earliest-time', { ...fpOpts, defaultHour: 0, defaultMinute: 0 });
+            fpLatest   = flatpickr('#latest-time',   { ...fpOpts, defaultHour: 23, defaultMinute: 59 });
+        });
+
         function toggleCustomTimeRange() {
             const sel = document.getElementById('time-range').value;
             document.getElementById('custom-time-range').style.display =
@@ -2495,13 +2544,13 @@
                     alert('Please select both a start and end date/time.');
                     return;
                 }
-                if (new Date(latest) <= new Date(earliest)) {
+                if (new Date(earliest.replace(' ', 'T')) >= new Date(latest.replace(' ', 'T'))) {
                     alert('End date/time must be after start date/time.');
                     return;
                 }
-                // Convert datetime-local value ("2025-01-15T08:00") to ISO
-                body.earliest_time = earliest.replace('T', 'T') + ':00';
-                body.latest_time = latest.replace('T', 'T') + ':00';
+                // Flatpickr stores "YYYY-MM-DD HH:mm" — convert to ISO 8601
+                body.earliest_time = earliest.replace(' ', 'T') + ':00';
+                body.latest_time = latest.replace(' ', 'T') + ':00';
                 body.time_range = '-24h'; // fallback; ignored when absolute times are set
             }
 
