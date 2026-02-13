@@ -11,7 +11,7 @@ import logging
 import traceback
 import multiprocessing
 import queue
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -126,6 +126,13 @@ class BulkHuntRequest(BaseModel):
     window_hours: int = 6
     mode: str = "PARALLEL"
     description: Optional[str] = None
+
+
+class ContinuousHuntRequest(BaseModel):
+    """Request to start continuous hunting."""
+    interval_minutes: int = 15
+    lookback_minutes: int = 20
+    mode: str = "PARALLEL"
 
 
 class PluginConfig(BaseModel):
@@ -678,6 +685,17 @@ class HuntManager:
         self.active_hunts = {}
         self.hunt_processes = {}  # hunt_id -> Process
         self._splunk = None  # Lazy Splunk connector for profile_devices
+        # Continuous hunting state
+        self._continuous_task = None
+        self._continuous_stop = False
+        self._continuous_config = {
+            'interval_minutes': 0,
+            'lookback_minutes': 0,
+            'mode': '',
+            'started_at': None,
+            'cycles': 0,
+            'last_hunt_id': None,
+        }
 
     def get_splunk_connector(self):
         """Get a Splunk connector for API use (e.g. device profiling). Lazy-initialized."""
@@ -782,6 +800,85 @@ class HuntManager:
         self._reload_plugins_from_disk(['network_mapper', 'sigma_engine'])
 
         self.hunt_processes.pop(hunt_id, None)
+
+    # ------------------------------------------------------------------
+    # Continuous hunting
+    # ------------------------------------------------------------------
+
+    def start_continuous(self, interval_minutes, lookback_minutes, mode,
+                         progress_callback):
+        """Begin continuous hunting.  Returns immediately; the loop runs
+        as an asyncio Task in the background."""
+        if self._continuous_task and not self._continuous_task.done():
+            raise RuntimeError("Continuous hunting is already running")
+
+        self._continuous_stop = False
+        self._continuous_config = {
+            'interval_minutes': interval_minutes,
+            'lookback_minutes': lookback_minutes,
+            'mode': mode,
+            'started_at': datetime.now().isoformat(),
+            'cycles': 0,
+            'last_hunt_id': None,
+        }
+        self._continuous_task = asyncio.ensure_future(
+            self._continuous_loop(interval_minutes, lookback_minutes, mode,
+                                  progress_callback)
+        )
+        logger.info(
+            f"Continuous hunting started: interval={interval_minutes}m, "
+            f"lookback={lookback_minutes}m"
+        )
+
+    def stop_continuous(self):
+        """Signal the continuous loop to stop after the current cycle."""
+        if not self._continuous_task or self._continuous_task.done():
+            raise RuntimeError("Continuous hunting is not running")
+        self._continuous_stop = True
+        logger.info("Continuous hunting stop requested")
+
+    def get_continuous_status(self):
+        running = (self._continuous_task is not None
+                   and not self._continuous_task.done())
+        return {
+            'running': running,
+            'stopping': running and self._continuous_stop,
+            **self._continuous_config,
+        }
+
+    async def _continuous_loop(self, interval, lookback, mode, progress_cb):
+        """Run hunts in a loop until stop is requested."""
+        try:
+            while not self._continuous_stop:
+                hunt_id = f"hunt_cont_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                time_range = f"-{lookback}m"
+                desc = f"Continuous hunt (every {interval}m, lookback {lookback}m)"
+
+                logger.info(f"Continuous cycle: starting {hunt_id}")
+                try:
+                    await self.execute_hunt(
+                        hunt_id, time_range, mode, desc, progress_cb,
+                    )
+                except Exception as e:
+                    logger.error(f"Continuous hunt cycle failed: {e}")
+
+                self._continuous_config['cycles'] += 1
+                self._continuous_config['last_hunt_id'] = hunt_id
+                self._continuous_config['last_cycle'] = datetime.now().isoformat()
+
+                if self._continuous_stop:
+                    break
+
+                # Wait for the next cycle, checking stop flag every second
+                for _ in range(interval * 60):
+                    if self._continuous_stop:
+                        break
+                    await asyncio.sleep(1)
+        finally:
+            logger.info(
+                f"Continuous hunting stopped after "
+                f"{self._continuous_config['cycles']} cycles"
+            )
 
     def _reload_plugins_from_disk(self, plugin_names):
         """Re-initialize plugin instances so they load results written by the hunt subprocess."""
@@ -913,6 +1010,43 @@ async def delete_hunt(hunt_id: str):
     hunt_manager.active_hunts.pop(hunt_id, None)
     logger.info(f"Deleted hunt: {hunt_id}")
     return {'status': 'deleted', 'hunt_id': hunt_id}
+
+
+# --- Continuous hunting endpoints -----------------------------------------
+
+@app.post("/api/hunt/continuous/start")
+async def start_continuous_hunt(request: ContinuousHuntRequest):
+    """Start continuous hunting with a rolling time window."""
+    try:
+        hunt_manager.start_continuous(
+            request.interval_minutes,
+            request.lookback_minutes,
+            request.mode,
+            broadcast_progress,
+        )
+        return {
+            'status': 'started',
+            'interval_minutes': request.interval_minutes,
+            'lookback_minutes': request.lookback_minutes,
+        }
+    except RuntimeError as e:
+        return JSONResponse(status_code=409, content={'error': str(e)})
+
+
+@app.post("/api/hunt/continuous/stop")
+async def stop_continuous_hunt():
+    """Stop continuous hunting after the current cycle finishes."""
+    try:
+        hunt_manager.stop_continuous()
+        return {'status': 'stopping'}
+    except RuntimeError as e:
+        return JSONResponse(status_code=409, content={'error': str(e)})
+
+
+@app.get("/api/hunt/continuous/status")
+async def continuous_hunt_status():
+    """Get continuous hunting status."""
+    return hunt_manager.get_continuous_status()
 
 
 @app.get("/api/network-maps")
