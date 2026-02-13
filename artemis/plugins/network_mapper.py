@@ -1166,38 +1166,52 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 earliest_time=time_range, latest_time="now"
             )
 
-            server_results = server_future.result(timeout=600)
-            client_results = client_future.result(timeout=600)
+            # Server and client queries scan all conn logs and can be very
+            # slow on large networks (18k+ nodes).  Give them up to 30 min;
+            # enrichment queries are lighter and keep the 10 min cap.
+            _HEAVY_TIMEOUT = 1800   # 30 minutes — server & client conn queries
+            _LIGHT_TIMEOUT = 600    # 10 minutes — enrichment queries
+
             try:
-                ntlm_results = ntlm_future.result(timeout=600)
+                server_results = server_future.result(timeout=_HEAVY_TIMEOUT)
+            except Exception as e:
+                logger.warning(f"Server query timed out or failed ({e}), profiling with client data only")
+                server_results = []
+            try:
+                client_results = client_future.result(timeout=_HEAVY_TIMEOUT)
+            except Exception as e:
+                logger.warning(f"Client query timed out or failed ({e}), profiling with server data only")
+                client_results = []
+            try:
+                ntlm_results = ntlm_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 ntlm_results = []  # NTLM index may not exist
             try:
-                kerberos_results = kerberos_future.result(timeout=600)
+                kerberos_results = kerberos_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 kerberos_results = []  # Kerberos index may not exist
             try:
-                dhcp_results = dhcp_future.result(timeout=600)
+                dhcp_results = dhcp_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 dhcp_results = []  # DHCP index may not exist
             try:
-                snmp_results = snmp_future.result(timeout=600)
+                snmp_results = snmp_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 snmp_results = []
             try:
-                smb_results = smb_future.result(timeout=600)
+                smb_results = smb_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 smb_results = []
             try:
-                software_results = software_future.result(timeout=600)
+                software_results = software_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 software_results = []
             try:
-                ssh_results = ssh_future.result(timeout=600)
+                ssh_results = ssh_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 ssh_results = []
             try:
-                x509_results = x509_future.result(timeout=600)
+                x509_results = x509_future.result(timeout=_LIGHT_TIMEOUT)
             except Exception:
                 x509_results = []
 
