@@ -151,6 +151,8 @@ class SplunkConnector:
 
         if max_results > 0:
             job_kwargs["max_count"] = str(max_results)
+        else:
+            job_kwargs["max_count"] = "0"  # 0 = unlimited results
 
         # Create a persistent search job (not export)
         job = self.service.jobs.create(search_query, **job_kwargs)
