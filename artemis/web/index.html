@@ -1035,7 +1035,7 @@
                             </div>
                             <div class="collection-stat">
                                 <div class="stat-label">Queries Done</div>
-                                <div class="stat-value" id="coll-queries-done">0 / 8</div>
+                                <div class="stat-value" id="coll-queries-done">0 / 9</div>
                             </div>
                             <div class="collection-stat">
                                 <div class="stat-label">Window</div>
@@ -2472,7 +2472,7 @@
                 document.getElementById('coll-total-events').textContent =
                     (c.total_events || 0).toLocaleString();
                 document.getElementById('coll-queries-done').textContent =
-                    `${c.queries_done || 0} / ${c.queries_total || 8}`;
+                    `${c.queries_done || 0} / ${c.queries_total || 9}`;
 
                 if (c.total_windows && c.total_windows > 1) {
                     document.getElementById('coll-window').textContent =
@@ -2489,7 +2489,7 @@
                 }
 
                 // Mark total events green when queries are all done
-                if (c.queries_done >= (c.queries_total || 8)) {
+                if (c.queries_done >= (c.queries_total || 9)) {
                     document.getElementById('coll-total-events').classList.add('done');
                     document.getElementById('coll-queries-done').classList.add('done');
                 }
