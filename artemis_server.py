@@ -439,9 +439,14 @@ def _hunt_worker_process(hunt_id, time_range, mode, description,
     from artemis.meta_learner.coordinator import MetaLearnerCoordinator
     from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
 
+    # force=True is critical: the forked subprocess inherits the parent's
+    # log handlers, which makes basicConfig() silently do nothing.  Without
+    # force, ALL subprocess log output (network mapper, sigma, errors) is
+    # swallowed and never reaches the terminal.
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
     )
     log = logging.getLogger('artemis.hunt_worker')
 
