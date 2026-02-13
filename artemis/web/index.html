@@ -1234,6 +1234,18 @@
                     </select>
                 </div>
 
+                <!-- Inline profile progress bar -->
+                <div id="profile-progress" style="display:none; margin-top:8px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span id="profile-progress-label" style="font-size:13px; font-weight:600;">Profiling devices...</span>
+                        <span id="profile-progress-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="profile-progress-fill" class="progress-fill" style="transition:width .3s;"></div>
+                    </div>
+                    <p id="profile-progress-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Initializing...</p>
+                </div>
+
                 <div id="vlan-tabs" class="vlan-tabs" style="display:none;"></div>
 
                 <div id="network-graph"></div>
@@ -1326,6 +1338,7 @@
             loadNetworkMaps();
             initializeTheme();
             checkActiveHunts();
+            checkProfileStatus();
 
             // Restore tracked hunts from localStorage
             try {
@@ -1585,14 +1598,14 @@
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
 
-                // Handle different message types
                 if (data.type === 'server_log') {
                     addLog(data.message, data.log_type);
+                } else if (data.type === 'profile_progress') {
+                    // Route to profile progress handler
+                    handleProfileProgress(data);
                 } else {
-                    // Progress update — route to per-hunt panel
+                    // Hunt progress — route to per-hunt panel
                     handleProgress(data);
-                    // When a queued hunt transitions to running (init stage),
-                    // update the queue display so it disappears from the queue.
                     if (data.stage === 'init' || data.stage === 'complete' || data.stage === 'error') {
                         refreshQueueDisplay();
                     }
@@ -2467,13 +2480,11 @@
 
         async function profileDevices() {
             const btn = document.getElementById('profile-btn');
-            const statusDiv = document.getElementById('profile-status');
             const timeRange = document.getElementById('profile-time-range').value;
 
             btn.disabled = true;
             btn.textContent = 'Profiling...';
-            statusDiv.style.display = 'block';
-            statusDiv.innerHTML = 'Querying Splunk zeek:conn logs to classify devices... This may take a minute.';
+            showProfileProgress('Submitting profile request...', 5);
             addLog(`Starting device profiling (${timeRange})...`, 'info');
 
             try {
@@ -2483,39 +2494,111 @@
                     body: JSON.stringify({ time_range: timeRange })
                 });
 
-                const result = await response.json();
+                const data = await response.json();
 
-                if (result.error) {
-                    statusDiv.innerHTML = `<span style="color:#f44336;">Error: ${result.error}</span>`;
-                    addLog(`Device profiling failed: ${result.error}`, 'error');
+                if (data.error) {
+                    hideProfileProgress();
+                    document.getElementById('profile-status').style.display = 'block';
+                    document.getElementById('profile-status').innerHTML =
+                        `<span style="color:#f44336;">Error: ${data.error}</span>`;
+                    addLog(`Device profiling failed: ${data.error}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = 'Profile Devices';
                     return;
                 }
 
-                // Show results
+                // Profile is now running in the background — progress comes via WebSocket
+                addLog(`Profile ${data.profile_id} started in background`, 'info');
+
+            } catch (error) {
+                hideProfileProgress();
+                addLog(`Device profiling error: ${error.message}`, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Profile Devices';
+            }
+        }
+
+        function showProfileProgress(message, pct) {
+            const pp = document.getElementById('profile-progress');
+            pp.style.display = 'block';
+            document.getElementById('profile-progress-fill').style.width = `${pct}%`;
+            document.getElementById('profile-progress-pct').textContent = `${pct}%`;
+            document.getElementById('profile-progress-msg').textContent = message;
+        }
+
+        function hideProfileProgress() {
+            document.getElementById('profile-progress').style.display = 'none';
+            document.getElementById('profile-progress-fill').style.width = '0%';
+        }
+
+        function handleProfileProgress(data) {
+            const btn = document.getElementById('profile-btn');
+            const statusDiv = document.getElementById('profile-status');
+
+            if (data.stage === 'complete') {
+                // Show completion in progress bar briefly
+                showProfileProgress(data.message, 100);
+                document.getElementById('profile-progress-label').textContent = 'Profiling Complete!';
+                document.getElementById('profile-progress-fill').style.background = '#43a047';
+
+                // Show result summary in status div
+                const result = data.result || {};
                 const types = result.device_types || {};
                 const typeList = Object.entries(types)
                     .sort((a, b) => b[1] - a[1])
                     .map(([type, count]) => `<strong>${type}</strong>: ${count}`)
                     .join(' | ');
-
+                statusDiv.style.display = 'block';
                 statusDiv.innerHTML = `
-                    Profiled <strong>${result.classified}</strong> / ${result.total_internal} internal devices.
-                    ${result.unclassified} unclassified.<br>
+                    Profiled <strong>${result.classified || 0}</strong> / ${result.total_internal || 0} internal devices.
+                    ${result.unclassified || 0} unclassified.<br>
                     <span style="font-size:13px; opacity:0.8;">${typeList}</span>
                 `;
 
-                addLog(`Device profiling complete: ${result.classified} devices classified`, 'info');
-
-                // Refresh the graph to show new labels
-                loadNetworkGraph();
-
-            } catch (error) {
-                statusDiv.innerHTML = `<span style="color:#f44336;">Error: ${error.message}</span>`;
-                addLog(`Device profiling error: ${error.message}`, 'error');
-            } finally {
+                addLog(`Device profiling complete: ${result.classified || 0} devices classified`, 'info');
                 btn.disabled = false;
                 btn.textContent = 'Profile Devices';
+
+                // Hide progress bar after a moment, refresh graph + summary
+                setTimeout(() => {
+                    hideProfileProgress();
+                    document.getElementById('profile-progress-fill').style.background = '';
+                    loadNetworkGraph();
+                    loadNetworkSummary();
+                }, 2500);
+
+            } else if (data.stage === 'error') {
+                showProfileProgress(data.message, 0);
+                document.getElementById('profile-progress-label').textContent = 'Profiling Failed';
+                document.getElementById('profile-progress-fill').style.background = '#e53935';
+                addLog(`Device profiling failed: ${data.message}`, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Profile Devices';
+                setTimeout(() => {
+                    hideProfileProgress();
+                    document.getElementById('profile-progress-fill').style.background = '';
+                }, 5000);
+
+            } else {
+                // In progress
+                showProfileProgress(data.message, data.progress);
+                document.getElementById('profile-progress-label').textContent = 'Profiling Devices...';
+                btn.disabled = true;
+                btn.textContent = 'Profiling...';
             }
+        }
+
+        async function checkProfileStatus() {
+            try {
+                const resp = await fetch('/api/network-graph/profile/status');
+                const status = await resp.json();
+                if (status.running) {
+                    showProfileProgress(status.message || 'Running...', status.progress || 0);
+                    document.getElementById('profile-btn').disabled = true;
+                    document.getElementById('profile-btn').textContent = 'Profiling...';
+                    addLog(`Reconnected to running profile: ${status.profile_id}`, 'info');
+                }
+            } catch(e) {}
         }
 
         // -- Flatpickr calendar pickers for custom date/time range ----------

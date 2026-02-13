@@ -287,6 +287,74 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
 
 
 # ---------------------------------------------------------------------------
+# Profile worker — runs in its own process (like hunts)
+# ---------------------------------------------------------------------------
+
+def _profile_worker_process(profile_id, time_range, db_path):
+    """Run device profiling in a subprocess so it survives page reloads."""
+    import os, logging, traceback, json
+    from datetime import datetime
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+    log = logging.getLogger('artemis.profile_worker')
+
+    db = DatabaseManager(db_path)
+    pid = os.getpid()
+
+    def send(stage, message, progress, extra=None):
+        try:
+            db.write_progress(profile_id, pid, stage, message, progress, extra)
+        except Exception:
+            pass
+
+    try:
+        send('init', 'Initializing profiler...', 5)
+
+        # Build Splunk connector
+        host = os.getenv('SPLUNK_HOST', '10.25.11.86')
+        token = os.getenv('SPLUNK_TOKEN')
+        username = os.getenv('SPLUNK_USERNAME')
+        password = os.getenv('SPLUNK_PASSWORD')
+        cfg = DataSourceConfig(
+            splunk_host=host, splunk_port=8089,
+            splunk_token=token or '',
+            splunk_username=username or '',
+            splunk_password=password or '',
+        )
+        pipeline = DataPipeline(cfg)
+        splunk = pipeline.splunk
+
+        send('collect', 'Running Splunk queries (conn, NTLM, Kerberos, DHCP, SNMP, SMB, SSH, software)...', 15)
+
+        # Load the network mapper plugin (reads existing map from disk)
+        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm.initialize()
+
+        send('collect', 'Querying Splunk — this may take a minute...', 25)
+
+        # Run the actual profiling (blocking — all queries + classification)
+        result = nm.profile_devices(splunk, time_range=time_range)
+
+        send('complete',
+             f"Profiled {result.get('classified', 0)} / {result.get('total_internal', 0)} devices. "
+             f"{result.get('unclassified', 0)} unclassified.",
+             100, result)
+
+    except Exception as e:
+        log.error(f'Profile {profile_id} failed: {e}')
+        log.error(traceback.format_exc())
+        send('error', f'Profiling failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc()})
+
+
+# ---------------------------------------------------------------------------
 # HuntManager — lives in the web server process
 # ---------------------------------------------------------------------------
 
@@ -487,6 +555,70 @@ class HuntManager:
         return False
 
     # ------------------------------------------------------------------
+    # Device profiling (subprocess-based, survives page reload)
+    # ------------------------------------------------------------------
+
+    _profile_id: Optional[str] = None
+    _profile_pid: Optional[int] = None
+
+    async def start_profile(self, time_range: str) -> str:
+        """Launch device profiling in a subprocess and monitor via poll loop."""
+        import multiprocessing
+
+        if self._profile_id and self._profile_pid and _pid_alive(self._profile_pid):
+            raise RuntimeError(
+                f"Profiling already running ({self._profile_id})"
+            )
+
+        profile_id = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        proc = multiprocessing.Process(
+            target=_profile_worker_process,
+            args=(profile_id, time_range, self.db.db_path),
+            daemon=False,
+        )
+        proc.start()
+
+        self._profile_id = profile_id
+        self._profile_pid = proc.pid
+        self._monitored_hunts[profile_id] = proc.pid
+        self.active_hunts[profile_id] = {
+            'status': 'running',
+            'progress': 0,
+            'start_time': datetime.now(),
+            'collection_stats': {},
+            'last_progress': None,
+        }
+        logger.info(
+            f'Profile {profile_id} started (pid {proc.pid}, '
+            f'time_range={time_range})'
+        )
+        self._ensure_poll_task()
+        return profile_id
+
+    def get_profile_status(self) -> dict:
+        """Return the current profiling state for the UI."""
+        pid = self._profile_id
+        if not pid:
+            return {'running': False}
+
+        # Check active_hunts for status
+        state = self.active_hunts.get(pid, {})
+        status = state.get('status', 'unknown')
+        if status not in ('running',) and not (
+            self._profile_pid and _pid_alive(self._profile_pid)
+        ):
+            return {'running': False, 'last_profile_id': pid}
+
+        row = state.get('last_progress') or {}
+        return {
+            'running': True,
+            'profile_id': pid,
+            'progress': state.get('progress', 0),
+            'stage': row.get('stage', 'init'),
+            'message': row.get('message', 'Running...'),
+        }
+
+    # ------------------------------------------------------------------
     # Progress polling loop
     # ------------------------------------------------------------------
 
@@ -516,15 +648,18 @@ class HuntManager:
 
                     # Broadcast to WebSocket clients
                     if self._broadcast_fn:
+                        is_profile = hunt_id.startswith('profile_')
                         msg = {
+                            'type': 'profile_progress' if is_profile else 'hunt_progress',
                             'stage': row['stage'],
                             'message': row['message'],
                             'progress': row['progress'],
                             'hunt_id': hunt_id,
                         }
                         if row.get('data'):
-                            # Merge extra data (collection stats, etc.)
-                            if 'collection' not in msg and row['data']:
+                            if is_profile:
+                                msg['result'] = row['data']
+                            elif 'collection' not in msg:
                                 msg['collection'] = row['data']
                         await self._broadcast_fn(msg)
 
@@ -537,6 +672,9 @@ class HuntManager:
                         plugin_manager.reload_from_disk(
                             ['network_mapper', 'sigma_engine']
                         )
+                        # Clear profile tracking if this was a profile job
+                        if hunt_id == self._profile_id:
+                            self._profile_pid = None
                         finished.append(hunt_id)
                     elif not _pid_alive(pid):
                         # Process died without writing terminal state
@@ -585,7 +723,8 @@ class HuntManager:
 
             if _pid_alive(pid):
                 logger.info(
-                    f'Reconnecting to running hunt {hunt_id} (pid {pid})'
+                    f'Reconnecting to running {"profile" if hunt_id.startswith("profile_") else "hunt"} '
+                    f'{hunt_id} (pid {pid})'
                 )
                 self._monitored_hunts[hunt_id] = pid
                 self.active_hunts[hunt_id] = {
@@ -595,6 +734,10 @@ class HuntManager:
                     'collection_stats': {},
                     'last_progress': row,
                 }
+                # Restore profile tracking
+                if hunt_id.startswith('profile_'):
+                    self._profile_id = hunt_id
+                    self._profile_pid = pid
                 reconnected += 1
             else:
                 logger.warning(

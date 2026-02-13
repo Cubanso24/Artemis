@@ -212,29 +212,26 @@ async def get_network_summary(sensor_id: Optional[str] = None):
 
 
 @router.post("/api/network-graph/profile")
-def profile_devices(request: ProfileRequest):
-    """Profile network devices by querying Splunk zeek:conn logs.
-    Uses def (not async) so blocking Splunk queries run in threadpool."""
-    plugin = plugin_manager.get_plugin('network_mapper')
-    if not plugin:
-        return JSONResponse(
-            status_code=404,
-            content={'error': 'Network mapper plugin not enabled'},
-        )
+async def profile_devices(request: ProfileRequest):
+    """Start device profiling in a background subprocess.
 
-    splunk = hunt_manager.get_splunk_connector()
-    if not splunk:
-        return JSONResponse(
-            status_code=400,
-            content={'error': 'Splunk connection not configured'},
-        )
-
+    Progress is broadcast over WebSocket so the UI can track it,
+    and the process survives page reloads.
+    """
     try:
-        result = plugin.profile_devices(splunk, time_range=request.time_range)
-        return result
+        profile_id = await hunt_manager.start_profile(request.time_range)
+        return {'profile_id': profile_id, 'status': 'started'}
+    except RuntimeError as e:
+        return JSONResponse(status_code=409, content={'error': str(e)})
     except Exception as e:
         logger.error(f"Device profiling failed: {e}")
         return JSONResponse(status_code=500, content={'error': str(e)})
+
+
+@router.get("/api/network-graph/profile/status")
+async def profile_status():
+    """Get the current profiling status (for page-reload reconnection)."""
+    return hunt_manager.get_profile_status()
 
 
 # --- Sigma rules ----------------------------------------------------------
