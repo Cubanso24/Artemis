@@ -604,35 +604,35 @@ def _hunt_worker_process(hunt_id, time_range, mode, description,
             from artemis.plugins.sigma_engine import SigmaEnginePlugin
             se = SigmaEnginePlugin({})
             se.initialize()
-                sigma_result = se.execute(**hunting_data)
-                sigma_matches = sigma_result.get('matches', [])
-                if sigma_matches:
-                    log.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
-                    sigma_findings = []
-                    max_sev = 'low'
-                    sev_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0}
-                    for match in sigma_matches:
-                        lvl = match.get('level', 'medium')
-                        if sev_rank.get(lvl, 0) > sev_rank.get(max_sev, 0):
-                            max_sev = lvl
-                        sigma_findings.append({
-                            'title': f"Sigma: {match.get('rule_title', 'Unknown Rule')}",
-                            'description': match.get('rule_description', ''),
-                            'severity': lvl,
-                            'confidence': 0.85,
-                            'mitre_tactics': match.get('mitre_tactics', []),
-                            'mitre_techniques': match.get('mitre_techniques', []),
-                            'affected_assets': [],
-                        })
-                    hunt_data['agent_results']['sigma_engine'] = {
+            sigma_result = se.execute(**hunting_data)
+            sigma_matches = sigma_result.get('matches', [])
+            if sigma_matches:
+                log.info(f"Sigma engine: {sigma_result['total_matches']} matches across {len(sigma_matches)} rules")
+                sigma_findings = []
+                max_sev = 'low'
+                sev_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'informational': 0}
+                for match in sigma_matches:
+                    lvl = match.get('level', 'medium')
+                    if sev_rank.get(lvl, 0) > sev_rank.get(max_sev, 0):
+                        max_sev = lvl
+                    sigma_findings.append({
+                        'title': f"Sigma: {match.get('rule_title', 'Unknown Rule')}",
+                        'description': match.get('rule_description', ''),
+                        'severity': lvl,
                         'confidence': 0.85,
-                        'severity': max_sev,
-                        'findings': sigma_findings,
-                    }
-                    findings_count += len(sigma_findings)
-                    hunt_data['total_findings'] = findings_count
-            except Exception as e:
-                log.warning(f'Sigma engine failed: {e}')
+                        'mitre_tactics': match.get('mitre_tactics', []),
+                        'mitre_techniques': match.get('mitre_techniques', []),
+                        'affected_assets': [],
+                    })
+                hunt_data['agent_results']['sigma_engine'] = {
+                    'confidence': 0.85,
+                    'severity': max_sev,
+                    'findings': sigma_findings,
+                }
+                findings_count += len(sigma_findings)
+                hunt_data['total_findings'] = findings_count
+        except Exception as e:
+            log.warning(f'Sigma engine failed: {e}')
 
         # --- save to DB ----------------------------------------------------
         send({'stage': 'finalize', 'message': 'Saving hunt results...', 'progress': 98})
