@@ -273,7 +273,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         )
 
         # Process connections in batches to allow periodic progress logging
-        batch_size = 50_000
+        batch_size = 500_000
         for i in range(0, len(connections), batch_size):
             batch = connections[i:i + batch_size]
             for conn in batch:
