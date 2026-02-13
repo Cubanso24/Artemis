@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+from artemis.utils.report_generator import generate_html_report
 
 
 # Configure logging
@@ -186,9 +187,16 @@ class DatabaseManager:
                 mitre_tactics TEXT,
                 mitre_techniques TEXT,
                 affected_assets TEXT,
+                fingerprint TEXT,
                 timestamp TIMESTAMP,
                 FOREIGN KEY (hunt_id) REFERENCES hunts(hunt_id)
             )
+        """)
+
+        # Index for fast fingerprint dedup lookups
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_findings_fingerprint
+            ON findings(fingerprint)
         """)
 
         # Plugin results table
@@ -205,8 +213,24 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def _compute_finding_fingerprint(self, agent_name: str, finding: Dict) -> str:
+        """Compute a stable fingerprint for a finding dict."""
+        import hashlib
+        title = finding.get('title') or finding.get('activity_type') or 'Unknown'
+        indicators = sorted(finding.get('indicators', []))
+        assets = sorted(finding.get('affected_assets', []))
+        techniques = sorted(finding.get('mitre_techniques', []))
+        parts = [
+            title,
+            "|".join(indicators),
+            "|".join(assets),
+            "|".join(techniques),
+        ]
+        raw = "::".join(parts)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
     def save_hunt(self, hunt_id: str, hunt_data: Dict):
-        """Save hunt results to database."""
+        """Save hunt results to database, deduplicating findings by fingerprint."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -229,22 +253,36 @@ class DatabaseManager:
                 hunt_data.get('description')
             ))
 
-            # Insert findings
+            # Collect existing fingerprints from the last 24h to skip cross-hunt dupes
+            cursor.execute("""
+                SELECT fingerprint FROM findings
+                WHERE fingerprint IS NOT NULL
+                  AND timestamp >= datetime('now', '-24 hours')
+            """)
+            recent_fingerprints = {row[0] for row in cursor.fetchall()}
+
+            # Insert findings, skipping duplicates
+            inserted = 0
+            skipped = 0
             for agent_name, agent_result in hunt_data.get('agent_results', {}).items():
-                # severity and confidence live at agent level, not per-finding
                 agent_severity = agent_result.get('severity', 'low')
                 agent_confidence = agent_result.get('confidence', 0.0)
                 agent_tactics = agent_result.get('mitre_tactics', [])
 
                 for finding in agent_result.get('findings', []):
-                    # Coordinator uses 'activity_type' not 'title'
+                    fp = finding.get('fingerprint') or self._compute_finding_fingerprint(agent_name, finding)
+
+                    if fp in recent_fingerprints:
+                        skipped += 1
+                        continue
+
                     title = finding.get('title') or finding.get('activity_type') or 'Unknown'
                     cursor.execute("""
                         INSERT INTO findings
                         (hunt_id, agent_name, title, description, severity,
                          confidence, mitre_tactics, mitre_techniques,
-                         affected_assets, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         affected_assets, fingerprint, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         hunt_id,
                         agent_name,
@@ -255,8 +293,14 @@ class DatabaseManager:
                         json.dumps(finding.get('mitre_tactics') or agent_tactics),
                         json.dumps(finding.get('mitre_techniques', [])),
                         json.dumps(finding.get('affected_assets', [])),
+                        fp,
                         datetime.now()
                     ))
+                    recent_fingerprints.add(fp)
+                    inserted += 1
+
+            if skipped > 0:
+                logger.info(f"Finding dedup: inserted {inserted}, skipped {skipped} duplicates")
 
             conn.commit()
         finally:
@@ -977,6 +1021,21 @@ async def get_hunt(hunt_id: str):
     if not hunt:
         return JSONResponse(status_code=404, content={'error': 'Hunt not found'})
     return hunt
+
+
+@app.get("/api/hunts/{hunt_id}/report")
+async def get_hunt_report(hunt_id: str):
+    """Generate and download an HTML report for a hunt."""
+    hunt = db_manager.get_hunt_details(hunt_id)
+    if not hunt:
+        return JSONResponse(status_code=404, content={'error': 'Hunt not found'})
+    html = generate_html_report(hunt)
+    return HTMLResponse(
+        content=html,
+        headers={
+            'Content-Disposition': f'attachment; filename="artemis_report_{hunt_id}.html"'
+        }
+    )
 
 
 @app.get("/api/hunts/active")

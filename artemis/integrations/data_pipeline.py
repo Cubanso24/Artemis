@@ -480,6 +480,27 @@ class DataPipeline:
 
         return pcap_data
 
+    @staticmethod
+    def _dedup_events(events: List[Dict], key_fields: List[str]) -> List[Dict]:
+        """
+        Deduplicate a list of event dicts by a composite key.
+
+        Args:
+            events: List of event dicts
+            key_fields: Fields to use as the dedup key
+
+        Returns:
+            Deduplicated list (preserves first occurrence)
+        """
+        seen = set()
+        deduped = []
+        for event in events:
+            key = tuple(str(event.get(f, '')) for f in key_fields)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(event)
+        return deduped
+
     def _merge_data_sources(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Merge and deduplicate data from multiple sources.
@@ -514,6 +535,32 @@ class DataPipeline:
         if "suricata_alerts" in data:
             data["initial_signals"] = self._convert_suricata_alerts(
                 data["suricata_alerts"]
+            )
+
+        # Deduplicate merged event lists
+        conn_keys = ["source_ip", "destination_ip", "destination_port", "timestamp"]
+        dns_keys = ["source_ip", "domain", "timestamp"]
+
+        before_conns = len(data.get("network_connections", []))
+        before_dns = len(data.get("dns_queries", []))
+
+        if "network_connections" in data:
+            data["network_connections"] = self._dedup_events(
+                data["network_connections"], conn_keys
+            )
+        if "dns_queries" in data:
+            data["dns_queries"] = self._dedup_events(
+                data["dns_queries"], dns_keys
+            )
+
+        after_conns = len(data.get("network_connections", []))
+        after_dns = len(data.get("dns_queries", []))
+        removed = (before_conns - after_conns) + (before_dns - after_dns)
+        if removed > 0:
+            self.logger.info(
+                f"Event dedup: removed {removed} duplicates "
+                f"(connections: {before_conns}->{after_conns}, "
+                f"dns: {before_dns}->{after_dns})"
             )
 
         return data

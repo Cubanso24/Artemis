@@ -1699,6 +1699,7 @@
                 let html = `
                     <h3>${hunt.hunt_id}
                         <button class="copy-btn" onclick="copyToClipboard('${hunt.hunt_id}', this)">📋 Copy ID</button>
+                        <a href="/api/hunts/${hunt.hunt_id}/report" class="btn btn-secondary" style="margin-left:10px; padding:4px 12px; font-size:12px; text-decoration:none;" download>Export Report</a>
                     </h3>
                     <p><strong>Time Range:</strong> ${hunt.time_range}</p>
                     <p><strong>Mode:</strong> ${hunt.mode}</p>

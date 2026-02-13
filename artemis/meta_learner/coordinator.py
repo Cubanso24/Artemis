@@ -143,6 +143,9 @@ class MetaLearnerCoordinator:
         # Stage 4: Resource Allocation & Agent Execution
         agent_outputs = self._execute_agents(selected_agents, data, context)
 
+        # Stage 4.5: Deduplicate findings across agents
+        agent_outputs = self._deduplicate_findings(agent_outputs)
+
         # Stage 5: Confidence Aggregation & Decision Making
         assessment = self._aggregate_results(agent_outputs, context)
 
@@ -350,6 +353,54 @@ class MetaLearnerCoordinator:
                 outputs.append(output)
 
         return outputs
+
+    def _deduplicate_findings(
+        self,
+        agent_outputs: List[AgentOutput]
+    ) -> List[AgentOutput]:
+        """
+        Deduplicate findings across agents.
+
+        When multiple agents produce findings with the same fingerprint
+        (same activity_type, indicators, affected_assets, MITRE techniques),
+        keep only the one from the agent with the highest confidence.
+        """
+        seen_fingerprints: Dict[str, Tuple[str, float]] = {}  # fingerprint -> (agent_name, confidence)
+        total_before = sum(len(o.findings) for o in agent_outputs)
+
+        for output in agent_outputs:
+            keep = []
+            for finding in output.findings:
+                fp = finding.fingerprint
+                existing = seen_fingerprints.get(fp)
+                if existing is None:
+                    # First time seeing this finding
+                    seen_fingerprints[fp] = (output.agent_name, output.confidence)
+                    keep.append(finding)
+                elif output.confidence > existing[1]:
+                    # This agent has higher confidence — take ours, mark old for removal
+                    seen_fingerprints[fp] = (output.agent_name, output.confidence)
+                    keep.append(finding)
+                    # Remove from previous agent (handled below in second pass)
+                # else: duplicate with lower confidence, skip
+
+            output.findings = keep
+
+        # Second pass: remove findings that were superseded by higher-confidence agents
+        for output in agent_outputs:
+            output.findings = [
+                f for f in output.findings
+                if seen_fingerprints[f.fingerprint][0] == output.agent_name
+            ]
+
+        total_after = sum(len(o.findings) for o in agent_outputs)
+        if total_before != total_after:
+            self.logger.info(
+                f"Deduplicated findings: {total_before} -> {total_after} "
+                f"({total_before - total_after} duplicates removed)"
+            )
+
+        return agent_outputs
 
     def _aggregate_results(
         self,
