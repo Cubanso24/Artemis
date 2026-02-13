@@ -767,6 +767,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """
         from concurrent.futures import ThreadPoolExecutor
 
+        def _sv(val, default=""):
+            """Normalize a Splunk field to a single string value.
+            Multivalue fields come back as Python lists from JSON output."""
+            if isinstance(val, list):
+                return str(val[0]) if val else default
+            return str(val) if val is not None else default
+
         logger.info(f"Starting device profiling with time_range={time_range}")
 
         # Query 1: Server perspective — what ports does each IP serve?
@@ -865,7 +872,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
         kdc_ips: set = set()
         for row in kerberos_results:
-            ip = row.get('ip', '')
+            ip = _sv(row.get('ip'))
             if ip:
                 kdc_ips.add(ip)
 
@@ -876,12 +883,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Enrich nodes with NTLM data (NetBIOS names + domain)
         ntlm_enriched = 0
         for row in ntlm_results:
-            src_ip = row.get('source_ip', '')
-            dst_ip = row.get('dest_ip', '')
-            hostname = row.get('hostname', '')
-            domainname = row.get('domainname', '')
-            server_nb = row.get('server_nb_computer_name', '')
-            server_dns = row.get('server_dns_computer_name', '')
+            src_ip = _sv(row.get('source_ip'))
+            dst_ip = _sv(row.get('dest_ip'))
+            hostname = _sv(row.get('hostname'))
+            domainname = _sv(row.get('domainname'))
+            server_nb = _sv(row.get('server_nb_computer_name'))
+            server_dns = _sv(row.get('server_dns_computer_name'))
 
             # Track which servers receive NTLM auths from many clients
             if src_ip and dst_ip:
@@ -912,9 +919,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Enrich nodes with DHCP data (MAC address + OUI vendor lookup)
         dhcp_enriched = 0
         for row in dhcp_results:
-            ip = row.get('ip', '')
-            mac = row.get('mac', '')
-            dhcp_hostname = row.get('dhcp_hostname', '')
+            ip = _sv(row.get('ip'))
+            mac = _sv(row.get('mac'))
+            dhcp_hostname = _sv(row.get('dhcp_hostname'))
             if not ip or not mac:
                 continue
             # Normalize MAC to colon-separated uppercase
@@ -939,7 +946,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Index server data by IP
         server_data: Dict[str, Dict] = {}
         for row in server_results:
-            ip = row.get('ip', '')
+            ip = _sv(row.get('ip'))
             if not ip:
                 continue
             ports_raw = row.get('ports', [])
@@ -960,7 +967,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Index client data by IP
         client_data: Dict[str, Dict] = {}
         for row in client_results:
-            ip = row.get('ip', '')
+            ip = _sv(row.get('ip'))
             if not ip:
                 continue
             client_data[ip] = {
