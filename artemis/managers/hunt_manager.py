@@ -28,7 +28,8 @@ logger = logging.getLogger("artemis.hunt")
 # ---------------------------------------------------------------------------
 
 def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
-                         storage_mode="ram"):
+                         storage_mode="ram", earliest_time=None,
+                         latest_time=None):
     """
     Run a complete hunt in a separate process.
 
@@ -82,9 +83,11 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
         coordinator = MetaLearnerCoordinator()
 
         # --- data collection -----------------------------------------------
+        time_label = (f"{earliest_time} → {latest_time}"
+                      if earliest_time and latest_time else time_range)
         send('collect', 'Starting data collection from Splunk...', 10, {
             'started_at': hunt_start.isoformat(),
-            'time_range': time_range,
+            'time_range': time_label,
             'queries_done': 0, 'queries_total': 9,
             'events_by_type': {}, 'total_events': 0,
             'window': 0, 'total_windows': 0,
@@ -136,7 +139,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
 
                 send('collect', ' | '.join(parts), min(pct, 60), {
                     'started_at': hunt_start.isoformat(),
-                    'time_range': time_range,
+                    'time_range': time_label,
                     'queries_done': qd, 'queries_total': qt,
                     'events_by_type': merged_by_type,
                     'total_events': total_events,
@@ -154,7 +157,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
                      f'Window {w}/{tw} done | {total:,} total events | {elapsed:.0f}s elapsed',
                      10 + int((w / tw) * 50), {
                          'started_at': hunt_start.isoformat(),
-                         'time_range': time_range,
+                         'time_range': time_label,
                          'queries_done': 9, 'queries_total': 9,
                          'events_by_type': info.get('events_by_type', {}),
                          'total_events': total,
@@ -165,6 +168,8 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
         hunting_data = pipeline.collect_hunting_data(
             time_range, progress_callback=on_collection_progress,
             storage_mode=storage_mode,
+            earliest_time=earliest_time,
+            latest_time=latest_time,
         )
         if hasattr(hunting_data, 'total_count'):
             total_events = hunting_data.total_count()
@@ -192,7 +197,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
         hunt_data = {
             'start_time': hunt_start.isoformat(),
             'end_time': datetime.now().isoformat(),
-            'time_range': time_range,
+            'time_range': time_label,
             'mode': mode,
             'status': 'completed',
             'total_findings': findings_count,
@@ -342,6 +347,8 @@ class HuntManager:
         mode: str,
         description: str,
         storage_mode: str = "ram",
+        earliest_time: str = None,
+        latest_time: str = None,
     ):
         """Spawn a non-daemon subprocess for the hunt and begin monitoring."""
         import multiprocessing
@@ -357,7 +364,7 @@ class HuntManager:
         proc = multiprocessing.Process(
             target=_hunt_worker_process,
             args=(hunt_id, time_range, mode, description, self.db.db_path,
-                  storage_mode),
+                  storage_mode, earliest_time, latest_time),
             daemon=False,  # survives server restart
         )
         proc.start()

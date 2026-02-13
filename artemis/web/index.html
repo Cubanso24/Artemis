@@ -1036,14 +1036,28 @@
                 <form id="hunt-form">
                     <div class="form-group">
                         <label for="time-range">Time Range</label>
-                        <select id="time-range">
+                        <select id="time-range" onchange="toggleCustomTimeRange()">
                             <option value="-1h">Last Hour</option>
                             <option value="-4h">Last 4 Hours</option>
                             <option value="-12h">Last 12 Hours</option>
                             <option value="-24h">Last 24 Hours</option>
                             <option value="-7d">Last 7 Days</option>
                             <option value="-30d">Last 30 Days</option>
+                            <option value="custom">Custom Date/Time Range</option>
                         </select>
+                    </div>
+
+                    <div id="custom-time-range" style="display:none;">
+                        <div class="form-group" style="display:flex; gap:12px;">
+                            <div style="flex:1;">
+                                <label for="earliest-time">Start Date/Time</label>
+                                <input type="datetime-local" id="earliest-time" style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+                            </div>
+                            <div style="flex:1;">
+                                <label for="latest-time">End Date/Time</label>
+                                <input type="datetime-local" id="latest-time" style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;">
+                            </div>
+                        </div>
                     </div>
 
                     <div class="form-group">
@@ -1434,7 +1448,9 @@
             const template = {
                 timeRange: document.getElementById('time-range').value,
                 mode: document.getElementById('hunt-mode').value,
-                description: document.getElementById('description').value
+                description: document.getElementById('description').value,
+                earliestTime: document.getElementById('earliest-time').value,
+                latestTime: document.getElementById('latest-time').value,
             };
 
             const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
@@ -1457,6 +1473,9 @@
                 document.getElementById('time-range').value = template.timeRange;
                 document.getElementById('hunt-mode').value = template.mode;
                 document.getElementById('description').value = template.description;
+                if (template.earliestTime) document.getElementById('earliest-time').value = template.earliestTime;
+                if (template.latestTime) document.getElementById('latest-time').value = template.latestTime;
+                toggleCustomTimeRange();
                 addLog(`Loaded template: ${name}`, 'info');
             }
         }
@@ -2453,6 +2472,12 @@
             }
         }
 
+        function toggleCustomTimeRange() {
+            const sel = document.getElementById('time-range').value;
+            document.getElementById('custom-time-range').style.display =
+                sel === 'custom' ? 'block' : 'none';
+        }
+
         async function startHunt(e) {
             e.preventDefault();
 
@@ -2461,11 +2486,30 @@
             const description = document.getElementById('description').value;
             const storageMode = document.getElementById('storage-mode').value;
 
+            const body = { time_range: timeRange, mode, description, storage_mode: storageMode };
+
+            if (timeRange === 'custom') {
+                const earliest = document.getElementById('earliest-time').value;
+                const latest = document.getElementById('latest-time').value;
+                if (!earliest || !latest) {
+                    alert('Please select both a start and end date/time.');
+                    return;
+                }
+                if (new Date(latest) <= new Date(earliest)) {
+                    alert('End date/time must be after start date/time.');
+                    return;
+                }
+                // Convert datetime-local value ("2025-01-15T08:00") to ISO
+                body.earliest_time = earliest.replace('T', 'T') + ':00';
+                body.latest_time = latest.replace('T', 'T') + ':00';
+                body.time_range = '-24h'; // fallback; ignored when absolute times are set
+            }
+
             try {
                 const response = await fetch('/api/hunt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ time_range: timeRange, mode, description, storage_mode: storageMode })
+                    body: JSON.stringify(body)
                 });
 
                 const data = await response.json();
@@ -2484,6 +2528,7 @@
 
         function quickHunt(timeRange) {
             document.getElementById('time-range').value = timeRange;
+            toggleCustomTimeRange();
             showTab('new-hunt');
             setTimeout(() => document.getElementById('hunt-form').dispatchEvent(new Event('submit')), 100);
         }

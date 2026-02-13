@@ -107,24 +107,32 @@ class DataPipeline:
         suspicious_ips: Optional[List[str]] = None,
         progress_callback=None,
         storage_mode: str = "ram",
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
 
         Args:
-            time_range: Time range for data collection (e.g., "-1h", "-24h")
+            time_range: Time range for data collection (e.g., "-1h", "-24h").
+                        Ignored when *earliest_time*/*latest_time* are set.
             include_pcap: Whether to retrieve and analyze PCAP
             suspicious_ips: Optional list of IPs to focus on
             progress_callback: Optional callable(info_dict) for live progress updates
             storage_mode: "ram" (default) keeps events in Python lists.
                           "sqlite" spills to a temp SQLite file so very
                           large collections don't exhaust memory.
+            earliest_time: Absolute start time (ISO 8601, e.g. "2025-01-15T08:00:00").
+                           When set, overrides *time_range*.
+            latest_time: Absolute end time (ISO 8601).
 
         Returns:
             Hunting data (dict or SqliteEventStore).
         """
+        label = (f"{earliest_time} → {latest_time}"
+                 if earliest_time and latest_time else time_range)
         self.logger.info(
-            f"Collecting hunting data for time range: {time_range} "
+            f"Collecting hunting data for time range: {label} "
             f"(storage={storage_mode})"
         )
 
@@ -142,6 +150,8 @@ class DataPipeline:
             self._collect_from_splunk(
                 time_range, progress_callback=progress_callback,
                 store=hunting_data,
+                earliest_time=earliest_time,
+                latest_time=latest_time,
             )
 
         # Collect from Security Onion
@@ -201,36 +211,47 @@ class DataPipeline:
     def _generate_time_windows(
         time_range: str,
         window_hours: int = 24,
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
     ) -> List[Tuple[str, str]]:
         """
         Split a large time range into fixed-size windows.
 
         Returns a list of (earliest_iso, latest_iso) pairs that Splunk
         accepts as absolute timestamps.  Windows are generated from the
-        oldest time forward to "now".
+        oldest time forward to "now" (or *latest_time*).
+
+        When *earliest_time* and *latest_time* are provided they take
+        precedence over the relative *time_range* string.
         """
-        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
-        if not m:
-            # Cannot parse — return as single window
-            return [(time_range, "now")]
-
-        value = int(m.group(1))
-        unit = m.group(2)
-        unit_seconds = {
-            's': 1, 'm': 60, 'h': 3600,
-            'd': 86400, 'w': 604800, 'mon': 2592000,
-        }
-
-        total_seconds = value * unit_seconds.get(unit, 3600)
-        window_seconds = window_hours * 3600
-
         now = datetime.utcnow()
-        start = now - timedelta(seconds=total_seconds)
+
+        if earliest_time and latest_time:
+            # Absolute range provided — parse ISO timestamps
+            start = datetime.fromisoformat(earliest_time)
+            end = datetime.fromisoformat(latest_time)
+        else:
+            m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+            if not m:
+                # Cannot parse — return as single window
+                return [(time_range, "now")]
+
+            value = int(m.group(1))
+            unit = m.group(2)
+            unit_seconds = {
+                's': 1, 'm': 60, 'h': 3600,
+                'd': 86400, 'w': 604800, 'mon': 2592000,
+            }
+            total_seconds = value * unit_seconds.get(unit, 3600)
+            start = now - timedelta(seconds=total_seconds)
+            end = now
+
+        window_seconds = window_hours * 3600
 
         windows = []
         cursor = start
-        while cursor < now:
-            window_end = min(cursor + timedelta(seconds=window_seconds), now)
+        while cursor < end:
+            window_end = min(cursor + timedelta(seconds=window_seconds), end)
             windows.append((
                 cursor.strftime('%Y-%m-%dT%H:%M:%S'),
                 window_end.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -244,7 +265,8 @@ class DataPipeline:
     # ------------------------------------------------------------------
 
     def _collect_from_splunk(self, time_range: str, progress_callback=None,
-                             store=None) -> None:
+                             store=None, earliest_time: Optional[str] = None,
+                             latest_time: Optional[str] = None) -> None:
         """
         Collect data from Splunk and merge into *store*.
 
@@ -256,24 +278,42 @@ class DataPipeline:
         *store* is a SqliteEventStore).
 
         Args:
-            time_range: Time range for queries (e.g. "-1h", "-30d")
+            time_range: Time range for queries (e.g. "-1h", "-30d").
+                        Ignored when *earliest_time*/*latest_time* are set.
             progress_callback: Optional callable(info_dict) for progress updates
             store: Dict-like container to merge results into.  Must support
                    ``.update(dict)`` and, for count helpers,
                    ``.count(key)`` / ``.total_count()``.
+            earliest_time: Absolute start (ISO 8601).  Overrides *time_range*.
+            latest_time: Absolute end (ISO 8601).
         """
-        total_hours = self._parse_time_range_hours(time_range)
+        if earliest_time and latest_time:
+            # Compute the span from absolute timestamps
+            dt_start = datetime.fromisoformat(earliest_time)
+            dt_end = datetime.fromisoformat(latest_time)
+            total_hours = (dt_end - dt_start).total_seconds() / 3600
+        else:
+            total_hours = self._parse_time_range_hours(time_range)
 
         if total_hours <= 24:
             # Short range — single pass
-            window = self._collect_splunk_window(
-                time_range, "now", progress_callback=progress_callback,
-            )
+            if earliest_time and latest_time:
+                window = self._collect_splunk_window(
+                    earliest_time, latest_time,
+                    progress_callback=progress_callback,
+                )
+            else:
+                window = self._collect_splunk_window(
+                    time_range, "now", progress_callback=progress_callback,
+                )
             store.update(window)
             return
 
         # Long range — split into 24h windows
-        windows = self._generate_time_windows(time_range, window_hours=24)
+        windows = self._generate_time_windows(
+            time_range, window_hours=24,
+            earliest_time=earliest_time, latest_time=latest_time,
+        )
         self.logger.info(
             f"Large time range ({time_range} = {total_hours:.0f}h): "
             f"splitting into {len(windows)} x 24h windows"

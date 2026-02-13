@@ -19,8 +19,11 @@ router = APIRouter()
 async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
     """Start a new threat hunt."""
     hunt_id = f"hunt_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    time_label = (f"{request.earliest_time} → {request.latest_time}"
+                  if request.earliest_time and request.latest_time
+                  else request.time_range)
     logger.info(
-        f"Starting hunt {hunt_id}: time_range={request.time_range}, "
+        f"Starting hunt {hunt_id}: time_range={time_label}, "
         f"mode={request.mode}, storage={request.storage_mode}"
     )
     background_tasks.add_task(
@@ -30,6 +33,8 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
         request.mode,
         request.description,
         request.storage_mode,
+        request.earliest_time,
+        request.latest_time,
     )
     return {'hunt_id': hunt_id, 'status': 'started'}
 
