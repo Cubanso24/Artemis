@@ -425,7 +425,7 @@ class PluginManager:
 # ============================================================================
 
 def _hunt_worker_process(hunt_id, time_range, mode, description,
-                         db_path, enabled_plugins, progress_queue):
+                         db_path, progress_queue):
     """
     Run a complete hunt in a separate process.
 
@@ -583,28 +583,27 @@ def _hunt_worker_process(hunt_id, time_range, mode, description,
                 'findings': agent_output.get('findings', []),
             }
 
-        # --- plugins -------------------------------------------------------
-        if 'network_mapper' in enabled_plugins:
-            send({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
-            try:
-                from artemis.plugins.network_mapper import NetworkMapperPlugin
-                nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
-                nm.initialize()
-                nm.execute(
-                    network_connections=hunting_data.get('network_connections', []),
-                    dns_queries=hunting_data.get('dns_queries', []),
-                    ntlm_logs=hunting_data.get('ntlm_logs', []),
-                )
-                nm.save_map()
-            except Exception as e:
-                log.warning(f'Network mapper failed: {e}')
+        # --- plugins (always run built-in plugins) -------------------------
+        send({'stage': 'finalize', 'message': 'Running network mapper...', 'progress': 91})
+        try:
+            from artemis.plugins.network_mapper import NetworkMapperPlugin
+            nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+            nm.initialize()
+            nm.execute(
+                network_connections=hunting_data.get('network_connections', []),
+                dns_queries=hunting_data.get('dns_queries', []),
+                ntlm_logs=hunting_data.get('ntlm_logs', []),
+            )
+            nm.save_map()
+            log.info(f'Network mapper: {len(nm.nodes)} nodes saved to disk')
+        except Exception as e:
+            log.warning(f'Network mapper failed: {e}')
 
-        if 'sigma_engine' in enabled_plugins:
-            send({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
-            try:
-                from artemis.plugins.sigma_engine import SigmaEnginePlugin
-                se = SigmaEnginePlugin({})
-                se.initialize()
+        send({'stage': 'finalize', 'message': 'Running Sigma rule engine...', 'progress': 93})
+        try:
+            from artemis.plugins.sigma_engine import SigmaEnginePlugin
+            se = SigmaEnginePlugin({})
+            se.initialize()
                 sigma_result = se.execute(**hunting_data)
                 sigma_matches = sigma_result.get('matches', [])
                 if sigma_matches:
@@ -718,19 +717,13 @@ class HuntManager:
             'last_progress': None,
         }
 
-        # Determine which plugins the hunt process should run
-        enabled_plugins = [
-            name for name in ('network_mapper', 'sigma_engine')
-            if plugin_manager.get_plugin(name) is not None
-        ]
-
         progress_queue = multiprocessing.Queue()
 
         proc = multiprocessing.Process(
             target=_hunt_worker_process,
             args=(
                 hunt_id, time_range, mode, description,
-                self.db.db_path, enabled_plugins, progress_queue,
+                self.db.db_path, progress_queue,
             ),
             daemon=True,
         )
@@ -781,7 +774,7 @@ class HuntManager:
             proc.terminate()
 
         # Reload plugin state from disk so API endpoints serve fresh data
-        self._reload_plugins_from_disk(enabled_plugins)
+        self._reload_plugins_from_disk(['network_mapper', 'sigma_engine'])
 
         self.hunt_processes.pop(hunt_id, None)
 
