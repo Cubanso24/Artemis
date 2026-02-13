@@ -78,9 +78,8 @@ class WebSocketLogHandler(logging.Handler):
                 # No event loop running (e.g., from worker thread)
                 # Try to schedule on the main loop if it exists
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self.broadcast_log(message), loop)
+                    loop = asyncio.get_running_loop()
+                    asyncio.run_coroutine_threadsafe(self.broadcast_log(message), loop)
                 except:
                     # Can't broadcast from this thread, skip it
                     pass
