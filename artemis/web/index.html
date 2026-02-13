@@ -1222,7 +1222,6 @@
                 <div class="graph-controls">
                     <input type="text" id="graph-search" placeholder="Search IP, hostname, domain, vendor..." onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:260px;">
                     <button class="btn" onclick="searchGraphNode()">Find</button>
-                    <button class="btn" onclick="loadNetworkGraph()">Refresh Graph</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
                     <button class="btn" onclick="profileDevices()" id="profile-btn">Profile Devices</button>
@@ -1855,7 +1854,7 @@
                 buildVlanTabs(graphData);
 
                 renderNetworkGraph(graphData);
-                if (!silent) loadNetworkSummary();
+                loadNetworkSummary();
 
                 if (!silent) {
                     addLog(`Loaded network graph with ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`, 'info');
@@ -2635,7 +2634,20 @@
 
         function searchGraphNode() {
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
-            if (!query || !networkGraph || !networkGraphData) return;
+            const searchInput = document.getElementById('graph-search');
+            if (!query) return;
+
+            // If graph isn't loaded yet, load it first then re-search
+            if (!networkGraph || !networkGraphData) {
+                addLog('Loading graph before searching...', 'info');
+                loadNetworkGraph().then(() => {
+                    if (networkGraph && networkGraphData) searchGraphNode();
+                });
+                return;
+            }
+
+            // Clear any previous search feedback
+            searchInput.style.borderColor = '';
 
             // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, MAC, vendor, model, OS, software)
             const matches = networkGraphData.raw.nodes.filter(n => {
@@ -2662,10 +2674,17 @@
             if (matches.length > 0) {
                 const match = matches[0];
                 addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
-                // Auto-switch to the node's VLAN if we're on a different tab
-                if (_activeVlan !== null && match.group !== 'internet') {
+
+                // Switch to Network Graph tab if not already there
+                const graphTab = document.getElementById('network-graph-tab');
+                if (!graphTab.classList.contains('active')) {
+                    showTab('network-graph-tab');
+                }
+
+                // Auto-switch to the node's VLAN so it's visible on the graph
+                if (match.group !== 'internet') {
                     const nodeVlan = match.vlan || '0';
-                    if (nodeVlan !== _activeVlan) {
+                    if (_activeVlan !== null && nodeVlan !== _activeVlan) {
                         switchVlanTab(nodeVlan);
                     }
                 }
@@ -2675,6 +2694,8 @@
                     animation: { duration: 500, easingFunction: 'easeInOutQuad' }
                 });
                 showNodeDetails(match);
+                searchInput.style.borderColor = '#43a047';
+                setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
                 return;
             }
 
@@ -2687,6 +2708,11 @@
             });
             if (extMatch) {
                 addLog(`External IP "${query}" found in connections of ${extMatch.label}`, 'info');
+                // Switch to Network Graph tab if not already there
+                const graphTab = document.getElementById('network-graph-tab');
+                if (!graphTab.classList.contains('active')) {
+                    showTab('network-graph-tab');
+                }
                 // Auto-switch VLAN tab if needed
                 if (_activeVlan !== null) {
                     const nodeVlan = extMatch.vlan || '0';
@@ -2700,10 +2726,28 @@
                     animation: { duration: 500, easingFunction: 'easeInOutQuad' }
                 });
                 showNodeDetails(extMatch);
+                searchInput.style.borderColor = '#43a047';
+                setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
                 return;
             }
 
-            addLog(`No node found matching "${query}"`, 'warning');
+            // Not found — show visible feedback
+            addLog(`No device found matching "${query}"`, 'warning');
+            searchInput.style.borderColor = '#f44336';
+            const panel = document.getElementById('node-details-panel');
+            const body = document.getElementById('node-details-body');
+            const title = document.getElementById('node-details-title');
+            title.textContent = 'Device Not Found';
+            body.innerHTML = `
+                <div style="text-align:center; padding:20px;">
+                    <i class="fa-solid fa-magnifying-glass" style="font-size:32px; opacity:0.3; margin-bottom:12px;"></i>
+                    <p style="font-size:14px; margin-bottom:8px;">No device matching <strong>"${escapeHtml(query)}"</strong> was found in the network map.</p>
+                    <p style="font-size:12px; opacity:0.6;">Try searching by IP address, hostname, domain, NetBIOS name, MAC address, or vendor name.</p>
+                </div>
+            `;
+            panel.style.display = 'block';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            setTimeout(() => { searchInput.style.borderColor = ''; }, 3000);
         }
 
         function changeGraphLayout() {
@@ -3150,6 +3194,13 @@
                     loadStats();
                     refreshQueueDisplay();
                     viewHuntDetails(huntId);
+                    // Refresh network graph if the tab is visible
+                    if (document.getElementById('network-graph-tab').classList.contains('active')) {
+                        loadNetworkGraph();
+                    } else {
+                        // Mark stale so it reloads on next tab switch
+                        _fullGraphData = null;
+                    }
                 }, 2500);
             } else if (data.stage === 'error') {
                 delete trackedHunts[huntId];
@@ -3254,7 +3305,11 @@
             }
 
             // Auto-load data for specific tabs
-            if (tabName === 'sigma-tab') {
+            if (tabName === 'network-graph-tab') {
+                loadNetworkGraph();
+            } else if (tabName === 'network-maps-tab') {
+                loadNetworkMaps();
+            } else if (tabName === 'sigma-tab') {
                 loadSigmaRules();
             }
         }
