@@ -8,8 +8,9 @@ Supports multi-sensor environments with per-sensor network segmentation.
 
 import json
 import logging
-from datetime import datetime
-from typing import Dict, List, Set, Any, Optional
+import re
+from datetime import datetime, timedelta
+from typing import Dict, List, Set, Any, Optional, Tuple
 from collections import defaultdict
 from pathlib import Path
 
@@ -980,27 +981,279 @@ class NetworkMapperPlugin(ArtemisPlugin):
         }
         return tiers.get(device_type, 3)
 
+    # ------------------------------------------------------------------
+    # Profiling helpers — time-window batching
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_time_range_hours(time_range: str) -> float:
+        """Parse a Splunk-style relative time range into total hours."""
+        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+        if not m:
+            return 0
+        value = int(m.group(1))
+        unit = m.group(2)
+        multipliers = {
+            's': 1 / 3600, 'm': 1 / 60, 'h': 1,
+            'd': 24, 'w': 168, 'mon': 720,
+        }
+        return value * multipliers.get(unit, 0)
+
+    @staticmethod
+    def _generate_profile_windows(
+        time_range: str,
+        window_hours: int = 24,
+    ) -> List[Tuple[str, str]]:
+        """Split a time range into fixed-size windows for profiling.
+
+        Returns a list of (earliest_iso, latest_iso) string pairs.
+        For ranges <= window_hours a single (time_range, "now") pair is
+        returned so existing behaviour is preserved.
+        """
+        now = datetime.utcnow()
+        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+        if not m:
+            return [(time_range, "now")]
+
+        value = int(m.group(1))
+        unit = m.group(2)
+        unit_seconds = {
+            's': 1, 'm': 60, 'h': 3600,
+            'd': 86400, 'w': 604800, 'mon': 2592000,
+        }
+        total_seconds = value * unit_seconds.get(unit, 3600)
+        if total_seconds <= window_hours * 3600:
+            return [(time_range, "now")]
+
+        start = now - timedelta(seconds=total_seconds)
+        end = now
+        ws = window_hours * 3600
+        windows: List[Tuple[str, str]] = []
+        cursor = start
+        while cursor < end:
+            window_end = min(cursor + timedelta(seconds=ws), end)
+            windows.append((
+                cursor.strftime('%Y-%m-%dT%H:%M:%S'),
+                window_end.strftime('%Y-%m-%dT%H:%M:%S'),
+            ))
+            cursor = window_end
+        return windows
+
+    def _run_profile_queries(self, splunk_connector, earliest, latest):
+        """Run the 10 profiling Splunk queries for a single time window.
+
+        Returns a dict with keys: server, client, ntlm, kerberos, dhcp,
+        snmp, smb, software, ssh, x509 — each holding a list of result rows.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        queries = self._profile_query_definitions()
+
+        _HEAVY_TIMEOUT = 1800
+        _LIGHT_TIMEOUT = 600
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {}
+            for name, spl in queries.items():
+                futures[name] = executor.submit(
+                    splunk_connector.query, spl,
+                    earliest_time=earliest, latest_time=latest,
+                )
+
+            results = {}
+            for name, fut in futures.items():
+                timeout = _HEAVY_TIMEOUT if name in ('server', 'client') else _LIGHT_TIMEOUT
+                try:
+                    results[name] = fut.result(timeout=timeout)
+                except Exception as e:
+                    logger.warning(f"{name} query failed for window {earliest}..{latest}: {e}")
+                    results[name] = []
+
+        return results
+
+    @staticmethod
+    def _merge_profile_results(accumulated, new_results):
+        """Merge a new window's query results into the accumulated totals.
+
+        Server/client profiles are aggregated per-IP (max dc, sum counts,
+        union ports).  Enrichment queries (NTLM, DHCP, etc.) are
+        concatenated since the enrichment loop handles dedup via sets.
+        """
+        # --- server profile: merge per-IP ---
+        for row in new_results.get('server', []):
+            ip = row.get('ip') or (row.get('id.resp_h'))
+            if not ip:
+                continue
+            if isinstance(ip, list):
+                ip = ip[0]
+            ip = str(ip)
+            existing = accumulated['server_agg'].get(ip)
+            new_clients = int(row.get('unique_clients', 0))
+            new_count = int(row.get('incoming_count', 0))
+            ports_raw = row.get('ports', [])
+            if isinstance(ports_raw, str):
+                ports_raw = [ports_raw]
+            new_ports = set()
+            for p in ports_raw:
+                try:
+                    new_ports.add(int(p))
+                except (ValueError, TypeError):
+                    pass
+            if existing:
+                existing['unique_clients'] = max(existing['unique_clients'], new_clients)
+                existing['incoming_count'] += new_count
+                existing['ports'] |= new_ports
+            else:
+                accumulated['server_agg'][ip] = {
+                    'unique_clients': new_clients,
+                    'incoming_count': new_count,
+                    'ports': new_ports,
+                }
+
+        # --- client profile: merge per-IP ---
+        for row in new_results.get('client', []):
+            ip = row.get('ip') or (row.get('id.orig_h'))
+            if not ip:
+                continue
+            if isinstance(ip, list):
+                ip = ip[0]
+            ip = str(ip)
+            existing = accumulated['client_agg'].get(ip)
+            new_dests = int(row.get('unique_destinations', 0))
+            new_count = int(row.get('outgoing_count', 0))
+            if existing:
+                existing['unique_destinations'] = max(existing['unique_destinations'], new_dests)
+                existing['outgoing_count'] += new_count
+            else:
+                accumulated['client_agg'][ip] = {
+                    'unique_destinations': new_dests,
+                    'outgoing_count': new_count,
+                }
+
+        # --- enrichment queries: just concatenate ---
+        for key in ('ntlm', 'kerberos', 'dhcp', 'snmp', 'smb',
+                     'software', 'ssh', 'x509'):
+            accumulated[key].extend(new_results.get(key, []))
+
+    def _profile_query_definitions(self):
+        """Return a dict of {name: SPL_query} for profiling."""
+        return {
+            'server': '''
+            search index=zeek_conn OR index=suricata
+            | spath
+            | stats dc("id.orig_h") as unique_clients,
+                    values("id.resp_p") as ports,
+                    count as incoming_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where incoming_count >= 3
+            ''',
+            'client': '''
+            search index=zeek_conn OR index=suricata
+            | spath
+            | stats dc("id.resp_h") as unique_destinations,
+                    count as outgoing_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | where outgoing_count >= 3
+            ''',
+            'ntlm': '''
+            search index=zeek_ntlm
+            | spath
+            | eval vlan=coalesce(vlan, "0")
+            | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
+            | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
+            ''',
+            'kerberos': '''
+            search index=zeek_kerberos
+            | spath
+            | stats dc("id.orig_h") as unique_clients,
+                    values(service) as services,
+                    count as auth_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where auth_count >= 3
+            ''',
+            'dhcp': '''
+            search index=zeek_dhcp
+            | spath
+            | where isnotnull(assigned_addr) AND isnotnull(mac)
+            | eval vlan=coalesce(vlan, "0")
+            | stats min(_time) as first_seen,
+                    max(_time) as last_seen,
+                    latest(host_name) as dhcp_hostname,
+                    latest(host) as sensor_id
+              by assigned_addr, mac, vlan
+            | rename assigned_addr as ip
+            ''',
+            'snmp': '''
+            search index=zeek_snmp
+            | spath
+            | where isnotnull("id.resp_h")
+            | eval oid=coalesce("id.resp_p", "")
+            | stats latest(community) as community,
+                    latest(version) as snmp_version
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'smb': '''
+            search index=zeek_smb_mapping OR index=zeek_smb_files
+            | spath
+            | eval nb_name=coalesce(server_name, "")
+            | where nb_name!="" AND nb_name!="-"
+            | stats values(nb_name) as nb_names,
+                    values(share_type) as share_types
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'software': '''
+            search index=zeek_software
+            | spath
+            | where isnotnull(host) OR isnotnull("id.orig_h")
+            | eval ip=coalesce(host, "id.orig_h")
+            | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
+            | stats values(sw) as software,
+                    values(software_type) as sw_types
+              by ip
+            ''',
+            'ssh': '''
+            search index=zeek_ssh
+            | spath
+            | stats latest(client) as ssh_client,
+                    latest(server) as ssh_server
+              by "id.orig_h", "id.resp_h"
+            | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
+            ''',
+            'x509': '''
+            search index=zeek_x509
+            | spath
+            | where isnotnull("certificate.subject")
+            | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
+            | where isnotnull(cn)
+            | stats values(cn) as cert_names by host
+            | rename host as sensor_id
+            ''',
+        }
+
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
                          progress_callback=None) -> Dict:
         """
-        Profile network devices by querying Splunk zeek:conn logs.
+        Profile network devices by querying Splunk zeek logs.
 
-        Runs two queries:
-        1. Server profile: what ports each IP serves, how many clients
-        2. Client profile: how many destinations each IP connects to
-
-        Then classifies each device and updates the network map nodes.
+        For time ranges > 24 h the work is split into 24-hour windows so
+        that no single Splunk search job becomes too large.  Results are
+        merged across windows before enrichment and classification.
 
         Args:
             splunk_connector: SplunkConnector instance
-            time_range: Splunk time range to analyze (default -24h)
+            time_range: Splunk time range to analyze (default -24h).
+                Supports -Nd, -Nw, -Nmon for multi-day profiling.
             progress_callback: Optional callable(stage, message, pct) for
                 progress reporting back to the caller.
 
         Returns:
             Dict with profiling results summary
         """
-        from concurrent.futures import ThreadPoolExecutor
 
         def _sv(val, default=""):
             """Normalize a Splunk field to a single string value.
@@ -1021,231 +1274,67 @@ class NetworkMapperPlugin(ArtemisPlugin):
         internal_count = sum(1 for n in self.nodes.values() if n.is_internal)
         _progress('profile', f'Network map loaded: {len(self.nodes)} nodes ({internal_count} internal)', 30)
 
-        # Query 1: Server perspective — what ports does each IP serve?
-        server_query = '''
-        search index=zeek_conn OR index=suricata
-        | spath
-        | stats dc("id.orig_h") as unique_clients,
-                values("id.resp_p") as ports,
-                count as incoming_count
-          by "id.resp_h"
-        | rename "id.resp_h" as ip
-        | where incoming_count >= 3
-        '''
+        # ---- Split time range into windows ----
+        windows = self._generate_profile_windows(time_range, window_hours=24)
+        total_windows = len(windows)
+        logger.info(f"Profiling will use {total_windows} time window(s)")
 
-        # Query 2: Client perspective — how many destinations does each IP reach?
-        client_query = '''
-        search index=zeek_conn OR index=suricata
-        | spath
-        | stats dc("id.resp_h") as unique_destinations,
-                count as outgoing_count
-          by "id.orig_h"
-        | rename "id.orig_h" as ip
-        | where outgoing_count >= 3
-        '''
+        # Accumulator for cross-window merging
+        accumulated = {
+            'server_agg': {},   # ip -> {unique_clients, incoming_count, ports}
+            'client_agg': {},   # ip -> {unique_destinations, outgoing_count}
+            'ntlm': [], 'kerberos': [], 'dhcp': [], 'snmp': [],
+            'smb': [], 'software': [], 'ssh': [], 'x509': [],
+        }
 
-        # Query 3: NTLM logs — NetBIOS hostname and domain enrichment
-        ntlm_query = '''
-        search index=zeek_ntlm
-        | spath
-        | eval vlan=coalesce(vlan, "0")
-        | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
-        | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
-        '''
+        # Progress: queries run from 35% to 70%.  Divide evenly across windows.
+        pct_query_start = 35
+        pct_query_end = 70
+        pct_per_window = (pct_query_end - pct_query_start) / max(total_windows, 1)
 
-        # Query 4: Kerberos logs — responder IPs are KDCs (Domain Controllers)
-        kerberos_query = '''
-        search index=zeek_kerberos
-        | spath
-        | stats dc("id.orig_h") as unique_clients,
-                values(service) as services,
-                count as auth_count
-          by "id.resp_h"
-        | rename "id.resp_h" as ip
-        | where auth_count >= 3
-        '''
+        for win_idx, (earliest, latest) in enumerate(windows, 1):
+            win_label = (f"Window {win_idx}/{total_windows}: {earliest} → {latest}"
+                         if total_windows > 1 else "Querying Splunk...")
+            pct = int(pct_query_start + (win_idx - 1) * pct_per_window)
+            _progress('profile',
+                      f'{win_label} — submitting 10 queries in parallel...',
+                      pct)
+            logger.info(f"Profiling window {win_idx}/{total_windows}: "
+                        f"{earliest} → {latest}")
 
-        # Query 5: DHCP logs — IP-to-MAC address mappings with timestamps
-        dhcp_query = '''
-        search index=zeek_dhcp
-        | spath
-        | where isnotnull(assigned_addr) AND isnotnull(mac)
-        | eval vlan=coalesce(vlan, "0")
-        | stats min(_time) as first_seen,
-                max(_time) as last_seen,
-                latest(host_name) as dhcp_hostname,
-                latest(host) as sensor_id
-          by assigned_addr, mac, vlan
-        | rename assigned_addr as ip
-        '''
-
-        # Query 6: SNMP logs — device OID and community string identification
-        snmp_query = '''
-        search index=zeek_snmp
-        | spath
-        | where isnotnull("id.resp_h")
-        | eval oid=coalesce("id.resp_p", "")
-        | stats latest(community) as community,
-                latest(version) as snmp_version
-          by "id.resp_h"
-        | rename "id.resp_h" as ip
-        '''
-
-        # Query 7: SMB mapping — NetBIOS names from SMB share access
-        smb_query = '''
-        search index=zeek_smb_mapping OR index=zeek_smb_files
-        | spath
-        | eval nb_name=coalesce(server_name, "")
-        | where nb_name!="" AND nb_name!="-"
-        | stats values(nb_name) as nb_names,
-                values(share_type) as share_types
-          by "id.resp_h"
-        | rename "id.resp_h" as ip
-        '''
-
-        # Query 8: Zeek software log — passively detected software/OS
-        software_query = '''
-        search index=zeek_software
-        | spath
-        | where isnotnull(host) OR isnotnull("id.orig_h")
-        | eval ip=coalesce(host, "id.orig_h")
-        | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
-        | stats values(sw) as software,
-                values(software_type) as sw_types
-          by ip
-        '''
-
-        # Query 9: SSH logs — client/server version strings
-        ssh_query = '''
-        search index=zeek_ssh
-        | spath
-        | stats latest(client) as ssh_client,
-                latest(server) as ssh_server
-          by "id.orig_h", "id.resp_h"
-        | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
-        '''
-
-        # Query 10: X.509 certificates — hostnames from cert subject CN
-        x509_query = '''
-        search index=zeek_x509
-        | spath
-        | where isnotnull("certificate.subject")
-        | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
-        | where isnotnull(cn)
-        | stats values(cn) as cert_names by host
-        | rename host as sensor_id
-        '''
-
-        _progress('profile', 'Submitting 10 Splunk queries in parallel...', 35)
-
-        # Run all queries in parallel
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            server_future = executor.submit(
-                splunk_connector.query, server_query,
-                earliest_time=time_range, latest_time="now"
+            window_results = self._run_profile_queries(
+                splunk_connector, earliest, latest,
             )
-            client_future = executor.submit(
-                splunk_connector.query, client_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            ntlm_future = executor.submit(
-                splunk_connector.query, ntlm_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            kerberos_future = executor.submit(
-                splunk_connector.query, kerberos_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            dhcp_future = executor.submit(
-                splunk_connector.query, dhcp_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            snmp_future = executor.submit(
-                splunk_connector.query, snmp_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            smb_future = executor.submit(
-                splunk_connector.query, smb_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            software_future = executor.submit(
-                splunk_connector.query, software_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            ssh_future = executor.submit(
-                splunk_connector.query, ssh_query,
-                earliest_time=time_range, latest_time="now"
-            )
-            x509_future = executor.submit(
-                splunk_connector.query, x509_query,
-                earliest_time=time_range, latest_time="now"
+            self._merge_profile_results(accumulated, window_results)
+
+            logger.info(
+                f"Window {win_idx}/{total_windows} done — "
+                f"server IPs: {len(accumulated['server_agg'])}, "
+                f"client IPs: {len(accumulated['client_agg'])}, "
+                f"NTLM rows: {len(accumulated['ntlm'])}"
             )
 
-            # Server and client queries scan all conn logs and can be very
-            # slow on large networks (18k+ nodes).  Give them up to 30 min;
-            # enrichment queries are lighter and keep the 10 min cap.
-            _HEAVY_TIMEOUT = 1800   # 30 minutes — server & client conn queries
-            _LIGHT_TIMEOUT = 600    # 10 minutes — enrichment queries
-
-            try:
-                server_results = server_future.result(timeout=_HEAVY_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Server query timed out or failed ({e}), profiling with client data only")
-                server_results = []
-            try:
-                client_results = client_future.result(timeout=_HEAVY_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Client query timed out or failed ({e}), profiling with server data only")
-                client_results = []
-            try:
-                ntlm_results = ntlm_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"NTLM enrichment query failed: {e}")
-                ntlm_results = []
-            try:
-                kerberos_results = kerberos_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Kerberos enrichment query failed: {e}")
-                kerberos_results = []
-            try:
-                dhcp_results = dhcp_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"DHCP enrichment query failed: {e}")
-                dhcp_results = []
-            try:
-                snmp_results = snmp_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"SNMP enrichment query failed: {e}")
-                snmp_results = []
-            try:
-                smb_results = smb_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"SMB enrichment query failed: {e}")
-                smb_results = []
-            try:
-                software_results = software_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"Software enrichment query failed: {e}")
-                software_results = []
-            try:
-                ssh_results = ssh_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"SSH enrichment query failed: {e}")
-                ssh_results = []
-            try:
-                x509_results = x509_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception as e:
-                logger.warning(f"X.509 enrichment query failed: {e}")
-                x509_results = []
+        # Unpack accumulated enrichment rows
+        ntlm_results = accumulated['ntlm']
+        kerberos_results = accumulated['kerberos']
+        dhcp_results = accumulated['dhcp']
+        snmp_results = accumulated['snmp']
+        smb_results = accumulated['smb']
+        software_results = accumulated['software']
+        ssh_results = accumulated['ssh']
+        x509_results = accumulated['x509']
 
         query_counts = (
-            f"{len(server_results)} server, {len(client_results)} client, "
+            f"{len(accumulated['server_agg'])} server IPs, "
+            f"{len(accumulated['client_agg'])} client IPs, "
             f"{len(ntlm_results)} NTLM, {len(kerberos_results)} Kerberos, "
             f"{len(dhcp_results)} DHCP, {len(snmp_results)} SNMP, "
             f"{len(smb_results)} SMB, {len(software_results)} software, "
             f"{len(ssh_results)} SSH, {len(x509_results)} x509"
         )
-        _progress('profile', f'Queries done: {query_counts}. Enriching nodes...', 70)
+        _progress('profile',
+                  f'All {total_windows} window(s) done: {query_counts}. '
+                  f'Enriching nodes...', 70)
 
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
         kdc_ips: set = set()
@@ -1463,8 +1552,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     ssh_enriched += 1
 
         logger.info(
-            f"Device profiling: got {len(server_results)} server profiles, "
-            f"{len(client_results)} client profiles, "
+            f"Device profiling ({total_windows} window(s)): "
+            f"{len(accumulated['server_agg'])} server IPs, "
+            f"{len(accumulated['client_agg'])} client IPs, "
             f"{len(ntlm_results)} NTLM events ({ntlm_enriched} enrichments), "
             f"{len(kerberos_results)} Kerberos responders, "
             f"{len(kdc_ips)} KDC IPs, {len(ntlm_auth_servers)} heavy NTLM auth servers, "
@@ -1477,37 +1567,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(ssh_results)} SSH sessions ({ssh_enriched} enrichments)"
         )
 
-        # Index server data by IP
-        server_data: Dict[str, Dict] = {}
-        for row in server_results:
-            ip = _sv(row.get('ip'))
-            if not ip:
-                continue
-            ports_raw = row.get('ports', [])
-            if isinstance(ports_raw, str):
-                ports_raw = [ports_raw]
-            ports = set()
-            for p in ports_raw:
-                try:
-                    ports.add(int(p))
-                except (ValueError, TypeError):
-                    pass
-            server_data[ip] = {
-                'unique_clients': int(row.get('unique_clients', 0)),
-                'ports': ports,
-                'incoming_count': int(row.get('incoming_count', 0)),
-            }
-
-        # Index client data by IP
-        client_data: Dict[str, Dict] = {}
-        for row in client_results:
-            ip = _sv(row.get('ip'))
-            if not ip:
-                continue
-            client_data[ip] = {
-                'unique_destinations': int(row.get('unique_destinations', 0)),
-                'outgoing_count': int(row.get('outgoing_count', 0)),
-            }
+        # Use pre-aggregated server/client data from windowed merge
+        server_data = accumulated['server_agg']
+        client_data = accumulated['client_agg']
 
         # Classify each node in the network map
         _progress('profile',
