@@ -136,7 +136,8 @@ if __name__ == "__main__":
         # Only watch the server entry-point and API routes — changes to
         # plugins, agents, integrations, etc. take effect on the next hunt
         # (they run in subprocesses) without requiring a server restart.
-        reload_dirs=["artemis/api"],
+        reload_dirs=["artemis/api", "artemis/plugins", "artemis/integrations"],
         reload_includes=["artemis_server.py", "artemis/ws.py",
-                         "artemis/api/*.py", "artemis/managers/*.py"],
+                         "artemis/api/*.py", "artemis/managers/*.py",
+                         "artemis/plugins/*.py", "artemis/integrations/*.py"],
     )
