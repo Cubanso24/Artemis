@@ -1254,6 +1254,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if ip:
                 kdc_ips.add(ip)
 
+        # Build IP -> [node keys] lookup for O(1) enrichment
+        ip_to_keys: Dict[str, List[str]] = defaultdict(list)
+        for key, node in self.nodes.items():
+            ip_to_keys[node.ip].append(key)
+
         # Build map of NTLM auth server IPs -> unique client count
         # Servers receiving NTLM auths from many clients are likely DCs
         ntlm_server_clients: Dict[str, set] = defaultdict(set)
@@ -1272,21 +1277,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if src_ip and dst_ip:
                 ntlm_server_clients[dst_ip].add(src_ip)
 
-            # Find matching nodes and enrich
-            for key, node in self.nodes.items():
-                if node.ip == src_ip and hostname and hostname != '-':
+            # Enrich source nodes
+            if hostname and hostname != '-':
+                for key in ip_to_keys.get(src_ip, []):
+                    node = self.nodes[key]
                     node.netbios_names.add(hostname.upper())
                     if domainname and domainname != '-':
                         node.domain = domainname.upper()
                     ntlm_enriched += 1
-                if node.ip == dst_ip:
-                    if server_nb and server_nb != '-':
-                        node.netbios_names.add(server_nb.upper())
-                    if server_dns and server_dns != '-':
-                        node.hostnames.add(server_dns.lower())
-                    if domainname and domainname != '-':
-                        node.domain = domainname.upper()
-                    ntlm_enriched += 1
+
+            # Enrich destination nodes
+            for key in ip_to_keys.get(dst_ip, []):
+                node = self.nodes[key]
+                if server_nb and server_nb != '-':
+                    node.netbios_names.add(server_nb.upper())
+                if server_dns and server_dns != '-':
+                    node.hostnames.add(server_dns.lower())
+                if domainname and domainname != '-':
+                    node.domain = domainname.upper()
+                ntlm_enriched += 1
 
         # IPs that are heavy NTLM auth servers (5+ unique clients)
         ntlm_auth_servers = {
@@ -1326,22 +1335,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 )
             mac_bindings_recorded += 1
 
-            for key, node in self.nodes.items():
-                if node.ip == ip:
-                    node.mac_address = mac
-                    node.vendor = self._lookup_oui(mac)
-                    virt = self._detect_virtual(mac)
-                    if virt:
-                        node.is_virtual = True
-                        node.virtual_platform = virt
-                    if hn:
-                        node.hostnames.add(hn)
-                    dhcp_enriched += 1
-
-        # Build IP -> [node keys] lookup for fast enrichment
-        ip_to_keys: Dict[str, List[str]] = defaultdict(list)
-        for key, node in self.nodes.items():
-            ip_to_keys[node.ip].append(key)
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.mac_address = mac
+                node.vendor = self._lookup_oui(mac)
+                virt = self._detect_virtual(mac)
+                if virt:
+                    node.is_virtual = True
+                    node.virtual_platform = virt
+                if hn:
+                    node.hostnames.add(hn)
+                dhcp_enriched += 1
 
         # Enrich nodes with SNMP data (device model from OID, community string)
         snmp_enriched = 0

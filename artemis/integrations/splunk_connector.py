@@ -219,6 +219,8 @@ class SplunkConnector:
         batch_size = 2_000_000
         offset = 0
         next_log_at = max(total_results // 10, 500_000)  # log at ~10% intervals, min 500k
+        empty_retries = 0
+        max_empty_retries = 3
 
         while offset < total_results:
             results_stream = job.results(
@@ -243,8 +245,28 @@ class SplunkConnector:
                     continue
 
             if not batch:
+                empty_retries += 1
+                if empty_retries <= max_empty_retries:
+                    self.logger.warning(
+                        f"  Job {job.sid}: empty batch at offset {offset:,} / "
+                        f"{total_results:,} (retry {empty_retries}/{max_empty_retries})"
+                    )
+                    time.sleep(2 ** empty_retries)  # exponential backoff: 2s, 4s, 8s
+                    # Refresh job metadata in case result set shifted
+                    try:
+                        job.refresh()
+                        job.set_ttl(3600)
+                    except Exception:
+                        pass
+                    continue
+                self.logger.warning(
+                    f"  Job {job.sid}: result fetch stalled at {len(events):,} / "
+                    f"{total_results:,} after {max_empty_retries} retries — "
+                    f"returning partial results"
+                )
                 break
 
+            empty_retries = 0  # reset on successful batch
             events.extend(batch)
             offset += len(batch)
             if len(events) >= next_log_at and offset < total_results:
@@ -255,7 +277,13 @@ class SplunkConnector:
                 next_log_at = len(events) + max(total_results // 10, 500_000)
 
         elapsed = time.time() - start_time
-        self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
+        if len(events) < total_results:
+            self.logger.warning(
+                f"Retrieved {len(events):,} of {total_results:,} expected results "
+                f"from Splunk in {elapsed:.1f}s (incomplete)"
+            )
+        else:
+            self.logger.info(f"Retrieved {len(events):,} total events from Splunk in {elapsed:.1f}s")
 
         # Clean up the job
         try:
