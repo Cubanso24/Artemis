@@ -980,7 +980,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         }
         return tiers.get(device_type, 3)
 
-    def profile_devices(self, splunk_connector, time_range: str = "-24h") -> Dict:
+    def profile_devices(self, splunk_connector, time_range: str = "-24h",
+                         progress_callback=None) -> Dict:
         """
         Profile network devices by querying Splunk zeek:conn logs.
 
@@ -993,6 +994,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         Args:
             splunk_connector: SplunkConnector instance
             time_range: Splunk time range to analyze (default -24h)
+            progress_callback: Optional callable(stage, message, pct) for
+                progress reporting back to the caller.
 
         Returns:
             Dict with profiling results summary
@@ -1006,7 +1009,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 return str(val[0]) if val else default
             return str(val) if val is not None else default
 
+        def _progress(stage, message, pct):
+            if progress_callback:
+                try:
+                    progress_callback(stage, message, pct)
+                except Exception:
+                    pass
+
         logger.info(f"Starting device profiling with time_range={time_range}")
+
+        internal_count = sum(1 for n in self.nodes.values() if n.is_internal)
+        _progress('profile', f'Network map loaded: {len(self.nodes)} nodes ({internal_count} internal)', 30)
 
         # Query 1: Server perspective — what ports does each IP serve?
         server_query = '''
@@ -1123,6 +1136,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         | rename host as sensor_id
         '''
 
+        _progress('profile', 'Submitting 10 Splunk queries in parallel...', 35)
+
         # Run all queries in parallel
         with ThreadPoolExecutor(max_workers=10) as executor:
             server_future = executor.submit(
@@ -1222,6 +1237,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
             except Exception as e:
                 logger.warning(f"X.509 enrichment query failed: {e}")
                 x509_results = []
+
+        query_counts = (
+            f"{len(server_results)} server, {len(client_results)} client, "
+            f"{len(ntlm_results)} NTLM, {len(kerberos_results)} Kerberos, "
+            f"{len(dhcp_results)} DHCP, {len(snmp_results)} SNMP, "
+            f"{len(smb_results)} SMB, {len(software_results)} software, "
+            f"{len(ssh_results)} SSH, {len(x509_results)} x509"
+        )
+        _progress('profile', f'Queries done: {query_counts}. Enriching nodes...', 70)
 
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)
         kdc_ips: set = set()
@@ -1482,6 +1506,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             }
 
         # Classify each node in the network map
+        _progress('profile',
+                  f'Classifying {internal_count} internal devices '
+                  f'({len(server_data)} server profiles, {len(client_data)} client profiles)...',
+                  85)
         classified = 0
         type_counts: Dict[str, int] = defaultdict(int)
         dc_ports = {88, 389, 636, 3268, 135, 464}  # Kerberos, LDAP, LDAPS, GC, RPC, Kpasswd

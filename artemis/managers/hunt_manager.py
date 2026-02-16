@@ -333,16 +333,40 @@ def _profile_worker_process(profile_id, time_range, db_path):
         pipeline = DataPipeline(cfg)
         splunk = pipeline.splunk
 
-        send('collect', 'Running Splunk queries (conn, NTLM, Kerberos, DHCP, SNMP, SMB, SSH, software)...', 15)
+        send('collect', 'Loading network map from disk...', 15)
 
         # Load the network mapper plugin (reads existing map from disk)
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
-        send('collect', 'Querying Splunk — this may take a minute...', 25)
+        internal_count = sum(1 for n in nm.nodes.values() if n.is_internal)
+        if not nm.nodes:
+            send('error',
+                 'No network map found. Run a hunt first to build the '
+                 'network graph, then profile devices.', 0,
+                 {'error_detail': 'NetworkMapperPlugin loaded 0 nodes from '
+                  'network_maps/current_map.json. A hunt must run first to '
+                  'populate the network map.'})
+            return
+        if internal_count == 0:
+            send('error',
+                 f'Network map has {len(nm.nodes)} nodes but none are '
+                 f'internal. Nothing to profile.', 0,
+                 {'error_detail': f'{len(nm.nodes)} total nodes loaded but '
+                  '0 are marked as internal.'})
+            return
+
+        send('collect',
+             f'Network map: {len(nm.nodes)} nodes ({internal_count} internal). '
+             f'Running 10 Splunk queries...', 25)
+
+        # Forward profile_devices progress to the UI
+        def on_profile_progress(stage, message, pct):
+            send(stage, message, pct)
 
         # Run the actual profiling (blocking — all queries + classification)
-        result = nm.profile_devices(splunk, time_range=time_range)
+        result = nm.profile_devices(splunk, time_range=time_range,
+                                    progress_callback=on_profile_progress)
 
         send('complete',
              f"Profiled {result.get('classified', 0)} / {result.get('total_internal', 0)} devices. "
