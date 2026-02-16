@@ -541,6 +541,75 @@ class HuntManager:
             for idx, p in enumerate(self._queue, 1)
         ]
 
+    async def cancel_hunt(self, hunt_id: str) -> dict:
+        """Cancel a running hunt or profile by killing its subprocess.
+
+        Returns a status dict with 'cancelled' or 'error' status.
+        """
+        # Check if it's a queued hunt first
+        if self.remove_from_queue(hunt_id):
+            return {'status': 'cancelled', 'hunt_id': hunt_id, 'was': 'queued'}
+
+        pid = self._monitored_hunts.get(hunt_id)
+        if not pid:
+            return {'status': 'error', 'message': f'{hunt_id} is not running'}
+
+        if not _pid_alive(pid):
+            # Already dead — clean up state
+            self._monitored_hunts.pop(hunt_id, None)
+            if hunt_id in self.active_hunts:
+                self.active_hunts[hunt_id]['status'] = 'cancelled'
+            self.db.clear_progress(hunt_id)
+            return {'status': 'cancelled', 'hunt_id': hunt_id, 'was': 'dead'}
+
+        # Send SIGTERM for graceful shutdown, then SIGKILL if needed
+        logger.info(f"Cancelling {hunt_id} (pid {pid}) — sending SIGTERM")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            logger.warning(f"SIGTERM failed for pid {pid}: {e}")
+
+        # Give it a moment to die
+        import asyncio
+        for _ in range(10):  # 2 seconds total
+            await asyncio.sleep(0.2)
+            if not _pid_alive(pid):
+                break
+        else:
+            # Still alive — force kill
+            logger.warning(f"{hunt_id} (pid {pid}) didn't respond to SIGTERM, sending SIGKILL")
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError as e:
+                logger.warning(f"SIGKILL failed for pid {pid}: {e}")
+
+        # Clean up tracking state
+        self._monitored_hunts.pop(hunt_id, None)
+        if hunt_id in self.active_hunts:
+            self.active_hunts[hunt_id]['status'] = 'cancelled'
+        self.db.clear_progress(hunt_id)
+
+        # Clear profile tracking if this was the active profile
+        if hunt_id == self._profile_id:
+            self._profile_pid = None
+
+        # Drain queue since a slot just opened
+        await self._drain_queue()
+
+        # Broadcast the cancellation to WS clients
+        if self._broadcast_fn:
+            is_profile = hunt_id.startswith('profile_')
+            await self._broadcast_fn({
+                'type': 'profile_progress' if is_profile else 'hunt_progress',
+                'hunt_id': hunt_id,
+                'stage': 'cancelled',
+                'message': f'{"Profiling" if is_profile else "Hunt"} was cancelled.',
+                'progress': 0,
+            })
+
+        logger.info(f"Cancelled {hunt_id} (pid {pid})")
+        return {'status': 'cancelled', 'hunt_id': hunt_id}
+
     def remove_from_queue(self, hunt_id: str) -> bool:
         """Remove a queued hunt by ID.  Returns True if found."""
         for i, p in enumerate(self._queue):

@@ -235,6 +235,20 @@ async def profile_status():
     return hunt_manager.get_profile_status()
 
 
+@router.post("/api/network-graph/profile/cancel")
+async def cancel_profile():
+    """Cancel a running device profiling job."""
+    profile_id = hunt_manager._profile_id
+    if not profile_id:
+        return JSONResponse(status_code=404,
+                            content={'error': 'No profiling job is running'})
+    result = await hunt_manager.cancel_hunt(profile_id)
+    if result.get('status') == 'error':
+        return JSONResponse(status_code=404, content=result)
+    logger.info(f"Profile {profile_id} cancelled via API")
+    return result
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")

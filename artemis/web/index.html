@@ -1237,7 +1237,12 @@
                 <div id="profile-progress" style="display:none; margin-top:8px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                         <span id="profile-progress-label" style="font-size:13px; font-weight:600;">Profiling devices...</span>
-                        <span id="profile-progress-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="profile-progress-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
+                            <button id="profile-cancel-btn" onclick="cancelRunningProfile()"
+                                    style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;"
+                                    title="Cancel profiling">Cancel</button>
+                        </div>
                     </div>
                     <div class="progress-bar">
                         <div id="profile-progress-fill" class="progress-fill" style="transition:width .3s;"></div>
@@ -2837,6 +2842,7 @@
                 showProfileProgress(data.message, 100);
                 document.getElementById('profile-progress-label').textContent = 'Profiling Complete!';
                 document.getElementById('profile-progress-fill').style.background = '#43a047';
+                document.getElementById('profile-cancel-btn').style.display = 'none';
 
                 // Show result summary in status div
                 const result = data.result || {};
@@ -2864,10 +2870,25 @@
                     loadNetworkSummary();
                 }, 2500);
 
+            } else if (data.stage === 'cancelled') {
+                showProfileProgress(data.message, 0);
+                document.getElementById('profile-progress-label').textContent = 'Profiling Cancelled';
+                document.getElementById('profile-progress-fill').style.background = '#FF9800';
+                document.getElementById('profile-progress-fill').style.width = '100%';
+                document.getElementById('profile-cancel-btn').style.display = 'none';
+                addLog('Device profiling cancelled', 'warning');
+                btn.disabled = false;
+                btn.textContent = 'Profile Devices';
+                setTimeout(() => {
+                    hideProfileProgress();
+                    document.getElementById('profile-progress-fill').style.background = '';
+                }, 3000);
+
             } else if (data.stage === 'error') {
                 showProfileProgress(data.message, 0);
                 document.getElementById('profile-progress-label').textContent = 'Profiling Failed';
                 document.getElementById('profile-progress-fill').style.background = '#e53935';
+                document.getElementById('profile-cancel-btn').style.display = 'none';
                 addLog(`Device profiling failed: ${data.message}`, 'error');
                 btn.disabled = false;
                 btn.textContent = 'Profile Devices';
@@ -2880,6 +2901,7 @@
                 // In progress
                 showProfileProgress(data.message, data.progress);
                 document.getElementById('profile-progress-label').textContent = 'Profiling Devices...';
+                document.getElementById('profile-cancel-btn').style.display = '';
                 btn.disabled = true;
                 btn.textContent = 'Profiling...';
             }
@@ -3021,6 +3043,9 @@
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span class="hp-id" style="font-size:11px; opacity:0.5; font-family:monospace;">${huntId}</span>
                         <span class="hp-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
+                        <button class="hp-cancel-btn" onclick="cancelRunningHunt('${huntId}')"
+                                style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;"
+                                title="Cancel this hunt">Cancel</button>
                     </div>
                 </div>
                 <div class="progress-bar">
@@ -3100,6 +3125,36 @@
                 addLog(`Cancelled queued hunt: ${huntId}`, 'info');
             } catch(e) {
                 addLog(`Error cancelling: ${e.message}`, 'error');
+            }
+        }
+
+        async function cancelRunningHunt(huntId) {
+            if (!confirm('Cancel this hunt? The subprocess will be terminated.')) return;
+            try {
+                const resp = await fetch('/api/hunts/' + huntId + '/cancel', { method: 'POST' });
+                const result = await resp.json();
+                if (result.status === 'cancelled') {
+                    addLog(`Cancelled hunt: ${huntId}`, 'warning');
+                } else {
+                    addLog(`Cancel failed: ${result.message || 'unknown error'}`, 'error');
+                }
+            } catch(e) {
+                addLog(`Error cancelling hunt: ${e.message}`, 'error');
+            }
+        }
+
+        async function cancelRunningProfile() {
+            if (!confirm('Cancel device profiling? The subprocess will be terminated.')) return;
+            try {
+                const resp = await fetch('/api/network-graph/profile/cancel', { method: 'POST' });
+                const result = await resp.json();
+                if (result.status === 'cancelled') {
+                    addLog('Cancelled device profiling', 'warning');
+                } else {
+                    addLog(`Cancel failed: ${result.message || 'unknown error'}`, 'error');
+                }
+            } catch(e) {
+                addLog(`Error cancelling profile: ${e.message}`, 'error');
             }
         }
 
@@ -3200,6 +3255,12 @@
                 }
             }
 
+            // Hide cancel button on terminal states
+            if (['complete', 'error', 'cancelled'].includes(data.stage)) {
+                const cancelBtn = panel.querySelector('.hp-cancel-btn');
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            }
+
             // Terminal states — remove panel after a delay
             if (data.stage === 'complete') {
                 title.textContent = 'Hunt Complete!';
@@ -3220,6 +3281,19 @@
                         _fullGraphData = null;
                     }
                 }, 2500);
+            } else if (data.stage === 'cancelled') {
+                title.textContent = 'Hunt Cancelled';
+                fill.style.background = '#FF9800';
+                fill.style.width = '100%';
+                pct.textContent = '';
+                delete trackedHunts[huntId];
+                saveTrackedHunts();
+                setTimeout(() => {
+                    removeHuntPanel(huntId);
+                    loadRecentHunts();
+                    loadStats();
+                    refreshQueueDisplay();
+                }, 3000);
             } else if (data.stage === 'error') {
                 delete trackedHunts[huntId];
                 saveTrackedHunts();

@@ -98,6 +98,16 @@ async def remove_from_queue(hunt_id: str):
     return {'status': 'removed', 'hunt_id': hunt_id}
 
 
+@router.post("/api/hunts/{hunt_id}/cancel")
+async def cancel_hunt(hunt_id: str):
+    """Cancel a running or queued hunt."""
+    result = await hunt_manager.cancel_hunt(hunt_id)
+    if result.get('status') == 'error':
+        return JSONResponse(status_code=404, content=result)
+    logger.info(f"Hunt {hunt_id} cancelled via API")
+    return result
+
+
 @router.get("/api/hunts/{hunt_id}")
 async def get_hunt(hunt_id: str):
     """Get hunt details."""
