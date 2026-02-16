@@ -1224,7 +1224,7 @@
                     <button class="btn" onclick="searchGraphNode()">Find</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
-                    <button class="btn btn-secondary" onclick="saveMapSnapshot()">Save Map</button>
+                    <button class="btn btn-secondary" onclick="downloadGraphJSON()">Download JSON</button>
                     <button class="btn" onclick="profileDevices()" id="profile-btn">Profile Devices</button>
                     <select id="profile-time-range" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary);">
                         <option value="-1h">Last 1h</option>
@@ -2665,6 +2665,20 @@
                     addLog('Exported network graph as PNG', 'info');
                 }
             }
+        }
+
+        function downloadGraphJSON() {
+            if (!_fullGraphData) {
+                addLog('No network graph data loaded yet', 'warning');
+                return;
+            }
+            const blob = new Blob([JSON.stringify(_fullGraphData, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.download = `network-graph-${new Date().toISOString().slice(0,10)}.json`;
+            link.href = URL.createObjectURL(blob);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            addLog('Downloaded network graph as JSON', 'info');
         }
 
         function searchGraphNode() {
