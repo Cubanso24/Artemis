@@ -2381,7 +2381,7 @@
                             <div style="font-size:11px; opacity:0.7;">Virtual Machines</div>
                         </div>` : ''}
                         ${((summary.mac_tracking || {}).multi_ip_count || 0) > 0 ? `
-                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #FF9800;">
+                        <div onclick="scrollToMultiIpDetails()" style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #FF9800; cursor:pointer;" title="Click to view multi-IP devices">
                             <div style="font-size:20px; font-weight:700; color:#FF9800;">${summary.mac_tracking.multi_ip_count}</div>
                             <div style="font-size:11px; opacity:0.7;">Multi-IP Devices</div>
                         </div>` : ''}
@@ -2500,7 +2500,7 @@
 
                 // Show multi-IP devices first (most interesting for threat hunting)
                 if (data.multi_ip_devices && data.multi_ip_devices.length > 0) {
-                    html += `<details open style="margin-bottom:10px; background:var(--bg-tertiary); border-radius:5px; border-left:3px solid #FF9800;">
+                    html += `<details id="multi-ip-details" open style="margin-bottom:10px; background:var(--bg-tertiary); border-radius:5px; border-left:3px solid #FF9800;">
                         <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
                             <span><i class="fa-solid fa-shuffle"></i> Devices with Multiple IPs</span>
                             <span style="background:#FF9800; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${data.multi_ip_count}</span>
@@ -2569,6 +2569,14 @@
                 body.innerHTML = html;
             } catch (err) {
                 body.innerHTML = `<p style="color:#f44336; font-size:13px;">Error: ${escapeHtml(err.message)}</p>`;
+            }
+        }
+
+        function scrollToMultiIpDetails() {
+            const el = document.getElementById('multi-ip-details');
+            if (el) {
+                el.open = true;
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }
 

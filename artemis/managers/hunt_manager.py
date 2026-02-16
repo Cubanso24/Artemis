@@ -477,6 +477,7 @@ class HuntManager:
             await self._launch_hunt(params)
         else:
             self._queue.append(params)
+            self.db.save_queue(self._queue)
             self.active_hunts[hunt_id] = {
                 'status': 'queued',
                 'progress': 0,
@@ -542,6 +543,7 @@ class HuntManager:
                 f'({len(self._queue)} still queued)'
             )
             await self._launch_hunt(params)
+        self.db.save_queue(self._queue)
         # Update queue positions for remaining entries
         for idx, params in enumerate(self._queue, 1):
             hid = params['hunt_id']
@@ -645,6 +647,7 @@ class HuntManager:
                     hid = pp['hunt_id']
                     if hid in self.active_hunts:
                         self.active_hunts[hid]['queue_position'] = idx
+                self.db.save_queue(self._queue)
                 logger.info(f'Removed {hunt_id} from queue')
                 return True
         return False
@@ -844,6 +847,22 @@ class HuntManager:
         if reconnected:
             logger.info(f'Reconnected to {reconnected} running hunt(s)')
             self._ensure_poll_task()
+
+        # Restore persisted queue
+        saved_queue = self.db.load_queue()
+        if saved_queue:
+            self._queue = saved_queue
+            for idx, params in enumerate(saved_queue, 1):
+                hid = params['hunt_id']
+                self.active_hunts[hid] = {
+                    'status': 'queued',
+                    'progress': 0,
+                    'start_time': None,
+                    'collection_stats': {},
+                    'last_progress': None,
+                    'queue_position': idx,
+                }
+            logger.info(f'Restored {len(saved_queue)} queued hunt(s) from database')
 
     # ------------------------------------------------------------------
     # Continuous hunting

@@ -90,8 +90,49 @@ class DatabaseManager:
             )
         """)
 
+        # Queued hunts — survives server restarts.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hunt_queue (
+                position INTEGER PRIMARY KEY,
+                hunt_id TEXT UNIQUE,
+                params TEXT,
+                queued_at TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Queue persistence
+    # ------------------------------------------------------------------
+
+    def save_queue(self, queue: list):
+        """Persist the full queue (list of param dicts) to the database."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM hunt_queue")
+            for idx, params in enumerate(queue):
+                conn.execute(
+                    "INSERT INTO hunt_queue (position, hunt_id, params, queued_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (idx, params['hunt_id'], json.dumps(params),
+                     datetime.now().isoformat()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load_queue(self) -> list:
+        """Load persisted queue entries (ordered by position)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT params FROM hunt_queue ORDER BY position"
+            ).fetchall()
+            return [json.loads(r[0]) for r in rows]
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Hunt progress (written by subprocess, polled by server)
