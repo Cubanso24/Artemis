@@ -8,10 +8,13 @@ data-type's worth of events needs to be in memory at a time.
 """
 
 import json
+import logging
 import os
 import sqlite3
 import tempfile
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+logger = logging.getLogger("artemis.integrations.event_store")
 
 
 class SqliteEventStore:
@@ -120,8 +123,8 @@ class SqliteEventStore:
     def close(self):
         try:
             self._conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to close event store DB at {self._path}: {e}")
         if self._delete_on_close:
             try:
                 os.unlink(self._path)

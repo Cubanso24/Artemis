@@ -17,10 +17,16 @@ active_connections: List[WebSocket] = []
 
 async def broadcast_progress(data: dict):
     """Broadcast a progress dict to all connected WebSocket clients."""
+    dead: list = []
     for connection in active_connections:
         try:
             await connection.send_json(data)
         except Exception:
+            dead.append(connection)
+    for connection in dead:
+        try:
+            active_connections.remove(connection)
+        except ValueError:
             pass
 
 
@@ -51,7 +57,7 @@ class WebSocketLogHandler(logging.Handler):
             except RuntimeError:
                 pass  # No event loop — skip (e.g. from worker thread)
         except Exception:
-            pass
+            self.handleError(record)
 
 
 def install_log_handler():

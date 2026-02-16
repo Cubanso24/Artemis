@@ -69,7 +69,8 @@ async def list_network_maps():
                             'size_bytes': f.stat().st_size,
                             'is_current': f.name == 'current_map.json',
                         })
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to parse network map header from {f.name}: {e}")
                 maps.append({
                     'filename': f.name,
                     'timestamp': '',
@@ -306,8 +307,8 @@ async def get_sigma_results():
         try:
             with open(results_file) as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read Sigma results file {results_file}: {e}")
     return {'error': 'Sigma engine plugin not enabled'}
 
 

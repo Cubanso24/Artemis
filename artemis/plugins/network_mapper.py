@@ -1184,35 +1184,43 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 client_results = []
             try:
                 ntlm_results = ntlm_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
-                ntlm_results = []  # NTLM index may not exist
+            except Exception as e:
+                logger.warning(f"NTLM enrichment query failed: {e}")
+                ntlm_results = []
             try:
                 kerberos_results = kerberos_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
-                kerberos_results = []  # Kerberos index may not exist
+            except Exception as e:
+                logger.warning(f"Kerberos enrichment query failed: {e}")
+                kerberos_results = []
             try:
                 dhcp_results = dhcp_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
-                dhcp_results = []  # DHCP index may not exist
+            except Exception as e:
+                logger.warning(f"DHCP enrichment query failed: {e}")
+                dhcp_results = []
             try:
                 snmp_results = snmp_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"SNMP enrichment query failed: {e}")
                 snmp_results = []
             try:
                 smb_results = smb_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"SMB enrichment query failed: {e}")
                 smb_results = []
             try:
                 software_results = software_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Software enrichment query failed: {e}")
                 software_results = []
             try:
                 ssh_results = ssh_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"SSH enrichment query failed: {e}")
                 ssh_results = []
             try:
                 x509_results = x509_future.result(timeout=_LIGHT_TIMEOUT)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"X.509 enrichment query failed: {e}")
                 x509_results = []
 
         # Build set of KDC IPs from Kerberos logs (these ARE domain controllers)

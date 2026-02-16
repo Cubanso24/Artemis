@@ -61,8 +61,9 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
     def send(stage, message, progress, extra=None):
         try:
             db.write_progress(hunt_id, pid, stage, message, progress, extra)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Hunt {hunt_id}: failed to write progress "
+                        f"(stage={stage}, progress={progress}): {e}")
 
     try:
         hunt_start = datetime.now()
@@ -311,8 +312,9 @@ def _profile_worker_process(profile_id, time_range, db_path):
     def send(stage, message, progress, extra=None):
         try:
             db.write_progress(profile_id, pid, stage, message, progress, extra)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Profile {profile_id}: failed to write progress "
+                        f"(stage={stage}, progress={progress}): {e}")
 
     try:
         send('init', 'Initializing profiler...', 5)

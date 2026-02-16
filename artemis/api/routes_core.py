@@ -1,10 +1,13 @@
 """Core routes: health, static files, WebSocket."""
 
+import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from artemis.managers import hunt_manager, plugin_manager
 from artemis.ws import active_connections
+
+logger = logging.getLogger("artemis.api.routes_core")
 
 router = APIRouter()
 
@@ -39,8 +42,8 @@ async def websocket_endpoint(websocket: WebSocket):
         for hunt_id, state in hunt_manager.active_hunts.items():
             if state.get('status') == 'running' and state.get('last_progress'):
                 await websocket.send_json(state['last_progress'])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to send hunt state on WS reconnect: {e}")
 
     try:
         while True:

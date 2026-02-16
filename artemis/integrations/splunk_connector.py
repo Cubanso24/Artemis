@@ -187,22 +187,22 @@ class SplunkConnector:
                         f"results={result_count:,} | {elapsed:.0f}s elapsed"
                     )
                     last_progress = progress
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"Could not read job progress for {job.sid}: {e}")
 
             # Refresh TTL periodically to prevent mid-run expiration
             if time.time() - last_ttl_refresh > ttl_refresh_interval:
                 try:
                     job.set_ttl(3600)
                     last_ttl_refresh = time.time()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Could not refresh TTL for {job.sid}: {e}")
 
         # Final TTL extension so results stick around for reading
         try:
             job.set_ttl(3600)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Could not set final TTL for {job.sid}: {e}")
 
         # Read result count
         job.refresh()
@@ -260,8 +260,8 @@ class SplunkConnector:
         # Clean up the job
         try:
             job.cancel()
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Could not cancel job {job.sid}: {e}")
 
         return events
 
