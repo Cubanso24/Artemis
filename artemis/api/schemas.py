@@ -63,3 +63,24 @@ class DeviceFlagRequest(BaseModel):
     node_id: str
     flag_type: str   # 'malicious' or 'suspicious'
     reason: str = ''
+
+
+class ThreatIntelConfigRequest(BaseModel):
+    """Configure threat intel API keys."""
+    abuseipdb_key: Optional[str] = None
+    virustotal_key: Optional[str] = None
+    otx_key: Optional[str] = None
+    greynoise_key: Optional[str] = None
+
+
+class ThreatIntelLookupRequest(BaseModel):
+    """Request to enrich an indicator."""
+    indicator: str
+    indicator_type: str = "ip"    # "ip" or "domain"
+    sources: Optional[list] = None
+
+
+class ThreatIntelBatchRequest(BaseModel):
+    """Batch enrichment request."""
+    indicators: list
+    indicator_type: str = "ip"

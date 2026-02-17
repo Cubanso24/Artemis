@@ -1,20 +1,26 @@
 """Plugin, network-graph, and Sigma rule routes."""
 
+import csv
+import io
 import json
 import logging
 import shutil
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.responses import Response
 
 from artemis.api.schemas import (
     PluginConfig, ProfileRequest, LanGroupCreate, LanGroupUpdate,
-    DeviceFlagRequest,
+    DeviceFlagRequest, ThreatIntelConfigRequest, ThreatIntelLookupRequest,
+    ThreatIntelBatchRequest,
 )
 from artemis.managers import db_manager, hunt_manager, plugin_manager
+from artemis.integrations.threat_intel import threat_intel_manager
 
 logger = logging.getLogger("artemis.api.plugins")
 
@@ -409,3 +415,178 @@ async def reload_sigma_rules():
         return {'error': 'Sigma engine plugin not enabled'}
     plugin.reload_rules()
     return {'status': 'reloaded', 'rules_count': len(plugin.rules)}
+
+
+# --- Threat Intelligence --------------------------------------------------
+
+@router.get("/api/threat-intel/status")
+async def threat_intel_status():
+    """Get threat intel source configuration status."""
+    return threat_intel_manager.get_config_status()
+
+
+@router.post("/api/threat-intel/configure")
+async def configure_threat_intel(req: ThreatIntelConfigRequest):
+    """Configure threat intel API keys."""
+    settings = {}
+    if req.abuseipdb_key is not None:
+        settings["abuseipdb_key"] = req.abuseipdb_key
+    if req.virustotal_key is not None:
+        settings["virustotal_key"] = req.virustotal_key
+    if req.otx_key is not None:
+        settings["otx_key"] = req.otx_key
+    if req.greynoise_key is not None:
+        settings["greynoise_key"] = req.greynoise_key
+    threat_intel_manager.configure(settings)
+    return {"status": "configured", "sources": threat_intel_manager.get_config_status()}
+
+
+@router.post("/api/threat-intel/lookup")
+def threat_intel_lookup(req: ThreatIntelLookupRequest):
+    """Enrich a single indicator (IP or domain). Sync so rate-limiting blocks properly."""
+    if req.indicator_type == "ip":
+        return threat_intel_manager.enrich_ip(req.indicator, req.sources)
+    elif req.indicator_type == "domain":
+        return threat_intel_manager.enrich_domain(req.indicator, req.sources)
+    return JSONResponse(status_code=400,
+                        content={"error": "indicator_type must be 'ip' or 'domain'"})
+
+
+@router.post("/api/threat-intel/batch")
+def threat_intel_batch(req: ThreatIntelBatchRequest):
+    """Enrich a batch of indicators."""
+    results = threat_intel_manager.enrich_batch(
+        req.indicators, req.indicator_type)
+    return {"results": results, "count": len(results)}
+
+
+# --- Export / Reporting ---------------------------------------------------
+
+@router.get("/api/hunts/{hunt_id}/export/{fmt}")
+async def export_hunt(hunt_id: str, fmt: str):
+    """Export hunt results in various formats: json, csv, html."""
+    hunt = db_manager.get_hunt_details(hunt_id)
+    if not hunt:
+        return JSONResponse(status_code=404, content={"error": "Hunt not found"})
+
+    if fmt == "json":
+        return JSONResponse(
+            content=hunt,
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="artemis_{hunt_id}.json"'
+            },
+        )
+
+    elif fmt == "csv":
+        import csv
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "Title", "Severity", "Confidence", "Agent",
+            "MITRE Tactics", "MITRE Techniques",
+            "Affected Assets", "Description", "Timestamp",
+        ])
+        for f in hunt.get("findings", []):
+            writer.writerow([
+                f.get("title", ""),
+                f.get("severity", ""),
+                f.get("confidence", ""),
+                f.get("agent_name", ""),
+                "; ".join(f.get("mitre_tactics", [])),
+                "; ".join(f.get("mitre_techniques", [])),
+                "; ".join(f.get("affected_assets", [])),
+                f.get("description", ""),
+                f.get("timestamp", ""),
+            ])
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="artemis_{hunt_id}.csv"'
+            },
+        )
+
+    elif fmt == "html":
+        from artemis.utils.report_generator import generate_html_report
+        html = generate_html_report(hunt)
+        return HTMLResponse(
+            content=html,
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="artemis_report_{hunt_id}.html"'
+            },
+        )
+
+    return JSONResponse(status_code=400,
+                        content={"error": "Format must be json, csv, or html"})
+
+
+# --- Timeline data --------------------------------------------------------
+
+@router.get("/api/hunts/{hunt_id}/timeline")
+async def get_hunt_timeline(hunt_id: str):
+    """Get findings formatted for timeline visualization."""
+    hunt = db_manager.get_hunt_details(hunt_id)
+    if not hunt:
+        return JSONResponse(status_code=404, content={"error": "Hunt not found"})
+
+    events = []
+    for f in hunt.get("findings", []):
+        events.append({
+            "title": f.get("title", "Untitled"),
+            "description": f.get("description", ""),
+            "severity": f.get("severity", "low"),
+            "confidence": f.get("confidence", 0),
+            "agent": f.get("agent_name", ""),
+            "timestamp": f.get("timestamp", ""),
+            "mitre_tactics": f.get("mitre_tactics", []),
+            "mitre_techniques": f.get("mitre_techniques", []),
+            "affected_assets": f.get("affected_assets", []),
+        })
+
+    # Sort by timestamp
+    events.sort(key=lambda e: e.get("timestamp") or "")
+
+    return {
+        "hunt_id": hunt_id,
+        "hunt_start": hunt.get("start_time"),
+        "hunt_end": hunt.get("end_time"),
+        "events": events,
+    }
+
+
+@router.get("/api/timeline/all")
+async def get_all_timelines(limit: int = 200):
+    """Get recent findings across all hunts for a global timeline."""
+    conn = sqlite3.connect(db_manager.db_path)
+    try:
+        rows = conn.execute("""
+            SELECT f.hunt_id, f.agent_name, f.title, f.description,
+                   f.severity, f.confidence, f.mitre_tactics,
+                   f.mitre_techniques, f.affected_assets, f.timestamp
+            FROM findings f
+            ORDER BY f.timestamp DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        events = []
+        for r in rows:
+            events.append({
+                "hunt_id": r[0],
+                "agent": r[1],
+                "title": r[2],
+                "description": r[3],
+                "severity": r[4],
+                "confidence": r[5],
+                "mitre_tactics": json.loads(r[6]) if r[6] else [],
+                "mitre_techniques": json.loads(r[7]) if r[7] else [],
+                "affected_assets": json.loads(r[8]) if r[8] else [],
+                "timestamp": r[9],
+            })
+
+        return {"events": events, "total": len(events)}
+    finally:
+        conn.close()

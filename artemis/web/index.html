@@ -1136,6 +1136,8 @@
             <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
             <button class="tab" onclick="showTab('network-graph-tab')">Network Graph</button>
             <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
+            <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
+            <button class="tab" onclick="showTab('timeline-tab')">Timeline</button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
@@ -1440,6 +1442,95 @@
         </div>
 
         <!-- Logs Tab -->
+        <!-- Threat Intel Tab -->
+        <div id="threat-intel-tab" class="tab-content">
+            <div class="card">
+                <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
+                <p style="color:var(--text-secondary); margin-bottom:16px;">
+                    Look up IPs and domains against free threat intel sources. Configure API keys below for richer results.
+                </p>
+
+                <!-- Lookup form -->
+                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Indicator</label>
+                        <input type="text" id="ti-indicator" placeholder="8.8.8.8 or example.com"
+                            style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); width:280px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Type</label>
+                        <select id="ti-type" style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="ip">IP Address</option>
+                            <option value="domain">Domain</option>
+                        </select>
+                    </div>
+                    <button class="btn" onclick="lookupThreatIntel()">
+                        <i class="fa-solid fa-magnifying-glass"></i> Lookup
+                    </button>
+                </div>
+
+                <!-- Results -->
+                <div id="ti-results" style="display:none;"></div>
+            </div>
+
+            <!-- API Key Configuration -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-key"></i> API Key Configuration</h3>
+                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
+                    All sources work on free tiers. Add API keys to enable sources and increase rate limits.
+                </p>
+                <div id="ti-sources-status" style="margin-bottom:16px;"></div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AbuseIPDB Key</label>
+                        <input type="password" id="ti-key-abuseipdb" placeholder="Free: 1,000 checks/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">VirusTotal Key</label>
+                        <input type="password" id="ti-key-virustotal" placeholder="Free: 4 req/min, 500/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AlienVault OTX Key</label>
+                        <input type="password" id="ti-key-otx" placeholder="Optional — works without key"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">GreyNoise Key</label>
+                        <input type="password" id="ti-key-greynoise" placeholder="Free: 50 lookups/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                </div>
+                <button class="btn" onclick="saveThreatIntelConfig()" style="margin-top:12px;">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Keys
+                </button>
+            </div>
+        </div>
+
+        <!-- Timeline Tab -->
+        <div id="timeline-tab" class="tab-content">
+            <div class="card">
+                <h2><i class="fa-solid fa-timeline"></i> Findings Timeline</h2>
+                <p style="color:var(--text-secondary); margin-bottom:12px;">
+                    Chronological view of findings across all hunts. Click a finding to view details.
+                </p>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
+                    <label style="font-size:12px; color:var(--text-secondary);">Filter:</label>
+                    <select id="tl-severity-filter" onchange="renderTimeline()" style="padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                        <option value="all">All Severities</option>
+                        <option value="critical">Critical Only</option>
+                        <option value="high">High+</option>
+                        <option value="medium">Medium+</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="loadTimeline()" style="padding:6px 12px; font-size:12px;">
+                        <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            <div id="timeline-container" style="margin-top:16px;"></div>
+        </div>
+
         <div id="logs" class="tab-content">
             <div class="card">
                 <h2>Live System Logs</h2>
@@ -1903,7 +1994,11 @@
                 let html = `
                     <h3>${hunt.hunt_id}
                         <button class="copy-btn" onclick="copyToClipboard('${hunt.hunt_id}', this)">📋 Copy ID</button>
-                        <a href="/api/hunts/${hunt.hunt_id}/report" class="btn btn-secondary" style="margin-left:10px; padding:4px 12px; font-size:12px; text-decoration:none;" download>Export Report</a>
+                        <span style="margin-left:10px; display:inline-flex; gap:4px;">
+                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'html')"><i class="fa-solid fa-file-code"></i> HTML</button>
+                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'csv')"><i class="fa-solid fa-file-csv"></i> CSV</button>
+                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'json')"><i class="fa-solid fa-file-arrow-down"></i> JSON</button>
+                        </span>
                     </h3>
                     <p><strong>Time Range:</strong> ${hunt.time_range}</p>
                     <p><strong>Mode:</strong> ${hunt.mode}</p>
@@ -3757,6 +3852,10 @@
                 loadNetworkMaps();
             } else if (tabName === 'sigma-tab') {
                 loadSigmaRules();
+            } else if (tabName === 'threat-intel-tab') {
+                loadThreatIntelStatus();
+            } else if (tabName === 'timeline-tab') {
+                loadTimeline();
             }
         }
 
@@ -4396,6 +4495,334 @@
 
             html += '</div>';
             return html;
+        }
+
+        // ========================================
+        // Threat Intel Functions
+        // ========================================
+
+        async function loadThreatIntelStatus() {
+            try {
+                const resp = await fetch('/api/threat-intel/status');
+                const status = await resp.json();
+                const container = document.getElementById('ti-sources-status');
+
+                const sourceLabels = {
+                    abuseipdb: { name: 'AbuseIPDB', icon: 'fa-shield', limit: '1,000/day' },
+                    virustotal: { name: 'VirusTotal', icon: 'fa-virus', limit: '4/min' },
+                    otx: { name: 'AlienVault OTX', icon: 'fa-satellite-dish', limit: '~100/min' },
+                    greynoise: { name: 'GreyNoise', icon: 'fa-volume-xmark', limit: '50/day' },
+                    geoip: { name: 'GeoIP', icon: 'fa-globe', limit: '45/min' },
+                };
+
+                let html = '<div style="display:flex; gap:8px; flex-wrap:wrap;">';
+                for (const [key, info] of Object.entries(sourceLabels)) {
+                    const s = status[key] || {};
+                    const active = s.enabled && s.has_api_key;
+                    const color = active ? 'var(--success)' : (s.requires_key ? 'var(--text-secondary)' : 'var(--warning)');
+                    const label = active ? 'Active' : (s.requires_key ? 'Needs Key' : 'No Key (OK)');
+                    html += `<div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 14px; text-align:center; min-width:120px;">
+                        <i class="fa-solid ${info.icon}" style="color:${color}; font-size:16px;"></i>
+                        <div style="font-size:12px; font-weight:600; margin-top:4px;">${info.name}</div>
+                        <div style="font-size:11px; color:${color};">${label}</div>
+                        <div style="font-size:10px; color:var(--text-secondary);">${info.limit}</div>
+                    </div>`;
+                }
+                html += '</div>';
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Error loading threat intel status:', e);
+            }
+        }
+
+        async function saveThreatIntelConfig() {
+            const settings = {};
+            const abuseipdb = document.getElementById('ti-key-abuseipdb').value.trim();
+            const virustotal = document.getElementById('ti-key-virustotal').value.trim();
+            const otx = document.getElementById('ti-key-otx').value.trim();
+            const greynoise = document.getElementById('ti-key-greynoise').value.trim();
+
+            if (abuseipdb) settings.abuseipdb_key = abuseipdb;
+            if (virustotal) settings.virustotal_key = virustotal;
+            if (otx) settings.otx_key = otx;
+            if (greynoise) settings.greynoise_key = greynoise;
+
+            try {
+                const resp = await fetch('/api/threat-intel/configure', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+                const result = await resp.json();
+                addLog('Threat intel API keys saved', 'info');
+                loadThreatIntelStatus();
+
+                // Clear inputs after save
+                document.getElementById('ti-key-abuseipdb').value = '';
+                document.getElementById('ti-key-virustotal').value = '';
+                document.getElementById('ti-key-otx').value = '';
+                document.getElementById('ti-key-greynoise').value = '';
+            } catch (e) {
+                addLog('Error saving threat intel config: ' + e.message, 'error');
+            }
+        }
+
+        async function lookupThreatIntel() {
+            const indicator = document.getElementById('ti-indicator').value.trim();
+            const type = document.getElementById('ti-type').value;
+            if (!indicator) return;
+
+            const resultsDiv = document.getElementById('ti-results');
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<p style="color:var(--text-secondary);"><i class="fa-solid fa-spinner fa-spin"></i> Looking up ' + indicator + '...</p>';
+
+            try {
+                const resp = await fetch('/api/threat-intel/lookup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ indicator, indicator_type: type }),
+                });
+                const data = await resp.json();
+                renderThreatIntelResults(data);
+            } catch (e) {
+                resultsDiv.innerHTML = `<p style="color:var(--danger);">Error: ${e.message}</p>`;
+            }
+        }
+
+        function renderThreatIntelResults(data) {
+            const resultsDiv = document.getElementById('ti-results');
+
+            if (data.private) {
+                resultsDiv.innerHTML = `<div class="card" style="border-left:4px solid var(--info);">
+                    <strong>${data.ip}</strong> is a private/internal IP address. No external intelligence available.
+                </div>`;
+                return;
+            }
+
+            const verdictColors = {
+                malicious: '#f85149', suspicious: '#d29922',
+                low_risk: '#58a6ff', clean: '#3fb950',
+            };
+            const verdictColor = verdictColors[data.verdict] || 'var(--text-secondary)';
+
+            let html = `<div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:16px; margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <h3 style="margin:0;">${data.ip || data.domain || 'Unknown'}</h3>
+                    <span style="background:${verdictColor}22; color:${verdictColor}; padding:4px 14px; border-radius:20px; font-weight:600; font-size:13px; border:1px solid ${verdictColor}44;">
+                        ${(data.verdict || 'unknown').toUpperCase()}
+                    </span>
+                </div>`;
+
+            const sources = data.sources || {};
+
+            // GeoIP
+            if (sources.geoip) {
+                const g = sources.geoip;
+                html += `<div style="margin-bottom:12px; padding:10px; background:var(--bg-secondary); border-radius:4px;">
+                    <div style="font-weight:600; margin-bottom:4px;"><i class="fa-solid fa-globe"></i> GeoIP</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:4px; font-size:13px;">
+                        <span><strong>Country:</strong> ${g.country || 'N/A'} (${g.country_code || ''})</span>
+                        <span><strong>City:</strong> ${g.city || 'N/A'}, ${g.region || ''}</span>
+                        <span><strong>ISP:</strong> ${g.isp || 'N/A'}</span>
+                        <span><strong>Org:</strong> ${g.org || 'N/A'}</span>
+                        <span><strong>ASN:</strong> ${g.as_name || g.as_number || 'N/A'}</span>
+                        <span><strong>TZ:</strong> ${g.timezone || 'N/A'}</span>
+                    </div>
+                </div>`;
+            }
+
+            // AbuseIPDB
+            if (sources.abuseipdb) {
+                const a = sources.abuseipdb;
+                const aColor = a.abuse_score >= 50 ? '#f85149' : a.abuse_score >= 25 ? '#d29922' : '#3fb950';
+                html += `<div style="margin-bottom:12px; padding:10px; background:var(--bg-secondary); border-radius:4px;">
+                    <div style="font-weight:600; margin-bottom:4px;"><i class="fa-solid fa-shield"></i> AbuseIPDB</div>
+                    <div style="font-size:13px;">
+                        <span>Abuse Score: <strong style="color:${aColor};">${a.abuse_score}%</strong></span> |
+                        <span>Reports: <strong>${a.total_reports}</strong></span> |
+                        <span>ISP: ${a.isp || 'N/A'}</span> |
+                        <span>Country: ${a.country || 'N/A'}</span>
+                        ${a.last_reported ? ` | Last Reported: ${new Date(a.last_reported).toLocaleDateString()}` : ''}
+                    </div>
+                </div>`;
+            }
+
+            // VirusTotal
+            if (sources.virustotal) {
+                const v = sources.virustotal;
+                const vColor = v.malicious >= 5 ? '#f85149' : v.malicious >= 1 ? '#d29922' : '#3fb950';
+                html += `<div style="margin-bottom:12px; padding:10px; background:var(--bg-secondary); border-radius:4px;">
+                    <div style="font-weight:600; margin-bottom:4px;"><i class="fa-solid fa-virus"></i> VirusTotal</div>
+                    <div style="font-size:13px;">
+                        <span style="color:${vColor};"><strong>${v.malicious}</strong> malicious</span> |
+                        <span><strong>${v.suspicious || 0}</strong> suspicious</span> |
+                        <span><strong>${v.harmless || 0}</strong> harmless</span> |
+                        <span>Reputation: ${v.reputation || 0}</span> |
+                        <span>Owner: ${v.as_owner || 'N/A'}</span>
+                    </div>
+                </div>`;
+            }
+
+            // OTX
+            if (sources.otx) {
+                const o = sources.otx;
+                const oColor = o.pulse_count >= 10 ? '#f85149' : o.pulse_count >= 3 ? '#d29922' : '#3fb950';
+                html += `<div style="margin-bottom:12px; padding:10px; background:var(--bg-secondary); border-radius:4px;">
+                    <div style="font-weight:600; margin-bottom:4px;"><i class="fa-solid fa-satellite-dish"></i> AlienVault OTX</div>
+                    <div style="font-size:13px;">
+                        Pulses: <strong style="color:${oColor};">${o.pulse_count}</strong>
+                        ${o.pulses && o.pulses.length > 0 ? ` — ${o.pulses.slice(0, 3).join(', ')}` : ''}
+                    </div>
+                </div>`;
+            }
+
+            // GreyNoise
+            if (sources.greynoise) {
+                const gn = sources.greynoise;
+                const gnColor = gn.classification === 'malicious' ? '#f85149' : gn.classification === 'benign' ? '#3fb950' : '#d29922';
+                html += `<div style="margin-bottom:12px; padding:10px; background:var(--bg-secondary); border-radius:4px;">
+                    <div style="font-weight:600; margin-bottom:4px;"><i class="fa-solid fa-volume-xmark"></i> GreyNoise</div>
+                    <div style="font-size:13px;">
+                        Classification: <strong style="color:${gnColor};">${gn.classification || 'unknown'}</strong> |
+                        Noise: ${gn.noise ? 'Yes' : 'No'} |
+                        RIOT: ${gn.riot ? 'Yes' : 'No'}
+                        ${gn.name ? ` | Name: ${gn.name}` : ''}
+                        ${gn.last_seen ? ` | Last Seen: ${gn.last_seen}` : ''}
+                    </div>
+                </div>`;
+            }
+
+            if (Object.keys(sources).length === 0) {
+                html += `<p style="color:var(--text-secondary); font-size:13px;">No sources returned data. Configure API keys in the section below to enable lookups.</p>`;
+            }
+
+            html += `<div style="font-size:11px; color:var(--text-secondary); margin-top:8px;">Enriched at: ${data.enriched_at || 'N/A'}</div>`;
+            html += '</div>';
+            resultsDiv.innerHTML = html;
+        }
+
+        // ========================================
+        // Timeline Functions
+        // ========================================
+
+        let _timelineData = [];
+
+        async function loadTimeline() {
+            try {
+                const resp = await fetch('/api/timeline/all?limit=300');
+                const data = await resp.json();
+                _timelineData = data.events || [];
+                renderTimeline();
+            } catch (e) {
+                console.error('Error loading timeline:', e);
+                document.getElementById('timeline-container').innerHTML =
+                    `<div class="card"><p style="color:var(--danger);">Error loading timeline: ${e.message}</p></div>`;
+            }
+        }
+
+        function renderTimeline() {
+            const container = document.getElementById('timeline-container');
+            const filter = document.getElementById('tl-severity-filter').value;
+
+            const severityRank = { critical: 4, high: 3, medium: 2, low: 1 };
+            const filterRank = { all: 0, critical: 4, high: 3, medium: 2 };
+            const minRank = filterRank[filter] || 0;
+
+            const events = _timelineData.filter(e => {
+                const rank = severityRank[(e.severity || 'low').toLowerCase()] || 1;
+                return rank >= minRank;
+            });
+
+            if (events.length === 0) {
+                container.innerHTML = '<div class="card"><p style="color:var(--text-secondary);">No findings to display. Run a hunt first.</p></div>';
+                return;
+            }
+
+            const sevColors = {
+                critical: '#f85149', high: '#d29922',
+                medium: '#58a6ff', low: '#8b949e',
+            };
+
+            // Group by date
+            const grouped = {};
+            events.forEach(e => {
+                const ts = e.timestamp ? new Date(e.timestamp) : new Date();
+                const dateKey = ts.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                if (!grouped[dateKey]) grouped[dateKey] = [];
+                grouped[dateKey].push(e);
+            });
+
+            let html = '<div style="position:relative; padding-left:40px;">';
+
+            // Vertical line
+            html += '<div style="position:absolute; left:18px; top:0; bottom:0; width:2px; background:var(--border-color);"></div>';
+
+            for (const [date, dayEvents] of Object.entries(grouped)) {
+                // Date header
+                html += `<div style="position:relative; margin-bottom:8px; margin-top:20px;">
+                    <div style="position:absolute; left:-32px; top:4px; width:12px; height:12px; background:var(--accent-primary); border-radius:50%; border:2px solid var(--bg-primary);"></div>
+                    <div style="font-weight:700; font-size:14px; color:var(--accent-primary);">${date}</div>
+                </div>`;
+
+                dayEvents.forEach(e => {
+                    const sev = (e.severity || 'low').toLowerCase();
+                    const color = sevColors[sev] || sevColors.low;
+                    const time = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
+                    const assets = (e.affected_assets || []).join(', ');
+                    const techniques = (e.mitre_techniques || []).join(', ');
+
+                    html += `<div style="position:relative; margin-bottom:8px; margin-left:4px;">
+                        <div style="position:absolute; left:-30px; top:10px; width:8px; height:8px; background:${color}; border-radius:50;"></div>
+                        <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-left:3px solid ${color}; border-radius:0 6px 6px 0; padding:10px 14px; cursor:pointer;" onclick="this.querySelector('.tl-detail').style.display = this.querySelector('.tl-detail').style.display === 'none' ? 'block' : 'none';">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                    <span style="font-weight:600; font-size:13px;">${escapeHtml(e.title || 'Untitled')}</span>
+                                    <span style="background:${color}22; color:${color}; padding:2px 8px; border-radius:10px; font-size:11px; margin-left:8px; font-weight:600;">${sev.toUpperCase()}</span>
+                                </div>
+                                <span style="font-size:11px; color:var(--text-secondary);">${time}</span>
+                            </div>
+                            <div class="tl-detail" style="display:none; margin-top:8px; font-size:13px; color:var(--text-secondary);">
+                                <p>${escapeHtml(e.description || '')}</p>
+                                <div style="margin-top:6px; display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">
+                                    <span><strong>Agent:</strong> ${e.agent || ''}</span>
+                                    <span><strong>Confidence:</strong> ${(e.confidence || 0).toFixed(2)}</span>
+                                    ${assets ? `<span><strong>Assets:</strong> ${escapeHtml(assets)}</span>` : ''}
+                                    ${techniques ? `<span><strong>MITRE:</strong> ${escapeHtml(techniques)}</span>` : ''}
+                                    ${e.hunt_id ? `<span><strong>Hunt:</strong> <a href="#" onclick="event.stopPropagation(); viewHuntDetails('${e.hunt_id}'); return false;" style="color:var(--accent-primary);">${e.hunt_id}</a></span>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+            }
+
+            html += '</div>';
+
+            // Summary bar
+            const critCount = events.filter(e => (e.severity || '').toLowerCase() === 'critical').length;
+            const highCount = events.filter(e => (e.severity || '').toLowerCase() === 'high').length;
+            const medCount = events.filter(e => (e.severity || '').toLowerCase() === 'medium').length;
+            const lowCount = events.filter(e => (e.severity || '').toLowerCase() === 'low').length;
+
+            const summary = `<div class="card" style="margin-bottom:12px;">
+                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+                    <span style="font-weight:600;">${events.length} findings</span>
+                    ${critCount ? `<span style="color:#f85149;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${critCount} Critical</span>` : ''}
+                    ${highCount ? `<span style="color:#d29922;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${highCount} High</span>` : ''}
+                    ${medCount ? `<span style="color:#58a6ff;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${medCount} Medium</span>` : ''}
+                    ${lowCount ? `<span style="color:#8b949e;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${lowCount} Low</span>` : ''}
+                </div>
+            </div>`;
+
+            container.innerHTML = summary + html;
+        }
+
+        // ========================================
+        // Export Functions
+        // ========================================
+
+        function exportHunt(huntId, format) {
+            window.open(`/api/hunts/${huntId}/export/${format}`, '_blank');
         }
 
         function addLog(message, type = 'info') {
