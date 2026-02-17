@@ -100,8 +100,193 @@ class DatabaseManager:
             )
         """)
 
+        # LAN groups — user-defined groupings of network devices
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lan_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                color TEXT DEFAULT '#667eea',
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+        """)
+
+        # Members of each LAN group (node IDs like "sensor:vlan:ip")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lan_group_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                node_id TEXT NOT NULL,
+                FOREIGN KEY (group_id) REFERENCES lan_groups(id) ON DELETE CASCADE,
+                UNIQUE(group_id, node_id)
+            )
+        """)
+
+        # Device flags — mark devices as malicious or suspicious
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL UNIQUE,
+                flag_type TEXT NOT NULL CHECK(flag_type IN ('malicious', 'suspicious')),
+                reason TEXT DEFAULT '',
+                flagged_at TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # LAN groups
+    # ------------------------------------------------------------------
+
+    def create_lan_group(self, name: str, description: str = '',
+                         color: str = '#667eea',
+                         member_ids: List[str] = None) -> Dict:
+        """Create a new LAN group with optional initial members."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO lan_groups (name, description, color, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, description, color, now, now),
+            )
+            group_id = cursor.lastrowid
+            if member_ids:
+                for nid in member_ids:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO lan_group_members (group_id, node_id) "
+                        "VALUES (?, ?)",
+                        (group_id, nid),
+                    )
+            conn.commit()
+            return {'id': group_id, 'name': name, 'description': description,
+                    'color': color, 'members': member_ids or []}
+        finally:
+            conn.close()
+
+    def get_lan_groups(self) -> List[Dict]:
+        """Get all LAN groups with their members."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, name, description, color, created_at, updated_at "
+                "FROM lan_groups ORDER BY name"
+            ).fetchall()
+            groups = []
+            for r in rows:
+                members = conn.execute(
+                    "SELECT node_id FROM lan_group_members WHERE group_id = ?",
+                    (r[0],)
+                ).fetchall()
+                groups.append({
+                    'id': r[0], 'name': r[1], 'description': r[2],
+                    'color': r[3], 'created_at': r[4], 'updated_at': r[5],
+                    'members': [m[0] for m in members],
+                })
+            return groups
+        finally:
+            conn.close()
+
+    def update_lan_group(self, group_id: int, name: str = None,
+                         description: str = None, color: str = None,
+                         member_ids: List[str] = None) -> bool:
+        """Update a LAN group's properties and/or members."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            updates = []
+            params = []
+            if name is not None:
+                updates.append("name = ?")
+                params.append(name)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if color is not None:
+                updates.append("color = ?")
+                params.append(color)
+            if updates:
+                updates.append("updated_at = ?")
+                params.append(datetime.now().isoformat())
+                params.append(group_id)
+                conn.execute(
+                    f"UPDATE lan_groups SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            if member_ids is not None:
+                conn.execute(
+                    "DELETE FROM lan_group_members WHERE group_id = ?",
+                    (group_id,),
+                )
+                for nid in member_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO lan_group_members (group_id, node_id) "
+                        "VALUES (?, ?)",
+                        (group_id, nid),
+                    )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def delete_lan_group(self, group_id: int) -> bool:
+        """Delete a LAN group and its memberships."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM lan_group_members WHERE group_id = ?", (group_id,))
+            conn.execute("DELETE FROM lan_groups WHERE id = ?", (group_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Device flags
+    # ------------------------------------------------------------------
+
+    def set_device_flag(self, node_id: str, flag_type: str,
+                        reason: str = '') -> Dict:
+        """Flag a device as malicious or suspicious."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO device_flags (node_id, flag_type, reason, flagged_at) "
+                "VALUES (?, ?, ?, ?)",
+                (node_id, flag_type, reason, now),
+            )
+            conn.commit()
+            return {'node_id': node_id, 'flag_type': flag_type,
+                    'reason': reason, 'flagged_at': now}
+        finally:
+            conn.close()
+
+    def remove_device_flag(self, node_id: str) -> bool:
+        """Remove a flag from a device."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM device_flags WHERE node_id = ?", (node_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def get_device_flags(self) -> Dict[str, Dict]:
+        """Get all device flags as a dict keyed by node_id."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT node_id, flag_type, reason, flagged_at FROM device_flags"
+            ).fetchall()
+            return {
+                r[0]: {'flag_type': r[1], 'reason': r[2], 'flagged_at': r[3]}
+                for r in rows
+            }
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Queue persistence

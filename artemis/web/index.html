@@ -647,6 +647,114 @@
             border-radius: 2px;
         }
 
+        /* Context menu for right-click flagging */
+        .ctx-menu {
+            position: fixed;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 4px 0;
+            min-width: 200px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            z-index: 9999;
+            font-size: 13px;
+        }
+        .ctx-menu-item {
+            padding: 8px 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-primary);
+            transition: background 0.1s;
+        }
+        .ctx-menu-item:hover {
+            background: var(--bg-tertiary);
+        }
+        .ctx-menu-sep {
+            height: 1px;
+            background: var(--border-color);
+            margin: 4px 0;
+        }
+
+        /* LAN group modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 9998;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 24px;
+            min-width: 380px;
+            max-width: 500px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+        }
+        .modal-box h3 { margin: 0 0 16px 0; }
+        .modal-box label { display: block; font-size: 13px; margin-bottom: 4px; opacity: 0.8; }
+        .modal-box input, .modal-box textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin-bottom: 12px;
+            box-sizing: border-box;
+        }
+        .modal-box textarea { resize: vertical; min-height: 60px; }
+
+        /* LAN group selection mode toolbar */
+        .group-select-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: rgba(102,126,234,0.1);
+            border: 1px solid rgba(102,126,234,0.4);
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .group-select-bar .count {
+            font-weight: 600;
+            color: var(--accent-primary);
+        }
+
+        /* LAN group chips under the legend */
+        .lan-groups-bar {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .lan-group-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: opacity 0.15s;
+        }
+        .lan-group-chip:hover { opacity: 0.85; }
+        .lan-group-chip .chip-delete {
+            opacity: 0.5;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .lan-group-chip .chip-delete:hover { opacity: 1; }
+
         /* Search and filter */
         .search-bar {
             width: 100%;
@@ -1225,6 +1333,7 @@
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
                     <button class="btn btn-secondary" onclick="downloadGraphJSON()">Download JSON</button>
+                    <button class="btn" onclick="startGroupSelect()" id="group-select-btn" title="Select devices to create a LAN group"><i class="fa-solid fa-object-group"></i> Group</button>
                     <button class="btn" onclick="profileDevices()" id="profile-btn">Profile Devices</button>
                     <select id="profile-time-range" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary);">
                         <option value="-1h">Last 1h</option>
@@ -1253,6 +1362,16 @@
                     <p id="profile-progress-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Initializing...</p>
                 </div>
 
+                <!-- Group selection toolbar (shown when creating a group) -->
+                <div id="group-select-bar" class="group-select-bar" style="display:none;">
+                    <i class="fa-solid fa-object-group" style="color:var(--accent-primary);"></i>
+                    <span>Click nodes to add/remove from group. Selected: <span class="count" id="group-select-count">0</span></span>
+                    <div style="margin-left:auto; display:flex; gap:8px;">
+                        <button class="btn" onclick="finishGroupSelect()" style="font-size:12px; padding:5px 12px;">Create Group</button>
+                        <button class="btn btn-secondary" onclick="cancelGroupSelect()" style="font-size:12px; padding:5px 12px;">Cancel</button>
+                    </div>
+                </div>
+
                 <div id="vlan-tabs" class="vlan-tabs" style="display:none;"></div>
 
                 <div id="network-graph"></div>
@@ -1264,7 +1383,12 @@
                     <div class="legend-item"><i class="fa-solid fa-sitemap" style="color:#00BCD4; width:16px; text-align:center;"></i><span>Core Infra (DNS/DC/DHCP)</span></div>
                     <div class="legend-item"><i class="fa-solid fa-server" style="color:#9C27B0; width:16px; text-align:center;"></i><span>Servers</span></div>
                     <div class="legend-item"><i class="fa-solid fa-desktop" style="color:#607D8B; width:16px; text-align:center;"></i><span>Endpoints</span></div>
+                    <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
+                    <div style="font-size:11px; opacity:0.7; font-weight:600;">CONNECTIONS</div>
+                    <div class="legend-item"><div style="width:24px; height:3px; background:#ff1744; border-radius:2px;"></div><span>Malicious</span></div>
+                    <div class="legend-item"><div style="width:24px; height:3px; background:#aa00ff; border-radius:2px;"></div><span>Suspicious</span></div>
                 </div>
+                <div class="lan-groups-bar" id="lan-groups-bar"></div>
                 <div id="profile-status" style="display:none; margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:5px;"></div>
 
                 <!-- Node details panel (shown on click) -->
@@ -1334,6 +1458,14 @@
 
         // Backward compat shim: some code still references currentHuntId
         let currentHuntId = null;
+
+        // LAN group selection mode state
+        let _groupSelectMode = false;
+        let _groupSelectedNodes = new Set();
+
+        // Device flags and LAN groups (loaded with graph data)
+        let _deviceFlags = {};
+        let _lanGroups = [];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -1858,10 +1990,15 @@
                 _fullGraphData = graphData;
                 _activeVlan = null;
 
+                // Store flags and groups from server
+                _deviceFlags = graphData.device_flags || {};
+                _lanGroups = graphData.lan_groups || [];
+
                 // Build VLAN sub-tabs
                 buildVlanTabs(graphData);
 
                 renderNetworkGraph(graphData);
+                renderLanGroupChips();
                 loadNetworkSummary();
 
                 if (!silent) {
@@ -1994,12 +2131,16 @@
                 const nbNames = (node.netbios_names || []).join(', ');
                 const domainStr = node.domain || '';
 
+                // Check if this node is flagged
+                const nodeFlag = _deviceFlags[node.id];
+
                 let label = node.label;
                 if (deviceStr && node.group !== 'internet') {
                     label = `${node.label}\n${deviceStr}`;
                 }
 
                 let tooltip = node.label;
+                if (nodeFlag) tooltip += `\n*** ${nodeFlag.flag_type.toUpperCase()} ***${nodeFlag.reason ? ' — ' + nodeFlag.reason : ''}`;
                 if (node.is_virtual) tooltip += `\n[VM: ${node.virtual_platform}]`;
                 if (nbNames) tooltip += `\nNetBIOS: ${nbNames}`;
                 if (domainStr) tooltip += `\nDomain: ${domainStr}`;
@@ -2027,12 +2168,16 @@
                     };
                 }
 
+                // Flag visual: prepend warning icon to label
+                const flagPrefix = nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '\u26a0 ' : '\u26a1 ') : '';
+                const flagLabelColor = nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : '#ccc';
+
                 // Use Font Awesome icon if device type is known
                 const iconDef = deviceIcons[node.device_type];
                 if (iconDef) {
                     return {
                         id: node.id,
-                        label: label,
+                        label: flagPrefix + label,
                         title: tooltip,
                         level: tier,
                         shape: 'icon',
@@ -2040,33 +2185,57 @@
                             face: '"Font Awesome 6 Free"',
                             code: iconDef.code,
                             size: 30,
-                            color: iconDef.color,
+                            color: nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : iconDef.color,
                             weight: 900,
                         },
-                        font: { size: 11, color: '#ccc', multi: false, vadjust: 4 },
+                        font: { size: 11, color: flagLabelColor, multi: false, vadjust: 4 },
                     };
                 }
 
-                // Unclassified internal nodes: green dot
+                // Unclassified internal nodes: green dot (or red/purple if flagged)
                 return {
                     id: node.id,
-                    label: label,
+                    label: flagPrefix + label,
                     title: tooltip,
                     level: tier,
                     shape: 'dot',
                     size: 12,
-                    color: '#4CAF50',
-                    font: { size: 11, color: '#ccc', multi: false, vadjust: 4 },
+                    color: nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : '#4CAF50',
+                    font: { size: 11, color: flagLabelColor, multi: false, vadjust: 4 },
                 };
             });
 
-            // Prepare edges for vis.js
-            const edges = graphData.edges.map(edge => ({
-                from: edge.from,
-                to: edge.to,
-                value: edge.value,
-                title: edge.title || `${edge.value} connections`
-            }));
+            // Prepare edges for vis.js — color by device flags
+            const edges = graphData.edges.map(edge => {
+                const fromFlag = _deviceFlags[edge.from];
+                const toFlag = _deviceFlags[edge.to];
+
+                // If either end is flagged, color the edge accordingly
+                // Malicious (red) takes priority over suspicious (purple)
+                let edgeColor = null;
+                let edgeWidth = undefined;
+                if ((fromFlag && fromFlag.flag_type === 'malicious') ||
+                    (toFlag && toFlag.flag_type === 'malicious')) {
+                    edgeColor = { color: '#ff1744', highlight: '#ff1744', hover: '#ff5252' };
+                    edgeWidth = 3;
+                } else if ((fromFlag && fromFlag.flag_type === 'suspicious') ||
+                           (toFlag && toFlag.flag_type === 'suspicious')) {
+                    edgeColor = { color: '#aa00ff', highlight: '#aa00ff', hover: '#d500f9' };
+                    edgeWidth = 2;
+                }
+
+                const e = {
+                    from: edge.from,
+                    to: edge.to,
+                    value: edge.value,
+                    title: edge.title || `${edge.value} connections`,
+                };
+                if (edgeColor) {
+                    e.color = edgeColor;
+                    e.width = edgeWidth;
+                }
+                return e;
+            });
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
 
@@ -2122,11 +2291,39 @@
             networkGraph.on('click', function(params) {
                 if (params.nodes.length > 0) {
                     const nodeId = params.nodes[0];
+
+                    // Group selection mode: toggle node in/out of selection
+                    if (_groupSelectMode) {
+                        if (_groupSelectedNodes.has(nodeId)) {
+                            _groupSelectedNodes.delete(nodeId);
+                        } else {
+                            _groupSelectedNodes.add(nodeId);
+                        }
+                        document.getElementById('group-select-count').textContent = _groupSelectedNodes.size;
+                        // Highlight selected nodes
+                        networkGraph.selectNodes([..._groupSelectedNodes]);
+                        return;
+                    }
+
                     const node = rawRef.nodes.find(n => n.id === nodeId);
                     if (node) {
                         showNodeDetails(node);
                     }
                 }
+            });
+
+            // Right-click context menu for flagging
+            networkGraph.on('oncontext', function(params) {
+                params.event.preventDefault();
+                const nodeId = networkGraph.getNodeAt(params.pointer.DOM);
+                if (!nodeId || nodeId === '__internet__') return;
+                const node = rawRef.nodes.find(n => n.id === nodeId);
+                showContextMenu(params.event, nodeId, node);
+            });
+
+            // Draw LAN group boxes on the canvas
+            networkGraph.on('afterDrawing', function(ctx) {
+                drawLanGroupBoxes(ctx);
             });
         }
 
@@ -2224,6 +2421,8 @@
                     </button>
                 </div>
                 <div id="device-identity-inline" style="display:none; margin-bottom:16px;"></div>
+                ${addFlagButtonsToDetails(node.id, node)}
+                <div style="margin-bottom:16px;"></div>
             `;
 
             // Internal connections table
@@ -3763,6 +3962,315 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // =================================================================
+        // Context menu for right-click flagging
+        // =================================================================
+
+        // Store the last right-clicked node ID for menu actions
+        let _ctxNodeId = null;
+
+        function showContextMenu(event, nodeId, node) {
+            removeContextMenu();
+            _ctxNodeId = nodeId;
+            const flag = _deviceFlags[nodeId];
+            const label = node ? node.label.replace(/\n/g, ' ') : nodeId;
+
+            const menu = document.createElement('div');
+            menu.className = 'ctx-menu';
+            menu.id = 'ctx-menu';
+            menu.style.left = event.clientX + 'px';
+            menu.style.top = event.clientY + 'px';
+
+            let html = `<div style="padding:6px 14px; font-size:12px; opacity:0.5; font-weight:600;">${escapeHtml(label)}</div>`;
+            html += `<div class="ctx-menu-sep"></div>`;
+
+            if (!flag || flag.flag_type !== 'malicious') {
+                html += `<div class="ctx-menu-item" onclick="flagDevice(_ctxNodeId, 'malicious')">
+                    <i class="fa-solid fa-skull-crossbones" style="color:#ff1744;"></i> Flag as Malicious
+                </div>`;
+            }
+            if (!flag || flag.flag_type !== 'suspicious') {
+                html += `<div class="ctx-menu-item" onclick="flagDevice(_ctxNodeId, 'suspicious')">
+                    <i class="fa-solid fa-triangle-exclamation" style="color:#aa00ff;"></i> Flag as Suspicious
+                </div>`;
+            }
+            if (flag) {
+                html += `<div class="ctx-menu-item" onclick="unflagDevice(_ctxNodeId)">
+                    <i class="fa-solid fa-eraser" style="color:#4CAF50;"></i> Remove Flag
+                </div>`;
+            }
+            menu.innerHTML = html;
+            document.body.appendChild(menu);
+
+            // Close on click outside
+            setTimeout(() => {
+                document.addEventListener('click', removeContextMenu, { once: true });
+            }, 10);
+        }
+
+        function removeContextMenu() {
+            const m = document.getElementById('ctx-menu');
+            if (m) m.remove();
+        }
+
+        async function flagDevice(nodeId, flagType) {
+            removeContextMenu();
+            const reason = prompt(`Reason for marking as ${flagType} (optional):`);
+            if (reason === null) return; // cancelled
+            try {
+                await fetch('/api/device-flags', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ node_id: nodeId, flag_type: flagType, reason: reason || '' }),
+                });
+                addLog(`Flagged ${nodeId} as ${flagType}`, 'warning');
+                loadNetworkGraph(true);
+            } catch(e) {
+                addLog(`Failed to flag device: ${e.message}`, 'error');
+            }
+        }
+
+        async function unflagDevice(nodeId) {
+            removeContextMenu();
+            try {
+                await fetch(`/api/device-flags/${encodeURIComponent(nodeId)}`, { method: 'DELETE' });
+                addLog(`Removed flag from ${nodeId}`, 'info');
+                loadNetworkGraph(true);
+            } catch(e) {
+                addLog(`Failed to remove flag: ${e.message}`, 'error');
+            }
+        }
+
+        // =================================================================
+        // LAN group selection mode
+        // =================================================================
+
+        function startGroupSelect() {
+            _groupSelectMode = true;
+            _groupSelectedNodes = new Set();
+            document.getElementById('group-select-bar').style.display = 'flex';
+            document.getElementById('group-select-count').textContent = '0';
+            document.getElementById('group-select-btn').disabled = true;
+            addLog('Group selection mode: click nodes to add them to the group', 'info');
+        }
+
+        function cancelGroupSelect() {
+            _groupSelectMode = false;
+            _groupSelectedNodes = new Set();
+            document.getElementById('group-select-bar').style.display = 'none';
+            document.getElementById('group-select-btn').disabled = false;
+            if (networkGraph) networkGraph.unselectAll();
+        }
+
+        function finishGroupSelect() {
+            if (_groupSelectedNodes.size === 0) {
+                alert('Select at least one node first.');
+                return;
+            }
+            _groupSelectMode = false;
+            document.getElementById('group-select-bar').style.display = 'none';
+            document.getElementById('group-select-btn').disabled = false;
+            showCreateGroupModal([..._groupSelectedNodes]);
+        }
+
+        // =================================================================
+        // LAN group create/edit modal
+        // =================================================================
+
+        function showCreateGroupModal(memberIds) {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.id = 'group-modal';
+
+            // Build member labels
+            const memberLabels = memberIds.map(id => {
+                const n = (_fullGraphData || {}).nodes?.find(n => n.id === id);
+                return n ? n.label.replace(/\n/g, ' ') : id;
+            });
+
+            overlay.innerHTML = `
+                <div class="modal-box">
+                    <h3><i class="fa-solid fa-object-group" style="color:var(--accent-primary);"></i> Create LAN Group</h3>
+                    <label>Group Name</label>
+                    <input type="text" id="group-name-input" placeholder="e.g. Finance VLAN, DMZ Servers..." autofocus>
+                    <label>Description</label>
+                    <textarea id="group-desc-input" placeholder="Optional description of this group..."></textarea>
+                    <label>Color</label>
+                    <input type="color" id="group-color-input" value="#667eea" style="width:60px; height:36px; padding:2px; cursor:pointer;">
+                    <label>Members (${memberIds.length})</label>
+                    <div style="max-height:120px; overflow-y:auto; font-size:12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; padding:8px; margin-bottom:16px;">
+                        ${memberLabels.map(l => `<div style="padding:2px 0;">${escapeHtml(l)}</div>`).join('')}
+                    </div>
+                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                        <button class="btn btn-secondary" onclick="document.getElementById('group-modal').remove()">Cancel</button>
+                        <button class="btn" onclick="submitCreateGroup()">Create Group</button>
+                    </div>
+                </div>
+            `;
+            overlay.dataset.members = JSON.stringify(memberIds);
+            document.body.appendChild(overlay);
+        }
+
+        async function submitCreateGroup() {
+            const modal = document.getElementById('group-modal');
+            const name = document.getElementById('group-name-input').value.trim();
+            if (!name) { alert('Please enter a group name.'); return; }
+            const description = document.getElementById('group-desc-input').value.trim();
+            const color = document.getElementById('group-color-input').value;
+            const members = JSON.parse(modal.dataset.members);
+            modal.remove();
+
+            try {
+                await fetch('/api/lan-groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, color, members }),
+                });
+                addLog(`Created LAN group "${name}" with ${members.length} devices`, 'info');
+                loadNetworkGraph(true);
+            } catch(e) {
+                addLog(`Failed to create group: ${e.message}`, 'error');
+            }
+        }
+
+        async function deleteLanGroup(groupId, groupName) {
+            if (!confirm(`Delete LAN group "${groupName}"?`)) return;
+            try {
+                await fetch(`/api/lan-groups/${groupId}`, { method: 'DELETE' });
+                addLog(`Deleted LAN group "${groupName}"`, 'info');
+                loadNetworkGraph(true);
+            } catch(e) {
+                addLog(`Failed to delete group: ${e.message}`, 'error');
+            }
+        }
+
+        // =================================================================
+        // Render LAN group chips under legend
+        // =================================================================
+
+        function renderLanGroupChips() {
+            const bar = document.getElementById('lan-groups-bar');
+            if (!bar) return;
+            if (!_lanGroups || _lanGroups.length === 0) {
+                bar.innerHTML = '';
+                return;
+            }
+            let html = '<span style="font-size:11px; opacity:0.6; font-weight:600; margin-right:4px;">LAN GROUPS:</span>';
+            _lanGroups.forEach(g => {
+                html += `<span class="lan-group-chip" style="background:${g.color}22; color:${g.color}; border-color:${g.color}55;"
+                    title="${escapeHtml(g.description || '')} (${g.members.length} devices)">
+                    <i class="fa-solid fa-layer-group"></i>
+                    ${escapeHtml(g.name)} (${g.members.length})
+                    <span class="chip-delete" onclick="event.stopPropagation(); deleteLanGroup(${g.id}, '${escapeHtml(g.name)}')">&times;</span>
+                </span>`;
+            });
+            bar.innerHTML = html;
+        }
+
+        // =================================================================
+        // Draw LAN group boxes on the vis.js canvas
+        // =================================================================
+
+        function drawLanGroupBoxes(ctx) {
+            if (!_lanGroups || _lanGroups.length === 0 || !networkGraph) return;
+
+            _lanGroups.forEach(group => {
+                if (!group.members || group.members.length === 0) return;
+
+                // Get bounding box of all member nodes
+                const positions = [];
+                group.members.forEach(nid => {
+                    try {
+                        const pos = networkGraph.getPosition(nid);
+                        if (pos && pos.x !== undefined) positions.push(pos);
+                    } catch(e) {}
+                });
+
+                if (positions.length === 0) return;
+
+                const padding = 40;
+                const minX = Math.min(...positions.map(p => p.x)) - padding;
+                const maxX = Math.max(...positions.map(p => p.x)) + padding;
+                const minY = Math.min(...positions.map(p => p.y)) - padding;
+                const maxY = Math.max(...positions.map(p => p.y)) + padding;
+
+                const w = maxX - minX;
+                const h = maxY - minY;
+
+                // Draw rounded rectangle with group color
+                const color = group.color || '#667eea';
+                ctx.save();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.setLineDash([8, 4]);
+                ctx.globalAlpha = 0.6;
+
+                // Rounded rect
+                const r = 12;
+                ctx.beginPath();
+                ctx.moveTo(minX + r, minY);
+                ctx.lineTo(maxX - r, minY);
+                ctx.arcTo(maxX, minY, maxX, minY + r, r);
+                ctx.lineTo(maxX, maxY - r);
+                ctx.arcTo(maxX, maxY, maxX - r, maxY, r);
+                ctx.lineTo(minX + r, maxY);
+                ctx.arcTo(minX, maxY, minX, maxY - r, r);
+                ctx.lineTo(minX, minY + r);
+                ctx.arcTo(minX, minY, minX + r, minY, r);
+                ctx.closePath();
+                ctx.stroke();
+
+                // Light fill
+                ctx.globalAlpha = 0.05;
+                ctx.fillStyle = color;
+                ctx.fill();
+
+                // Label
+                ctx.globalAlpha = 0.8;
+                ctx.font = 'bold 14px sans-serif';
+                ctx.fillStyle = color;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'bottom';
+                ctx.setLineDash([]);
+                ctx.fillText(group.name, minX + 8, minY - 4);
+
+                ctx.restore();
+            });
+        }
+
+        // =================================================================
+        // Add flagging buttons to node details panel
+        // =================================================================
+
+        // Store last-viewed node id for detail panel actions
+        let _detailNodeId = null;
+
+        function addFlagButtonsToDetails(nodeId, node) {
+            _detailNodeId = nodeId;
+            const flag = _deviceFlags[nodeId];
+            let html = '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">';
+
+            if (!flag || flag.flag_type !== 'malicious') {
+                html += `<button class="btn btn-danger" onclick="flagDevice(_detailNodeId, 'malicious')" style="font-size:12px; padding:5px 12px;">
+                    <i class="fa-solid fa-skull-crossbones"></i> Flag Malicious
+                </button>`;
+            }
+            if (!flag || flag.flag_type !== 'suspicious') {
+                html += `<button class="btn" onclick="flagDevice(_detailNodeId, 'suspicious')" style="font-size:12px; padding:5px 12px; background:#aa00ff; border-color:#aa00ff;">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Flag Suspicious
+                </button>`;
+            }
+            if (flag) {
+                html += `<button class="btn btn-secondary" onclick="unflagDevice(_detailNodeId)" style="font-size:12px; padding:5px 12px;">
+                    <i class="fa-solid fa-eraser"></i> Remove Flag
+                </button>`;
+                html += `<span style="font-size:12px; padding:6px 0; opacity:0.7;">Currently: <strong style="color:${flag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff'};">${flag.flag_type}</strong>${flag.reason ? ' — ' + escapeHtml(flag.reason) : ''}</span>`;
+            }
+
+            html += '</div>';
+            return html;
         }
 
         function addLog(message, type = 'info') {

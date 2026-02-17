@@ -10,8 +10,11 @@ from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from artemis.api.schemas import PluginConfig, ProfileRequest
-from artemis.managers import hunt_manager, plugin_manager
+from artemis.api.schemas import (
+    PluginConfig, ProfileRequest, LanGroupCreate, LanGroupUpdate,
+    DeviceFlagRequest,
+)
+from artemis.managers import db_manager, hunt_manager, plugin_manager
 
 logger = logging.getLogger("artemis.api.plugins")
 
@@ -192,6 +195,9 @@ async def get_network_graph(
         graph_data = plugin.get_network_graph(
             sensor_id=sensor_id, max_nodes=max_nodes,
         )
+        # Attach device flags and LAN groups so the frontend can render them
+        graph_data['device_flags'] = db_manager.get_device_flags()
+        graph_data['lan_groups'] = db_manager.get_lan_groups()
         return graph_data
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
@@ -297,6 +303,75 @@ async def get_device_identity(ip: str):
             content={'error': 'No MAC history found for this IP'},
         )
     return result
+
+
+# --- LAN groups -----------------------------------------------------------
+
+@router.get("/api/lan-groups")
+async def list_lan_groups():
+    """List all LAN groups with their member node IDs."""
+    return db_manager.get_lan_groups()
+
+
+@router.post("/api/lan-groups")
+async def create_lan_group(req: LanGroupCreate):
+    """Create a new LAN group."""
+    return db_manager.create_lan_group(
+        name=req.name,
+        description=req.description,
+        color=req.color,
+        member_ids=req.members,
+    )
+
+
+@router.put("/api/lan-groups/{group_id}")
+async def update_lan_group(group_id: int, req: LanGroupUpdate):
+    """Update a LAN group's name, description, color, or members."""
+    db_manager.update_lan_group(
+        group_id=group_id,
+        name=req.name,
+        description=req.description,
+        color=req.color,
+        member_ids=req.members,
+    )
+    return {'status': 'updated', 'id': group_id}
+
+
+@router.delete("/api/lan-groups/{group_id}")
+async def delete_lan_group(group_id: int):
+    """Delete a LAN group."""
+    db_manager.delete_lan_group(group_id)
+    return {'status': 'deleted', 'id': group_id}
+
+
+# --- Device flags ---------------------------------------------------------
+
+@router.get("/api/device-flags")
+async def list_device_flags():
+    """List all flagged devices."""
+    return db_manager.get_device_flags()
+
+
+@router.post("/api/device-flags")
+async def set_device_flag(req: DeviceFlagRequest):
+    """Flag a device as malicious or suspicious."""
+    if req.flag_type not in ('malicious', 'suspicious'):
+        return JSONResponse(
+            status_code=400,
+            content={'error': 'flag_type must be "malicious" or "suspicious"'},
+        )
+    return db_manager.set_device_flag(
+        node_id=req.node_id,
+        flag_type=req.flag_type,
+        reason=req.reason,
+    )
+
+
+@router.delete("/api/device-flags/{node_id:path}")
+async def remove_device_flag(node_id: str):
+    """Remove a flag from a device."""
+    db_manager.remove_device_flag(node_id)
+    return {'status': 'removed', 'node_id': node_id}
 
 
 # --- Sigma rules ----------------------------------------------------------

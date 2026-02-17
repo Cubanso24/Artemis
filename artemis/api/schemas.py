@@ -40,3 +40,26 @@ class PluginConfig(BaseModel):
 class ProfileRequest(BaseModel):
     """Request for device profiling."""
     time_range: str = "-24h"
+
+
+class LanGroupCreate(BaseModel):
+    """Create a LAN group."""
+    name: str
+    description: str = ''
+    color: str = '#667eea'
+    members: list = []
+
+
+class LanGroupUpdate(BaseModel):
+    """Update a LAN group."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    members: Optional[list] = None
+
+
+class DeviceFlagRequest(BaseModel):
+    """Flag a device as malicious or suspicious."""
+    node_id: str
+    flag_type: str   # 'malicious' or 'suspicious'
+    reason: str = ''
