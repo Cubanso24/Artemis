@@ -22,6 +22,45 @@ from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
 
 logger = logging.getLogger("artemis.hunt")
 
+# Base directory for resolving config files (.token, etc.)
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _read_splunk_credentials():
+    """Read Splunk credentials from env vars, falling back to .token file.
+
+    Returns (host, token, username, password).
+    """
+    host = os.getenv('SPLUNK_HOST', '10.25.11.86')
+    token = os.getenv('SPLUNK_TOKEN')
+    username = os.getenv('SPLUNK_USERNAME')
+    password = os.getenv('SPLUNK_PASSWORD')
+
+    # Fall back to .token file in the project root
+    if not token:
+        token_path = os.path.join(_BASE_DIR, '.token')
+        if os.path.isfile(token_path):
+            try:
+                with open(token_path, 'r') as f:
+                    token = f.read().strip()
+                if token:
+                    logger.info("Loaded Splunk token from .token file")
+            except Exception as e:
+                logger.warning(f"Failed to read .token file: {e}")
+
+    return host, token, username, password
+
+
+def _build_splunk_config():
+    """Build a DataSourceConfig with Splunk credentials."""
+    host, token, username, password = _read_splunk_credentials()
+    return DataSourceConfig(
+        splunk_host=host, splunk_port=8089,
+        splunk_token=token or '',
+        splunk_username=username or '',
+        splunk_password=password or '',
+    )
+
 
 # ---------------------------------------------------------------------------
 # Hunt worker — runs in its own process
@@ -70,16 +109,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
         send('init', 'Initializing hunt process...', 5)
 
         # --- build pipeline ------------------------------------------------
-        host = os.getenv('SPLUNK_HOST', '10.25.11.86')
-        token = os.getenv('SPLUNK_TOKEN')
-        username = os.getenv('SPLUNK_USERNAME')
-        password = os.getenv('SPLUNK_PASSWORD')
-        cfg = DataSourceConfig(
-            splunk_host=host, splunk_port=8089,
-            splunk_token=token or '',
-            splunk_username=username or '',
-            splunk_password=password or '',
-        )
+        cfg = _build_splunk_config()
         pipeline = DataPipeline(cfg)
         coordinator = MetaLearnerCoordinator()
 
@@ -320,16 +350,7 @@ def _profile_worker_process(profile_id, time_range, db_path):
         send('init', 'Initializing profiler...', 5)
 
         # Build Splunk connector
-        host = os.getenv('SPLUNK_HOST', '10.25.11.86')
-        token = os.getenv('SPLUNK_TOKEN')
-        username = os.getenv('SPLUNK_USERNAME')
-        password = os.getenv('SPLUNK_PASSWORD')
-        cfg = DataSourceConfig(
-            splunk_host=host, splunk_port=8089,
-            splunk_token=token or '',
-            splunk_username=username or '',
-            splunk_password=password or '',
-        )
+        cfg = _build_splunk_config()
         pipeline = DataPipeline(cfg)
         splunk = pipeline.splunk
 
@@ -423,16 +444,7 @@ class HuntManager:
     def get_splunk_connector(self):
         """Get a Splunk connector for API use (e.g. device profiling)."""
         if self._splunk is None:
-            host = os.getenv('SPLUNK_HOST', '10.25.11.86')
-            token = os.getenv('SPLUNK_TOKEN')
-            username = os.getenv('SPLUNK_USERNAME')
-            password = os.getenv('SPLUNK_PASSWORD')
-            cfg = DataSourceConfig(
-                splunk_host=host, splunk_port=8089,
-                splunk_token=token or '',
-                splunk_username=username or '',
-                splunk_password=password or '',
-            )
+            cfg = _build_splunk_config()
             pipeline = DataPipeline(cfg)
             self._splunk = pipeline.splunk
         return self._splunk
