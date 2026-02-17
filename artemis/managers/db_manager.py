@@ -134,6 +134,25 @@ class DatabaseManager:
             )
         """)
 
+        # Enrichment results — threat intel linked to IPs from findings
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS enrichment_results (
+                ip TEXT PRIMARY KEY,
+                verdict TEXT NOT NULL,
+                sources TEXT NOT NULL,
+                enriched_at TIMESTAMP NOT NULL
+            )
+        """)
+
+        # Enrichment queue — IPs waiting to be enriched by the background worker
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS enrichment_queue (
+                ip TEXT PRIMARY KEY,
+                hunt_id TEXT,
+                queued_at TIMESTAMP NOT NULL
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -584,3 +603,138 @@ class DatabaseManager:
 
         conn.close()
         return hunt
+
+    # ------------------------------------------------------------------
+    # Enrichment
+    # ------------------------------------------------------------------
+
+    def save_enrichment(self, ip: str, verdict: str, sources: Dict):
+        """Save enrichment result for an IP."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO enrichment_results "
+                "(ip, verdict, sources, enriched_at) VALUES (?, ?, ?, ?)",
+                (ip, verdict, json.dumps(sources), datetime.now().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_enrichment(self, ip: str) -> Dict | None:
+        """Get enrichment result for an IP."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT ip, verdict, sources, enriched_at "
+                "FROM enrichment_results WHERE ip = ?", (ip,)
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                'ip': row[0], 'verdict': row[1],
+                'sources': json.loads(row[2]), 'enriched_at': row[3],
+            }
+        finally:
+            conn.close()
+
+    def get_enrichments_bulk(self, ips: List[str]) -> Dict[str, Dict]:
+        """Get enrichment results for multiple IPs at once."""
+        if not ips:
+            return {}
+        conn = sqlite3.connect(self.db_path)
+        try:
+            placeholders = ",".join("?" for _ in ips)
+            rows = conn.execute(
+                f"SELECT ip, verdict, sources, enriched_at "
+                f"FROM enrichment_results WHERE ip IN ({placeholders})",
+                ips,
+            ).fetchall()
+            return {
+                r[0]: {'verdict': r[1], 'sources': json.loads(r[2]),
+                       'enriched_at': r[3]}
+                for r in rows
+            }
+        finally:
+            conn.close()
+
+    def queue_enrichment(self, ips: List[str], hunt_id: str = ""):
+        """Add IPs to the enrichment queue (skips already-queued IPs)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            for ip in ips:
+                conn.execute(
+                    "INSERT OR IGNORE INTO enrichment_queue "
+                    "(ip, hunt_id, queued_at) VALUES (?, ?, ?)",
+                    (ip, hunt_id, now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def dequeue_enrichment(self, batch_size: int = 10) -> List[str]:
+        """Pop up to batch_size IPs from the enrichment queue."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT ip FROM enrichment_queue ORDER BY queued_at LIMIT ?",
+                (batch_size,),
+            ).fetchall()
+            ips = [r[0] for r in rows]
+            if ips:
+                placeholders = ",".join("?" for _ in ips)
+                conn.execute(
+                    f"DELETE FROM enrichment_queue WHERE ip IN ({placeholders})",
+                    ips,
+                )
+                conn.commit()
+            return ips
+        finally:
+            conn.close()
+
+    def enrichment_queue_size(self) -> int:
+        """Get number of IPs waiting in the enrichment queue."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM enrichment_queue"
+            ).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
+
+    def get_all_enrichments(self) -> List[Dict]:
+        """Get all enrichment results."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT ip, verdict, sources, enriched_at "
+                "FROM enrichment_results ORDER BY enriched_at DESC"
+            ).fetchall()
+            return [{
+                'ip': r[0], 'verdict': r[1],
+                'sources': json.loads(r[2]), 'enriched_at': r[3],
+            } for r in rows]
+        finally:
+            conn.close()
+
+    def extract_ips_from_hunt(self, hunt_id: str) -> List[str]:
+        """Extract all unique IPs from a hunt's affected_assets."""
+        import re
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT affected_assets FROM findings WHERE hunt_id = ?",
+                (hunt_id,),
+            ).fetchall()
+            ips = set()
+            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+            for row in rows:
+                assets = json.loads(row[0]) if row[0] else []
+                for asset in assets:
+                    for match in ip_pattern.findall(asset):
+                        ips.add(match)
+            return list(ips)
+        finally:
+            conn.close()

@@ -460,6 +460,47 @@ def threat_intel_batch(req: ThreatIntelBatchRequest):
     return {"results": results, "count": len(results)}
 
 
+@router.post("/api/threat-intel/enrich-hunt/{hunt_id}")
+def enrich_hunt(hunt_id: str):
+    """Queue all IPs from a hunt for background enrichment."""
+    return threat_intel_manager.enrich_hunt(hunt_id)
+
+
+@router.get("/api/threat-intel/worker-status")
+async def enrichment_worker_status():
+    """Get background enrichment worker status."""
+    return threat_intel_manager.get_worker_status()
+
+
+@router.get("/api/threat-intel/enrichments")
+async def get_enrichments():
+    """Get all stored enrichment results."""
+    return db_manager.get_all_enrichments()
+
+
+@router.get("/api/threat-intel/enrichment/{ip}")
+async def get_ip_enrichment(ip: str):
+    """Get enrichment for a specific IP."""
+    result = db_manager.get_enrichment(ip)
+    if not result:
+        return JSONResponse(status_code=404,
+                            content={"error": "No enrichment data for this IP"})
+    return result
+
+
+@router.get("/api/hunts/{hunt_id}/enrichments")
+async def get_hunt_enrichments(hunt_id: str):
+    """Get enrichment results for all IPs in a hunt."""
+    ips = db_manager.extract_ips_from_hunt(hunt_id)
+    enrichments = db_manager.get_enrichments_bulk(ips)
+    return {
+        "hunt_id": hunt_id,
+        "total_ips": len(ips),
+        "enriched": len(enrichments),
+        "results": enrichments,
+    }
+
+
 # --- Export / Reporting ---------------------------------------------------
 
 @router.get("/api/hunts/{hunt_id}/export/{fmt}")

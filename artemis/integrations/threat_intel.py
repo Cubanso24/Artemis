@@ -630,5 +630,103 @@ class ThreatIntelManager:
         return False
 
 
+    # ------------------------------------------------------------------
+    # Background enrichment worker
+    # ------------------------------------------------------------------
+
+    def start_background_worker(self):
+        """Start the background enrichment thread.
+        Runs continuously, draining the enrichment queue in batches.
+        """
+        if hasattr(self, '_worker_running') and self._worker_running:
+            return
+        self._worker_running = True
+        self._worker_stop = False
+        t = threading.Thread(target=self._background_loop, daemon=True,
+                             name="threat-intel-worker")
+        t.start()
+        logger.info("Background enrichment worker started")
+
+    def stop_background_worker(self):
+        self._worker_stop = True
+        self._worker_running = False
+
+    def _background_loop(self):
+        """Main loop: dequeue IPs, enrich, store results, sleep."""
+        from artemis.managers import db_manager
+
+        while not self._worker_stop:
+            try:
+                ips = db_manager.dequeue_enrichment(batch_size=5)
+                if not ips:
+                    # Nothing in queue — sleep longer
+                    time.sleep(15)
+                    continue
+
+                for ip in ips:
+                    if self._worker_stop:
+                        break
+
+                    # Skip already-enriched IPs
+                    existing = db_manager.get_enrichment(ip)
+                    if existing:
+                        continue
+
+                    # Skip private IPs
+                    if self._is_private_ip(ip):
+                        db_manager.save_enrichment(ip, "internal", {})
+                        continue
+
+                    result = self.enrich_ip(ip)
+                    db_manager.save_enrichment(
+                        ip, result.get("verdict", "unknown"),
+                        result.get("sources", {}),
+                    )
+                    logger.debug(
+                        f"Enriched {ip}: {result.get('verdict', 'unknown')}"
+                    )
+
+                    # Small delay between IPs to be gentle on rate limits
+                    time.sleep(2)
+
+            except Exception as e:
+                logger.warning(f"Background enrichment error: {e}")
+                time.sleep(10)
+
+    def enrich_hunt(self, hunt_id: str) -> Dict[str, Any]:
+        """Queue all IPs from a hunt for background enrichment."""
+        from artemis.managers import db_manager
+
+        ips = db_manager.extract_ips_from_hunt(hunt_id)
+        if not ips:
+            return {"queued": 0, "message": "No IPs found in hunt findings"}
+
+        # Filter out private IPs and already-enriched IPs
+        external_ips = [ip for ip in ips if not self._is_private_ip(ip)]
+        already = db_manager.get_enrichments_bulk(external_ips)
+        new_ips = [ip for ip in external_ips if ip not in already]
+
+        if new_ips:
+            db_manager.queue_enrichment(new_ips, hunt_id)
+
+        return {
+            "total_ips": len(ips),
+            "external_ips": len(external_ips),
+            "already_enriched": len(already),
+            "queued": len(new_ips),
+            "queue_size": db_manager.enrichment_queue_size(),
+        }
+
+    def get_worker_status(self) -> Dict[str, Any]:
+        """Return current background worker state."""
+        from artemis.managers import db_manager
+        return {
+            "running": getattr(self, '_worker_running', False),
+            "queue_size": db_manager.enrichment_queue_size(),
+            "total_enriched": len(db_manager.get_all_enrichments()),
+            "sources": self.get_config_status(),
+        }
+
+
 # Singleton
 threat_intel_manager = ThreatIntelManager()

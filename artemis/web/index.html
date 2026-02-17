@@ -1446,9 +1446,12 @@
         <div id="threat-intel-tab" class="tab-content">
             <div class="card">
                 <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
-                <p style="color:var(--text-secondary); margin-bottom:16px;">
-                    Look up IPs and domains against free threat intel sources. Configure API keys below for richer results.
+                <p style="color:var(--text-secondary); margin-bottom:12px;">
+                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs from hunt findings.
                 </p>
+
+                <!-- Background worker status -->
+                <div id="ti-worker-status" style="margin-bottom:16px;"></div>
 
                 <!-- Lookup form -->
                 <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px;">
@@ -2006,9 +2009,23 @@
                     <p><strong>Total Findings:</strong> ${hunt.total_findings || 0}</p>
                     <p><strong>Overall Confidence:</strong> ${(hunt.overall_confidence || 0).toFixed(2)}</p>
                     ${hunt.description ? `<p><strong>Description:</strong> ${hunt.description}</p>` : ''}
+                    <div style="margin:16px 0; display:flex; gap:8px; align-items:center;">
+                        <button class="btn" style="padding:6px 14px; font-size:12px;" onclick="enrichHunt('${hunt.hunt_id}')">
+                            <i class="fa-solid fa-shield-halved"></i> Enrich All IPs
+                        </button>
+                        <span id="enrich-status-${hunt.hunt_id}" style="font-size:12px; color:var(--text-secondary);"></span>
+                    </div>
                     <hr style="margin:20px 0;">
                     <h3>Findings</h3>
                 `;
+
+                // Fetch enrichments for this hunt
+                let huntEnrichments = {};
+                try {
+                    const enrichResp = await fetch(`/api/hunts/${hunt.hunt_id}/enrichments`);
+                    const enrichData = await enrichResp.json();
+                    huntEnrichments = enrichData.results || {};
+                } catch (e) { /* enrichments unavailable, that's fine */ }
 
                 if (hunt.findings && hunt.findings.length > 0) {
                     // Check for sigma findings
@@ -2024,11 +2041,19 @@
                     }
 
                     hunt.findings.forEach(finding => {
-                        // Extract IPs from affected assets
+                        // Extract IPs from affected assets with enrichment badges
                         const assetsWithCopy = finding.affected_assets && finding.affected_assets.length > 0
-                            ? finding.affected_assets.map(asset =>
-                                `${asset} <button class="copy-btn" onclick="copyToClipboard('${asset}', this)">📋</button>`
-                              ).join(' ')
+                            ? finding.affected_assets.map(asset => {
+                                const ipMatch = asset.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+                                let badge = '';
+                                if (ipMatch && huntEnrichments[ipMatch[0]]) {
+                                    const e = huntEnrichments[ipMatch[0]];
+                                    const vColors = { malicious: '#f85149', suspicious: '#d29922', low_risk: '#58a6ff', clean: '#3fb950', internal: '#8b949e' };
+                                    const vc = vColors[e.verdict] || '#8b949e';
+                                    badge = ` <span style="background:${vc}22; color:${vc}; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:600; border:1px solid ${vc}44; cursor:pointer;" onclick="event.stopPropagation(); lookupFromBadge('${ipMatch[0]}')">${e.verdict.toUpperCase()}</span>`;
+                                }
+                                return `${asset}${badge} <button class="copy-btn" onclick="copyToClipboard('${asset}', this)">📋</button>`;
+                              }).join(' ')
                             : '';
 
                         html += `
@@ -4533,6 +4558,8 @@
             } catch (e) {
                 console.error('Error loading threat intel status:', e);
             }
+            // Also load worker status
+            loadEnrichmentWorkerStatus();
         }
 
         async function saveThreatIntelConfig() {
@@ -4815,6 +4842,80 @@
             </div>`;
 
             container.innerHTML = summary + html;
+        }
+
+        // ========================================
+        // Background Enrichment Functions
+        // ========================================
+
+        async function enrichHunt(huntId) {
+            const statusEl = document.getElementById(`enrich-status-${huntId}`);
+            if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing IPs for enrichment...';
+
+            try {
+                const resp = await fetch(`/api/threat-intel/enrich-hunt/${huntId}`, { method: 'POST' });
+                const data = await resp.json();
+                const msg = `Queued ${data.queued} new IPs (${data.already_enriched} already enriched, ${data.external_ips} external of ${data.total_ips} total). Queue: ${data.queue_size}`;
+                if (statusEl) statusEl.textContent = msg;
+                addLog(`Hunt enrichment: ${msg}`, 'info');
+            } catch (e) {
+                if (statusEl) statusEl.textContent = 'Error: ' + e.message;
+                addLog('Enrichment error: ' + e.message, 'error');
+            }
+        }
+
+        async function enrichAllHunts() {
+            const statusEl = document.getElementById('enrich-all-status');
+            if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing IPs from all hunts...';
+
+            try {
+                const huntsResp = await fetch('/api/hunts?limit=100');
+                const hunts = await huntsResp.json();
+
+                let totalQueued = 0;
+                for (const hunt of hunts) {
+                    const resp = await fetch(`/api/threat-intel/enrich-hunt/${hunt.hunt_id}`, { method: 'POST' });
+                    const data = await resp.json();
+                    totalQueued += data.queued || 0;
+                }
+
+                if (statusEl) statusEl.textContent = `Queued ${totalQueued} new IPs across ${hunts.length} hunts`;
+                addLog(`Enriched all hunts: ${totalQueued} IPs queued`, 'info');
+                loadEnrichmentWorkerStatus();
+            } catch (e) {
+                if (statusEl) statusEl.textContent = 'Error: ' + e.message;
+            }
+        }
+
+        async function loadEnrichmentWorkerStatus() {
+            try {
+                const resp = await fetch('/api/threat-intel/worker-status');
+                const status = await resp.json();
+                const el = document.getElementById('ti-worker-status');
+                if (!el) return;
+
+                const runColor = status.running ? 'var(--success)' : 'var(--danger)';
+                el.innerHTML = `
+                    <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:12px 16px; background:var(--bg-tertiary); border-radius:6px; border:1px solid var(--border-color);">
+                        <span><i class="fa-solid fa-circle" style="color:${runColor}; font-size:8px;"></i> Worker: <strong>${status.running ? 'Running' : 'Stopped'}</strong></span>
+                        <span>Queue: <strong>${status.queue_size}</strong> IPs pending</span>
+                        <span>Enriched: <strong>${status.total_enriched}</strong> IPs total</span>
+                        <button class="btn btn-secondary" style="padding:4px 12px; font-size:11px; margin-left:auto;" onclick="enrichAllHunts()">
+                            <i class="fa-solid fa-bolt"></i> Enrich All Hunts
+                        </button>
+                        <span id="enrich-all-status" style="font-size:11px; color:var(--text-secondary);"></span>
+                    </div>
+                `;
+            } catch (e) {
+                console.error('Error loading worker status:', e);
+            }
+        }
+
+        function lookupFromBadge(ip) {
+            document.getElementById('ti-indicator').value = ip;
+            document.getElementById('ti-type').value = 'ip';
+            showTab('threat-intel-tab');
+            lookupThreatIntel();
         }
 
         // ========================================

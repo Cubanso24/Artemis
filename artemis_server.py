@@ -72,6 +72,11 @@ async def on_startup():
 
     # Reconnect to any hunts that survived the previous server process
     hunt_manager.reconnect_running_hunts()
+
+    # Start background threat intel enrichment worker
+    from artemis.integrations.threat_intel import threat_intel_manager  # noqa: E402
+    threat_intel_manager.start_background_worker()
+
     logger.info("Artemis server started")
 
 
