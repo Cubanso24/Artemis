@@ -51,7 +51,7 @@ class NetworkNode:
     __slots__ = (
         'ip', 'sensor_id', 'vlan', 'hostnames', 'netbios_names', 'domain',
         'mac_address', 'vendor', 'is_virtual', 'virtual_platform',
-        'os_info', 'device_model', 'software',
+        'os_info', 'device_model', 'software', 'user_agents',
         'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
@@ -72,6 +72,7 @@ class NetworkNode:
         self.os_info: str = ''  # OS / system description (from SNMP sysDescr, SSH banner, etc.)
         self.device_model: str = ''  # Device model (from SNMP sysObjectID OID mapping)
         self.software: List[str] = []  # Detected software names/versions
+        self.user_agents: List[str] = []  # HTTP User-Agent strings observed from this IP
         self.services: Set[tuple] = set()  # (port, protocol) tuples
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
@@ -122,6 +123,7 @@ class NetworkNode:
             'os_info': self.os_info,
             'device_model': self.device_model,
             'software': self.software[:10],
+            'user_agents': self.user_agents[:20],
             'services': [f"{port}/{proto}" for port, proto in self.services],
             'first_seen': self.first_seen.isoformat(),
             'last_seen': self.last_seen.isoformat(),
@@ -1040,10 +1042,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
         return windows
 
     def _run_profile_queries(self, splunk_connector, earliest, latest):
-        """Run the 10 profiling Splunk queries for a single time window.
+        """Run the profiling Splunk queries for a single time window.
 
         Returns a dict with keys: server, client, ntlm, kerberos, dhcp,
-        snmp, smb, software, ssh, x509 — each holding a list of result rows.
+        snmp, smb, software, ssh, x509, http_ua — each holding a list of
+        result rows.
         """
         from concurrent.futures import ThreadPoolExecutor
 
@@ -1052,7 +1055,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         _HEAVY_TIMEOUT = 1800
         _LIGHT_TIMEOUT = 600
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=len(queries)) as executor:
             futures = {}
             for name, spl in queries.items():
                 futures[name] = executor.submit(
@@ -1132,7 +1135,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         # --- enrichment queries: just concatenate ---
         for key in ('ntlm', 'kerberos', 'dhcp', 'snmp', 'smb',
-                     'software', 'ssh', 'x509'):
+                     'software', 'ssh', 'x509', 'http_ua'):
             accumulated[key].extend(new_results.get(key, []))
 
     def _profile_query_definitions(self):
@@ -1233,6 +1236,17 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | stats values(cn) as cert_names by host
             | rename host as sensor_id
             ''',
+            'http_ua': '''
+            search index=zeek_http
+            | spath
+            | where isnotnull(user_agent) AND user_agent!="-"
+            | stats values(user_agent) as user_agents,
+                    dc(host) as sites_visited,
+                    count as http_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | where http_count >= 2
+            ''',
         }
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
@@ -1285,6 +1299,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'client_agg': {},   # ip -> {unique_destinations, outgoing_count}
             'ntlm': [], 'kerberos': [], 'dhcp': [], 'snmp': [],
             'smb': [], 'software': [], 'ssh': [], 'x509': [],
+            'http_ua': [],
         }
 
         # Progress: queries run from 35% to 70%.  Divide evenly across windows.
@@ -1297,7 +1312,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                          if total_windows > 1 else "Querying Splunk...")
             pct = int(pct_query_start + (win_idx - 1) * pct_per_window)
             _progress('profile',
-                      f'{win_label} — submitting 10 queries in parallel...',
+                      f'{win_label} — submitting 11 queries in parallel...',
                       pct)
             logger.info(f"Profiling window {win_idx}/{total_windows}: "
                         f"{earliest} → {latest}")
@@ -1323,6 +1338,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         software_results = accumulated['software']
         ssh_results = accumulated['ssh']
         x509_results = accumulated['x509']
+        http_ua_results = accumulated['http_ua']
 
         query_counts = (
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -1330,7 +1346,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(ntlm_results)} NTLM, {len(kerberos_results)} Kerberos, "
             f"{len(dhcp_results)} DHCP, {len(snmp_results)} SNMP, "
             f"{len(smb_results)} SMB, {len(software_results)} software, "
-            f"{len(ssh_results)} SSH, {len(x509_results)} x509"
+            f"{len(ssh_results)} SSH, {len(x509_results)} x509, "
+            f"{len(http_ua_results)} HTTP UA"
         )
         _progress('profile',
                   f'All {total_windows} window(s) done: {query_counts}. '
@@ -1551,6 +1568,51 @@ class NetworkMapperPlugin(ArtemisPlugin):
                             node.os_info = 'Windows'
                     ssh_enriched += 1
 
+        # Enrich nodes with HTTP User-Agent strings
+        ua_enriched = 0
+        for row in http_ua_results:
+            ip = _sv(row.get('ip'))
+            ua_list = row.get('user_agents', [])
+            if isinstance(ua_list, str):
+                ua_list = [ua_list]
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for ua in ua_list:
+                    ua = str(ua).strip()
+                    if ua and ua != '-' and ua not in node.user_agents:
+                        node.user_agents.append(ua)
+                # Infer OS from user-agent strings if not already set
+                if not node.os_info:
+                    for ua in node.user_agents:
+                        ua_lower = ua.lower()
+                        if 'windows nt 10' in ua_lower:
+                            node.os_info = 'Windows 10/11'
+                            break
+                        elif 'windows nt 6.3' in ua_lower:
+                            node.os_info = 'Windows 8.1'
+                            break
+                        elif 'windows nt 6.1' in ua_lower:
+                            node.os_info = 'Windows 7'
+                            break
+                        elif 'windows' in ua_lower:
+                            node.os_info = 'Windows'
+                            break
+                        elif 'macintosh' in ua_lower or 'mac os x' in ua_lower:
+                            node.os_info = 'macOS'
+                            break
+                        elif 'linux' in ua_lower and 'android' not in ua_lower:
+                            node.os_info = 'Linux'
+                            break
+                        elif 'android' in ua_lower:
+                            node.os_info = 'Android'
+                            break
+                        elif 'iphone' in ua_lower or 'ipad' in ua_lower:
+                            node.os_info = 'iOS'
+                            break
+                ua_enriched += 1
+
         logger.info(
             f"Device profiling ({total_windows} window(s)): "
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -1564,7 +1626,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(snmp_results)} SNMP hosts ({snmp_enriched} enrichments), "
             f"{len(smb_results)} SMB hosts ({smb_enriched} NetBIOS names), "
             f"{len(software_results)} software detections ({software_enriched} enrichments), "
-            f"{len(ssh_results)} SSH sessions ({ssh_enriched} enrichments)"
+            f"{len(ssh_results)} SSH sessions ({ssh_enriched} enrichments), "
+            f"{len(http_ua_results)} HTTP UA profiles ({ua_enriched} enrichments)"
         )
 
         # Use pre-aggregated server/client data from windowed merge
@@ -2128,6 +2191,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'os_info': node.os_info,
                 'device_model': node.device_model,
                 'software': node.software[:5],
+                'user_agents': node.user_agents[:10],
                 'vendor': node.vendor,
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],

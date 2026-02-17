@@ -2384,6 +2384,7 @@
             const deviceModel = node.device_model || '';
             const vendorStr = node.vendor || '';
             const softwareList = node.software || [];
+            const userAgentsList = node.user_agents || [];
 
             title.textContent = `${node.label}${deviceStr !== 'Unknown' ? ' — ' + deviceStr : ''}`;
 
@@ -2415,6 +2416,13 @@
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
                     ${softwareList.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Software:</span> ${escapeHtml(softwareList.join(', '))}</div>` : ''}
                 </div>
+                ${userAgentsList.length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-globe"></i> User Agents (${userAgentsList.length})</h4>
+                    <div style="max-height:160px; overflow-y:auto; background:rgba(0,0,0,0.15); border-radius:6px; padding:8px;">
+                        ${userAgentsList.map(ua => `<div style="font-size:12px; font-family:monospace; padding:4px 6px; border-bottom:1px solid rgba(255,255,255,0.05); word-break:break-all;">${escapeHtml(ua)}</div>`).join('')}
+                    </div>
+                </div>` : ''}
                 <div style="margin-bottom:16px;">
                     <button class="btn btn-secondary" onclick="loadDeviceIdentity('${escapeHtml(nodeIp)}')" style="font-size:12px; padding:5px 12px;">
                         <i class="fa-solid fa-fingerprint"></i> Device Identity (MAC History)
@@ -3026,6 +3034,7 @@
                 const model = (n.device_model || '').toLowerCase();
                 const osInfo = (n.os_info || '').toLowerCase();
                 const sw = (n.software || []).join(' ').toLowerCase();
+                const ua = (n.user_agents || []).join(' ').toLowerCase();
                 const virt = (n.virtual_platform || '').toLowerCase();
                 // Allow searching "virtual" or "vm" to find all VMs
                 const isVmQuery = query === 'virtual' || query === 'vm' || query === 'virtual machine';
@@ -3035,6 +3044,7 @@
                        hostnames.includes(query) || mac.includes(query) ||
                        vendor.includes(query) || model.includes(query) ||
                        osInfo.includes(query) || sw.includes(query) ||
+                       ua.includes(query) ||
                        virt.includes(query) || (isVmQuery && n.is_virtual);
             });
 
