@@ -1328,7 +1328,7 @@
                 <h2>Network Topology Graph</h2>
 
                 <div class="graph-controls">
-                    <input type="text" id="graph-search" placeholder="Search IP, hostname, domain, vendor..." onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:260px;">
+                    <input type="text" id="graph-search" placeholder="Search IP, hostname, vendor... (10.0.1.* for subnet)" onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:300px;">
                     <button class="btn" onclick="searchGraphNode()">Find</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
@@ -2880,6 +2880,111 @@
             addLog('Downloaded network graph as JSON', 'info');
         }
 
+        // ── Wildcard subnet matching (10.0.1.*, 192.168.*.*, etc.) ──
+        function findSubnetMatches(pattern) {
+            if (!networkGraphData || !networkGraphData.raw) return [];
+
+            // Convert wildcard pattern to regex: 10.0.1.* → ^10\.0\.1\.\d+$
+            const regexStr = '^' + pattern
+                .replace(/\./g, '\\.')
+                .replace(/\*/g, '\\d+') + '$';
+            const re = new RegExp(regexStr);
+
+            return networkGraphData.raw.nodes.filter(n => {
+                if (n.group === 'internet') return false;
+                // Extract IP from node id (sensor:vlan:ip)
+                const ip = n.id ? n.id.split(':').pop() : '';
+                return re.test(ip);
+            });
+        }
+
+        function handleSubnetResults(matches, query, searchInput) {
+            addLog(`Subnet search "${query}": found ${matches.length} device${matches.length !== 1 ? 's' : ''}`, 'info');
+
+            const graphTab = document.getElementById('network-graph-tab');
+            if (!graphTab.classList.contains('active')) showTab('network-graph-tab');
+
+            // If all matches share the same VLAN, switch to it
+            const vlans = new Set(matches.map(n => n.vlan || '0'));
+            if (vlans.size === 1) {
+                const vlan = vlans.values().next().value;
+                if (_activeVlan !== vlan) switchVlanTab(vlan);
+            } else if (_activeVlan !== null) {
+                // Multiple VLANs — show all networks
+                switchVlanTab(null);
+            }
+
+            // Select and zoom to fit all matched nodes
+            const ids = matches.map(n => n.id);
+            networkGraph.selectNodes(ids);
+            networkGraph.fit({
+                nodes: ids,
+                animation: { duration: 600, easingFunction: 'easeInOutQuad' },
+            });
+
+            // Show subnet summary in the details panel
+            showSubnetDetails(matches, query);
+
+            searchInput.style.borderColor = '#43a047';
+            setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
+        }
+
+        function showSubnetDetails(matches, query) {
+            const panel = document.getElementById('node-details-panel');
+            const title = document.getElementById('node-details-title');
+            const body = document.getElementById('node-details-body');
+
+            title.textContent = `Subnet: ${query} (${matches.length} devices)`;
+
+            const tierNames = { 0: 'WAN/External', 1: 'Gateway', 2: 'Core Infra', 3: 'Server', 4: 'Endpoint' };
+
+            let html = `<div style="font-size:13px; opacity:0.7; margin-bottom:12px;">${matches.length} device${matches.length !== 1 ? 's' : ''} matching <strong>${escapeHtml(query)}</strong></div>`;
+            html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">`;
+            html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                <td style="padding:4px 8px;">IP</td>
+                <td style="padding:4px 8px;">Name</td>
+                <td style="padding:4px 8px;">Type</td>
+                <td style="padding:4px 8px;">Tier</td>
+                <td style="padding:4px 8px;">Status</td>
+            </tr>`;
+
+            // Sort by IP numerically
+            const sorted = [...matches].sort((a, b) => {
+                const ipA = (a.id || '').split(':').pop();
+                const ipB = (b.id || '').split(':').pop();
+                const partsA = ipA.split('.').map(Number);
+                const partsB = ipB.split('.').map(Number);
+                for (let i = 0; i < 4; i++) {
+                    if ((partsA[i] || 0) !== (partsB[i] || 0)) return (partsA[i] || 0) - (partsB[i] || 0);
+                }
+                return 0;
+            });
+
+            sorted.forEach(n => {
+                const ip = n.id ? n.id.split(':').pop() : '';
+                const name = (n.netbios_names || [])[0] || (n.hostnames || [])[0] || '';
+                const dtype = n.device_label || n.device_type || '';
+                const tier = tierNames[n.tier] || '';
+                const flag = _deviceFlags[n.id];
+                let statusHtml = '';
+                if (flag) {
+                    const col = flag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff';
+                    statusHtml = `<span style="color:${col}; font-weight:600; font-size:12px;">${flag.flag_type}</span>`;
+                }
+                html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); cursor:pointer;" onclick="document.getElementById('graph-search').value='${escapeHtml(ip)}'; searchGraphNode();">
+                    <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(ip)}</td>
+                    <td style="padding:4px 8px;">${escapeHtml(name)}</td>
+                    <td style="padding:4px 8px;">${escapeHtml(dtype)}</td>
+                    <td style="padding:4px 8px; opacity:0.7;">${escapeHtml(tier)}</td>
+                    <td style="padding:4px 8px;">${statusHtml}</td>
+                </tr>`;
+            });
+            html += '</table>';
+            body.innerHTML = html;
+            panel.style.display = 'block';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
         function searchGraphNode() {
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             const searchInput = document.getElementById('graph-search');
@@ -2896,6 +3001,16 @@
 
             // Clear any previous search feedback
             searchInput.style.borderColor = '';
+
+            // ── Wildcard / subnet search (e.g. 10.0.1.* or 192.168.*.*) ──
+            if (query.includes('*')) {
+                const subnetMatches = findSubnetMatches(query);
+                if (subnetMatches.length > 0) {
+                    handleSubnetResults(subnetMatches, query, searchInput);
+                    return;
+                }
+                // Fall through to "not found" if no matches
+            }
 
             // Search through nodes (IP, label, device type, NetBIOS, domain, hostname, MAC, vendor, model, OS, software, virtual platform)
             const matches = networkGraphData.raw.nodes.filter(n => {
@@ -2924,28 +3039,28 @@
             });
 
             if (matches.length > 0) {
-                const match = matches[0];
-                addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''} (${matches.length} match${matches.length > 1 ? 'es' : ''})`, 'info');
+                // Single match: focus on it. Multiple: zoom to fit all.
+                if (matches.length === 1) {
+                    const match = matches[0];
+                    addLog(`Found: ${match.label}${match.device_label ? ' [' + match.device_label + ']' : ''}`, 'info');
 
-                // Switch to Network Graph tab if not already there
-                const graphTab = document.getElementById('network-graph-tab');
-                if (!graphTab.classList.contains('active')) {
-                    showTab('network-graph-tab');
-                }
+                    const graphTab = document.getElementById('network-graph-tab');
+                    if (!graphTab.classList.contains('active')) showTab('network-graph-tab');
 
-                // Auto-switch to the node's VLAN so it's visible on the graph
-                if (match.group !== 'internet') {
-                    const nodeVlan = match.vlan || '0';
-                    if (_activeVlan !== null && nodeVlan !== _activeVlan) {
-                        switchVlanTab(nodeVlan);
+                    if (match.group !== 'internet') {
+                        const nodeVlan = match.vlan || '0';
+                        if (_activeVlan !== null && nodeVlan !== _activeVlan) switchVlanTab(nodeVlan);
                     }
+                    networkGraph.selectNodes([match.id]);
+                    networkGraph.focus(match.id, {
+                        scale: 1.5,
+                        animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+                    });
+                    showNodeDetails(match);
+                } else {
+                    handleSubnetResults(matches, query, searchInput);
+                    return;
                 }
-                networkGraph.selectNodes([match.id]);
-                networkGraph.focus(match.id, {
-                    scale: 1.5,
-                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
-                });
-                showNodeDetails(match);
                 searchInput.style.borderColor = '#43a047';
                 setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
                 return;
@@ -2994,7 +3109,7 @@
                 <div style="text-align:center; padding:20px;">
                     <i class="fa-solid fa-magnifying-glass" style="font-size:32px; opacity:0.3; margin-bottom:12px;"></i>
                     <p style="font-size:14px; margin-bottom:8px;">No device matching <strong>"${escapeHtml(query)}"</strong> was found in the network map.</p>
-                    <p style="font-size:12px; opacity:0.6;">Try searching by IP address, hostname, domain, NetBIOS name, MAC address, or vendor name.</p>
+                    <p style="font-size:12px; opacity:0.6;">Try searching by IP address, hostname, domain, NetBIOS name, MAC address, or vendor name. Use <strong>*</strong> for wildcard subnet search (e.g. <strong>10.0.1.*</strong>).</p>
                 </div>
             `;
             panel.style.display = 'block';
