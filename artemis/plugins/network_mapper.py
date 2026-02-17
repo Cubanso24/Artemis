@@ -56,6 +56,14 @@ class NetworkNode:
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
         'connections_to', 'connections_from', 'is_internal', 'roles',
         'device_type',
+        # Deep fingerprint fields
+        'dhcp_client_fqdn', 'dhcp_vendor_class',
+        'ja3_fingerprints', 'ja3s_fingerprints',
+        'tls_server_names', 'tls_versions_seen',
+        'dns_profile',
+        'rdp_info',
+        'cert_subjects', 'cert_issuers',
+        'file_mime_types',
     )
 
     def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
@@ -74,6 +82,18 @@ class NetworkNode:
         self.software: List[str] = []  # Detected software names/versions
         self.user_agents: List[str] = []  # HTTP User-Agent strings observed from this IP
         self.services: Set[tuple] = set()  # (port, protocol) tuples
+        # Deep fingerprint fields
+        self.dhcp_client_fqdn: str = ''  # FQDN from DHCP negotiation
+        self.dhcp_vendor_class: str = ''  # DHCP Option 60 vendor class identifier
+        self.ja3_fingerprints: List[str] = []  # JA3 TLS client hello hashes
+        self.ja3s_fingerprints: List[str] = []  # JA3S TLS server hello hashes
+        self.tls_server_names: List[str] = []  # SNI hostnames from outgoing TLS connections
+        self.tls_versions_seen: List[str] = []  # TLS versions observed (e.g. TLSv12, TLSv13)
+        self.dns_profile: Dict = {}  # DNS behavioral profile {query_count, unique_domains, top_tlds, nxdomain_ratio, query_types}
+        self.rdp_info: Dict = {}  # RDP client details {cookie, client_build, client_name, keyboard_layout, resolution}
+        self.cert_subjects: List[str] = []  # x509 certificate subjects served
+        self.cert_issuers: List[str] = []  # x509 certificate issuers
+        self.file_mime_types: List[str] = []  # MIME types of files transferred by this host
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
         self.total_connections = 0
@@ -142,7 +162,19 @@ class NetworkNode:
                 self.connections_from.items(),
                 key=lambda x: x[1],
                 reverse=True
-            )[:50])
+            )[:50]),
+            # Deep fingerprint fields
+            'dhcp_client_fqdn': self.dhcp_client_fqdn,
+            'dhcp_vendor_class': self.dhcp_vendor_class,
+            'ja3_fingerprints': self.ja3_fingerprints[:20],
+            'ja3s_fingerprints': self.ja3s_fingerprints[:20],
+            'tls_server_names': self.tls_server_names[:30],
+            'tls_versions_seen': self.tls_versions_seen[:10],
+            'dns_profile': self.dns_profile,
+            'rdp_info': self.rdp_info,
+            'cert_subjects': self.cert_subjects[:20],
+            'cert_issuers': self.cert_issuers[:20],
+            'file_mime_types': self.file_mime_types[:20],
         }
 
 
@@ -264,6 +296,19 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.bytes_received = node_data.get('bytes_received', 0)
         node.roles = set(node_data.get('roles', []))
         node.device_type = node_data.get('device_type', '')
+
+        # Deep fingerprint fields
+        node.dhcp_client_fqdn = node_data.get('dhcp_client_fqdn', '')
+        node.dhcp_vendor_class = node_data.get('dhcp_vendor_class', '')
+        node.ja3_fingerprints = node_data.get('ja3_fingerprints', [])
+        node.ja3s_fingerprints = node_data.get('ja3s_fingerprints', [])
+        node.tls_server_names = node_data.get('tls_server_names', [])
+        node.tls_versions_seen = node_data.get('tls_versions_seen', [])
+        node.dns_profile = node_data.get('dns_profile', {})
+        node.rdp_info = node_data.get('rdp_info', {})
+        node.cert_subjects = node_data.get('cert_subjects', [])
+        node.cert_issuers = node_data.get('cert_issuers', [])
+        node.file_mime_types = node_data.get('file_mime_types', [])
 
         # Restore connection maps (edges)
         for dst_ip, count in node_data.get('connections_to', {}).items():
@@ -767,6 +812,91 @@ class NetworkMapperPlugin(ArtemisPlugin):
         '1.3.6.1.4.1.1991': 'Brocade/Ruckus Switch',
     }
 
+    # RDP client_build to Windows version mapping.
+    # The build number from Zeek rdp.log directly identifies the Windows release.
+    RDP_BUILD_TO_WINDOWS = {
+        2600: 'Windows XP',
+        3790: 'Windows Server 2003',
+        6000: 'Windows Vista',
+        6001: 'Windows Vista SP1 / Server 2008',
+        6002: 'Windows Vista SP2 / Server 2008 SP2',
+        7600: 'Windows 7 / Server 2008 R2',
+        7601: 'Windows 7 SP1 / Server 2008 R2 SP1',
+        9200: 'Windows 8 / Server 2012',
+        9600: 'Windows 8.1 / Server 2012 R2',
+        10240: 'Windows 10 1507',
+        10586: 'Windows 10 1511',
+        14393: 'Windows 10 1607 / Server 2016',
+        15063: 'Windows 10 1703',
+        16299: 'Windows 10 1709',
+        17134: 'Windows 10 1803',
+        17763: 'Windows 10 1809 / Server 2019',
+        18362: 'Windows 10 1903',
+        18363: 'Windows 10 1909',
+        19041: 'Windows 10 2004',
+        19042: 'Windows 10 20H2',
+        19043: 'Windows 10 21H1',
+        19044: 'Windows 10 21H2',
+        19045: 'Windows 10 22H2',
+        20348: 'Windows Server 2022',
+        22000: 'Windows 11 21H2',
+        22621: 'Windows 11 22H2',
+        22631: 'Windows 11 23H2',
+        26100: 'Windows 11 24H2 / Server 2025',
+    }
+
+    # DHCP vendor class (Option 60) to OS/device type mapping.
+    # These prefixes in the vendor_class field identify the client platform.
+    DHCP_VENDOR_CLASS_MAP = {
+        'MSFT 5.0': 'Windows 2000/XP/2003',
+        'MSFT 6.0': 'Windows Vista/2008',
+        'MSFT 7.0': 'Windows 7',
+        'MSFT 8.0': 'Windows 8',
+        'MSFT 9.0': 'Windows 8.1',
+        'MSFT 10.0': 'Windows 10/11',
+        'dhcpcd': 'Linux/BSD (dhcpcd)',
+        'udhcp': 'Embedded Linux (BusyBox)',
+        'android-dhcp': 'Android',
+        'Apple AirPort': 'Apple AirPort',
+        'AAPLBSDPC': 'macOS (Apple BSDP)',
+    }
+
+    @classmethod
+    def _lookup_rdp_build(cls, build: int) -> str:
+        """Map RDP client_build number to Windows version string."""
+        # Exact match first
+        if build in cls.RDP_BUILD_TO_WINDOWS:
+            return cls.RDP_BUILD_TO_WINDOWS[build]
+        # Range-based fallback for builds between known versions
+        if build < 6000:
+            return 'Windows XP/2003'
+        if build < 7600:
+            return 'Windows Vista/2008'
+        if build < 9200:
+            return 'Windows 7/2008 R2'
+        if build < 9600:
+            return 'Windows 8/2012'
+        if build < 10240:
+            return 'Windows 8.1/2012 R2'
+        if build < 22000:
+            return f'Windows 10 (build {build})'
+        return f'Windows 11 (build {build})'
+
+    @classmethod
+    def _lookup_dhcp_vendor_class(cls, vendor_class: str) -> str:
+        """Map DHCP vendor class identifier to OS/device type."""
+        if not vendor_class:
+            return ''
+        # Exact match
+        if vendor_class in cls.DHCP_VENDOR_CLASS_MAP:
+            return cls.DHCP_VENDOR_CLASS_MAP[vendor_class]
+        # Prefix match
+        vc_lower = vendor_class.lower()
+        for prefix, os_name in cls.DHCP_VENDOR_CLASS_MAP.items():
+            if vc_lower.startswith(prefix.lower()):
+                return os_name
+        return ''
+
     @classmethod
     def _lookup_snmp_oid(cls, oid: str) -> str:
         """Look up device model from SNMP sysObjectID by matching OID prefixes."""
@@ -1135,7 +1265,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         # --- enrichment queries: just concatenate ---
         for key in ('ntlm', 'kerberos', 'dhcp', 'snmp', 'smb',
-                     'software', 'ssh', 'x509', 'http_ua'):
+                     'software', 'ssh', 'x509', 'http_ua',
+                     'ja3_ssl', 'ja3s_server', 'dns_profile', 'rdp',
+                     'dhcp_extended', 'files', 'x509_extended'):
             accumulated[key].extend(new_results.get(key, []))
 
     def _profile_query_definitions(self):
@@ -1247,6 +1379,110 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.orig_h" as ip
             | where http_count >= 2
             ''',
+            # --- Deep fingerprint queries ---
+            'ja3_ssl': '''
+            search index=zeek_ssl
+            | spath
+            | where isnotnull(ja3) AND ja3!="-"
+            | stats values(ja3) as ja3_hashes,
+                    values(ja3s) as ja3s_hashes,
+                    values(server_name) as sni_names,
+                    values(version) as tls_versions,
+                    dc("id.resp_h") as unique_servers,
+                    count as tls_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | where tls_count >= 2
+            ''',
+            'ja3s_server': '''
+            search index=zeek_ssl
+            | spath
+            | where isnotnull(ja3s) AND ja3s!="-"
+            | stats values(ja3s) as ja3s_hashes,
+                    values(subject) as cert_subjects,
+                    values(issuer) as cert_issuers,
+                    values(version) as tls_versions,
+                    dc("id.orig_h") as unique_clients
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where unique_clients >= 1
+            ''',
+            'dns_profile': '''
+            search index=zeek_dns
+            | spath
+            | where isnotnull(query) AND query!="-"
+            | eval tld=mvindex(split(query, "."), -1)
+            | eval is_nxdomain=if(rcode_name=="NXDOMAIN", 1, 0)
+            | stats count as query_count,
+                    dc(query) as unique_domains,
+                    values(tld) as tlds,
+                    sum(is_nxdomain) as nxdomain_count,
+                    values(qtype_name) as query_types
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | eval nxdomain_ratio=round(nxdomain_count/query_count, 4)
+            | where query_count >= 5
+            ''',
+            'rdp': '''
+            search index=zeek_rdp
+            | spath
+            | where isnotnull(cookie) OR isnotnull(client_build)
+            | stats latest(cookie) as rdp_cookie,
+                    latest(client_build) as client_build,
+                    latest(client_name) as client_name,
+                    latest(keyboard_layout) as keyboard_layout,
+                    latest(desktop_width) as desktop_width,
+                    latest(desktop_height) as desktop_height,
+                    latest(security_protocol) as security_protocol,
+                    count as rdp_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            ''',
+            'dhcp_extended': '''
+            search index=zeek_dhcp
+            | spath
+            | where isnotnull(assigned_addr) AND isnotnull(mac)
+            | eval vlan=coalesce(vlan, "0")
+            | stats latest(client_fqdn) as client_fqdn,
+                    latest(domain) as dhcp_domain,
+                    latest(vendor_class) as vendor_class,
+                    latest(lease_time) as lease_time,
+                    values(msg_types) as msg_types,
+                    latest(host) as sensor_id
+              by assigned_addr, mac, vlan
+            | rename assigned_addr as ip
+            | where isnotnull(client_fqdn) OR isnotnull(vendor_class)
+            ''',
+            'files': '''
+            search index=zeek_files
+            | spath
+            | where isnotnull(mime_type) AND mime_type!="-"
+            | eval ip=coalesce(tx_hosts, rx_hosts)
+            | mvexpand ip
+            | stats values(mime_type) as mime_types,
+                    values(source) as file_sources,
+                    dc(mime_type) as unique_types,
+                    sum(total_bytes) as total_file_bytes,
+                    count as file_count
+              by ip
+            | where file_count >= 2
+            ''',
+            'x509_extended': '''
+            search index=zeek_x509
+            | spath
+            | where isnotnull("certificate.subject")
+            | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
+            | rex field="certificate.issuer" "CN=(?<issuer_cn>[^,/]+)"
+            | rex field="certificate.issuer" "O=(?<issuer_org>[^,/]+)"
+            | stats values(cn) as cert_names,
+                    values(issuer_cn) as issuer_names,
+                    values(issuer_org) as issuer_orgs,
+                    values("certificate.key_type") as key_types,
+                    values("certificate.key_length") as key_lengths,
+                    dc(cn) as unique_certs
+              by host
+            | rename host as sensor_id
+            ''',
         }
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
@@ -1300,6 +1536,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'ntlm': [], 'kerberos': [], 'dhcp': [], 'snmp': [],
             'smb': [], 'software': [], 'ssh': [], 'x509': [],
             'http_ua': [],
+            # Deep fingerprint accumulators
+            'ja3_ssl': [], 'ja3s_server': [], 'dns_profile': [],
+            'rdp': [], 'dhcp_extended': [], 'files': [],
+            'x509_extended': [],
         }
 
         # Progress: queries run from 35% to 70%.  Divide evenly across windows.
@@ -1312,7 +1552,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                          if total_windows > 1 else "Querying Splunk...")
             pct = int(pct_query_start + (win_idx - 1) * pct_per_window)
             _progress('profile',
-                      f'{win_label} — submitting 11 queries in parallel...',
+                      f'{win_label} — submitting 18 queries in parallel...',
                       pct)
             logger.info(f"Profiling window {win_idx}/{total_windows}: "
                         f"{earliest} → {latest}")
@@ -1339,6 +1579,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
         ssh_results = accumulated['ssh']
         x509_results = accumulated['x509']
         http_ua_results = accumulated['http_ua']
+        # Deep fingerprint results
+        ja3_ssl_results = accumulated['ja3_ssl']
+        ja3s_server_results = accumulated['ja3s_server']
+        dns_profile_results = accumulated['dns_profile']
+        rdp_results = accumulated['rdp']
+        dhcp_extended_results = accumulated['dhcp_extended']
+        files_results = accumulated['files']
+        x509_extended_results = accumulated['x509_extended']
 
         query_counts = (
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -1347,7 +1595,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(dhcp_results)} DHCP, {len(snmp_results)} SNMP, "
             f"{len(smb_results)} SMB, {len(software_results)} software, "
             f"{len(ssh_results)} SSH, {len(x509_results)} x509, "
-            f"{len(http_ua_results)} HTTP UA"
+            f"{len(http_ua_results)} HTTP UA, "
+            f"{len(ja3_ssl_results)} JA3/SSL, {len(ja3s_server_results)} JA3S server, "
+            f"{len(dns_profile_results)} DNS profile, {len(rdp_results)} RDP, "
+            f"{len(dhcp_extended_results)} DHCP ext, {len(files_results)} files, "
+            f"{len(x509_extended_results)} x509 ext"
         )
         _progress('profile',
                   f'All {total_windows} window(s) done: {query_counts}. '
@@ -1613,6 +1865,245 @@ class NetworkMapperPlugin(ArtemisPlugin):
                             break
                 ua_enriched += 1
 
+        # ---- Deep fingerprint enrichment ----
+
+        # Enrich nodes with JA3 TLS client fingerprints + SNI + TLS versions
+        ja3_enriched = 0
+        for row in ja3_ssl_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            ja3_list = row.get('ja3_hashes', [])
+            ja3s_list = row.get('ja3s_hashes', [])
+            sni_list = row.get('sni_names', [])
+            tls_vers = row.get('tls_versions', [])
+            if isinstance(ja3_list, str):
+                ja3_list = [ja3_list]
+            if isinstance(ja3s_list, str):
+                ja3s_list = [ja3s_list]
+            if isinstance(sni_list, str):
+                sni_list = [sni_list]
+            if isinstance(tls_vers, str):
+                tls_vers = [tls_vers]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for h in ja3_list:
+                    h = str(h).strip()
+                    if h and h != '-' and h not in node.ja3_fingerprints:
+                        node.ja3_fingerprints.append(h)
+                for h in ja3s_list:
+                    h = str(h).strip()
+                    if h and h != '-' and h not in node.ja3s_fingerprints:
+                        node.ja3s_fingerprints.append(h)
+                for sni in sni_list:
+                    sni = str(sni).strip()
+                    if sni and sni != '-' and sni not in node.tls_server_names:
+                        node.tls_server_names.append(sni)
+                for tv in tls_vers:
+                    tv = str(tv).strip()
+                    if tv and tv != '-' and tv not in node.tls_versions_seen:
+                        node.tls_versions_seen.append(tv)
+                ja3_enriched += 1
+
+        # Enrich server-side nodes with JA3S + certificate info from SSL
+        ja3s_enriched = 0
+        for row in ja3s_server_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            ja3s_list = row.get('ja3s_hashes', [])
+            cert_subj = row.get('cert_subjects', [])
+            cert_iss = row.get('cert_issuers', [])
+            tls_vers = row.get('tls_versions', [])
+            if isinstance(ja3s_list, str):
+                ja3s_list = [ja3s_list]
+            if isinstance(cert_subj, str):
+                cert_subj = [cert_subj]
+            if isinstance(cert_iss, str):
+                cert_iss = [cert_iss]
+            if isinstance(tls_vers, str):
+                tls_vers = [tls_vers]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for h in ja3s_list:
+                    h = str(h).strip()
+                    if h and h != '-' and h not in node.ja3s_fingerprints:
+                        node.ja3s_fingerprints.append(h)
+                for subj in cert_subj:
+                    subj = str(subj).strip()
+                    if subj and subj != '-' and subj not in node.cert_subjects:
+                        node.cert_subjects.append(subj)
+                for iss in cert_iss:
+                    iss = str(iss).strip()
+                    if iss and iss != '-' and iss not in node.cert_issuers:
+                        node.cert_issuers.append(iss)
+                for tv in tls_vers:
+                    tv = str(tv).strip()
+                    if tv and tv != '-' and tv not in node.tls_versions_seen:
+                        node.tls_versions_seen.append(tv)
+                ja3s_enriched += 1
+
+        # Enrich nodes with DNS behavioral profiles
+        dns_profiled = 0
+        for row in dns_profile_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            query_count = int(_sv(row.get('query_count'), '0'))
+            unique_domains = int(_sv(row.get('unique_domains'), '0'))
+            nxdomain_ratio = float(_sv(row.get('nxdomain_ratio'), '0'))
+            tlds = row.get('tlds', [])
+            query_types = row.get('query_types', [])
+            if isinstance(tlds, str):
+                tlds = [tlds]
+            if isinstance(query_types, str):
+                query_types = [query_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                # Merge: keep the higher values across windows
+                existing_qc = node.dns_profile.get('query_count', 0)
+                node.dns_profile = {
+                    'query_count': max(query_count, existing_qc),
+                    'unique_domains': max(unique_domains,
+                                          node.dns_profile.get('unique_domains', 0)),
+                    'nxdomain_ratio': max(nxdomain_ratio,
+                                          node.dns_profile.get('nxdomain_ratio', 0)),
+                    'top_tlds': [str(t).strip() for t in tlds
+                                 if str(t).strip() and str(t).strip() != '-'][:15],
+                    'query_types': [str(t).strip() for t in query_types
+                                    if str(t).strip() and str(t).strip() != '-'][:10],
+                }
+                dns_profiled += 1
+
+        # Enrich nodes with RDP client fingerprints
+        rdp_enriched = 0
+        for row in rdp_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            rdp_cookie = _sv(row.get('rdp_cookie'))
+            client_build_str = _sv(row.get('client_build'))
+            client_name = _sv(row.get('client_name'))
+            keyboard_layout = _sv(row.get('keyboard_layout'))
+            desktop_w = _sv(row.get('desktop_width'))
+            desktop_h = _sv(row.get('desktop_height'))
+            sec_proto = _sv(row.get('security_protocol'))
+
+            rdp_data = {}
+            if rdp_cookie and rdp_cookie != '-':
+                rdp_data['cookie'] = rdp_cookie
+            if client_build_str and client_build_str != '-':
+                try:
+                    rdp_data['client_build'] = int(client_build_str)
+                except (ValueError, TypeError):
+                    pass
+            if client_name and client_name != '-':
+                rdp_data['client_name'] = client_name
+            if keyboard_layout and keyboard_layout != '-':
+                rdp_data['keyboard_layout'] = keyboard_layout
+            if desktop_w and desktop_h and desktop_w != '-' and desktop_h != '-':
+                rdp_data['resolution'] = f"{desktop_w}x{desktop_h}"
+            if sec_proto and sec_proto != '-':
+                rdp_data['security_protocol'] = sec_proto
+
+            if rdp_data:
+                for key in ip_to_keys.get(ip, []):
+                    node = self.nodes[key]
+                    node.rdp_info = rdp_data
+
+                    # RDP cookie often contains the client hostname
+                    if rdp_cookie and rdp_cookie != '-':
+                        node.netbios_names.add(rdp_cookie.upper())
+
+                    # Infer Windows version from build number
+                    build = rdp_data.get('client_build')
+                    if build and not node.os_info:
+                        node.os_info = self._lookup_rdp_build(build)
+                    rdp_enriched += 1
+
+        # Enrich nodes with extended DHCP data (FQDN, vendor class)
+        dhcp_ext_enriched = 0
+        for row in dhcp_extended_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            client_fqdn = _sv(row.get('client_fqdn'))
+            vendor_class = _sv(row.get('vendor_class'))
+            dhcp_domain = _sv(row.get('dhcp_domain'))
+
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if client_fqdn and client_fqdn != '-' and client_fqdn != 'null':
+                    node.dhcp_client_fqdn = client_fqdn.lower()
+                    node.hostnames.add(client_fqdn.lower())
+                if vendor_class and vendor_class != '-' and vendor_class != 'null':
+                    node.dhcp_vendor_class = vendor_class
+                    # Infer OS from DHCP vendor class if not already set
+                    if not node.os_info:
+                        vc_os = self._lookup_dhcp_vendor_class(vendor_class)
+                        if vc_os:
+                            node.os_info = vc_os
+                if dhcp_domain and dhcp_domain != '-' and dhcp_domain != 'null':
+                    if not node.domain:
+                        node.domain = dhcp_domain.upper()
+                dhcp_ext_enriched += 1
+
+        # Enrich nodes with file transfer MIME types
+        files_enriched = 0
+        for row in files_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            mime_list = row.get('mime_types', [])
+            if isinstance(mime_list, str):
+                mime_list = [mime_list]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for mime in mime_list:
+                    mime = str(mime).strip()
+                    if mime and mime != '-' and mime not in node.file_mime_types:
+                        node.file_mime_types.append(mime)
+                files_enriched += 1
+
+        # Enrich with extended x509 certificate data (issuers, key info)
+        x509_ext_enriched = 0
+        for row in x509_extended_results:
+            cert_names = row.get('cert_names', [])
+            issuer_names = row.get('issuer_names', [])
+            issuer_orgs = row.get('issuer_orgs', [])
+            if isinstance(cert_names, str):
+                cert_names = [cert_names]
+            if isinstance(issuer_names, str):
+                issuer_names = [issuer_names]
+            if isinstance(issuer_orgs, str):
+                issuer_orgs = [issuer_orgs]
+
+            # x509 logs are per-sensor, try to match cert CN to node hostnames
+            for key, node in self.nodes.items():
+                for cn in cert_names:
+                    cn = str(cn).strip().lower()
+                    if cn and cn != '-':
+                        # Match if CN is in this node's hostnames or netbios_names
+                        cn_base = cn.lstrip('*.').split('.')[0]
+                        node_names = {h.lower() for h in node.hostnames}
+                        node_names |= {nb.lower() for nb in node.netbios_names}
+                        if cn in node_names or cn_base in node_names or any(
+                            cn in h for h in node_names
+                        ):
+                            if cn not in node.cert_subjects:
+                                node.cert_subjects.append(cn)
+                            for iss in issuer_names:
+                                iss = str(iss).strip()
+                                if iss and iss != '-' and iss not in node.cert_issuers:
+                                    node.cert_issuers.append(iss)
+                            for org in issuer_orgs:
+                                org = str(org).strip()
+                                if org and org != '-':
+                                    iss_entry = f"O={org}"
+                                    if iss_entry not in node.cert_issuers:
+                                        node.cert_issuers.append(iss_entry)
+                            x509_ext_enriched += 1
+
         logger.info(
             f"Device profiling ({total_windows} window(s)): "
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -1628,6 +2119,16 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(software_results)} software detections ({software_enriched} enrichments), "
             f"{len(ssh_results)} SSH sessions ({ssh_enriched} enrichments), "
             f"{len(http_ua_results)} HTTP UA profiles ({ua_enriched} enrichments)"
+        )
+        logger.info(
+            f"Deep fingerprint enrichment: "
+            f"{len(ja3_ssl_results)} JA3/SSL ({ja3_enriched} enrichments), "
+            f"{len(ja3s_server_results)} JA3S server ({ja3s_enriched} enrichments), "
+            f"{len(dns_profile_results)} DNS profiles ({dns_profiled} enrichments), "
+            f"{len(rdp_results)} RDP ({rdp_enriched} enrichments), "
+            f"{len(dhcp_extended_results)} DHCP extended ({dhcp_ext_enriched} enrichments), "
+            f"{len(files_results)} file transfers ({files_enriched} enrichments), "
+            f"{len(x509_extended_results)} x509 extended ({x509_ext_enriched} enrichments)"
         )
 
         # Use pre-aggregated server/client data from windowed merge
@@ -2015,6 +2516,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'services': svcs,
                     'connections': n.total_connections,
                     'sensor_id': n.sensor_id,
+                    # Deep fingerprint data
+                    'dhcp_vendor_class': n.dhcp_vendor_class,
+                    'ja3_count': len(n.ja3_fingerprints),
+                    'tls_versions': n.tls_versions_seen[:3],
+                    'dns_query_count': n.dns_profile.get('query_count', 0),
+                    'dns_nxdomain_ratio': n.dns_profile.get('nxdomain_ratio', 0),
+                    'rdp_info': n.rdp_info if n.rdp_info else None,
+                    'cert_subjects': n.cert_subjects[:3],
+                    'file_types': n.file_mime_types[:5],
                 })
 
         # Sort each category by connection count and cap at 25
@@ -2068,6 +2578,29 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'multi_ip_count': sum(
                     1 for bindings in self.mac_history.values()
                     if len({b.ip for b in bindings}) > 1
+                ),
+            },
+            'fingerprint_coverage': {
+                'ja3_fingerprinted': sum(
+                    1 for n in nodes if n.is_internal and n.ja3_fingerprints
+                ),
+                'dns_profiled': sum(
+                    1 for n in nodes if n.is_internal and n.dns_profile
+                ),
+                'rdp_fingerprinted': sum(
+                    1 for n in nodes if n.is_internal and n.rdp_info
+                ),
+                'dhcp_vendor_identified': sum(
+                    1 for n in nodes if n.is_internal and n.dhcp_vendor_class
+                ),
+                'cert_identified': sum(
+                    1 for n in nodes if n.is_internal and n.cert_subjects
+                ),
+                'file_types_tracked': sum(
+                    1 for n in nodes if n.is_internal and n.file_mime_types
+                ),
+                'os_identified': sum(
+                    1 for n in nodes if n.is_internal and n.os_info
                 ),
             },
         }
@@ -2201,6 +2734,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'software': node.software[:5],
                 'user_agents': node.user_agents[:10],
                 'vendor': node.vendor,
+                # Deep fingerprint data
+                'dhcp_client_fqdn': node.dhcp_client_fqdn,
+                'dhcp_vendor_class': node.dhcp_vendor_class,
+                'ja3_fingerprints': node.ja3_fingerprints[:5],
+                'ja3s_fingerprints': node.ja3s_fingerprints[:5],
+                'tls_server_names': node.tls_server_names[:10],
+                'tls_versions_seen': node.tls_versions_seen[:5],
+                'dns_profile': node.dns_profile,
+                'rdp_info': node.rdp_info,
+                'cert_subjects': node.cert_subjects[:5],
+                'cert_issuers': node.cert_issuers[:5],
+                'file_mime_types': node.file_mime_types[:10],
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],
                 'internal_connections': int_conns,
