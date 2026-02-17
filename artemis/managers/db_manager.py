@@ -60,6 +60,12 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+        # Migrate older databases that lack the indicators column
+        try:
+            cursor.execute("ALTER TABLE findings ADD COLUMN indicators TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_findings_fingerprint
             ON findings(fingerprint)
@@ -480,8 +486,8 @@ class DatabaseManager:
                         INSERT INTO findings
                         (hunt_id, agent_name, title, description, severity,
                          confidence, mitre_tactics, mitre_techniques,
-                         affected_assets, fingerprint, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         affected_assets, indicators, fingerprint, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         hunt_id,
                         agent_name,
@@ -492,6 +498,7 @@ class DatabaseManager:
                         json.dumps(finding.get('mitre_tactics') or agent_tactics),
                         json.dumps(finding.get('mitre_techniques', [])),
                         json.dumps(finding.get('affected_assets', [])),
+                        json.dumps(finding.get('indicators', [])),
                         fp,
                         datetime.now()
                     ))
@@ -720,20 +727,21 @@ class DatabaseManager:
             conn.close()
 
     def extract_ips_from_hunt(self, hunt_id: str) -> List[str]:
-        """Extract all unique IPs from a hunt's affected_assets."""
+        """Extract all unique IPs from a hunt's findings (indicators and affected_assets)."""
         import re
         conn = sqlite3.connect(self.db_path)
         try:
             rows = conn.execute(
-                "SELECT affected_assets FROM findings WHERE hunt_id = ?",
+                "SELECT affected_assets, indicators FROM findings WHERE hunt_id = ?",
                 (hunt_id,),
             ).fetchall()
             ips = set()
             ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
             for row in rows:
                 assets = json.loads(row[0]) if row[0] else []
-                for asset in assets:
-                    for match in ip_pattern.findall(asset):
+                indicators = json.loads(row[1]) if row[1] else []
+                for value in assets + indicators:
+                    for match in ip_pattern.findall(str(value)):
                         ips.add(match)
             return list(ips)
         finally:
