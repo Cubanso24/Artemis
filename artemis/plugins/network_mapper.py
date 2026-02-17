@@ -2123,10 +2123,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
         internet_unique_ips = set()
 
         for node in top:
-            # Build label: prefer NetBIOS name, fall back to IP
+            # Build label: prefer NetBIOS name, then hostname, fall back to IP
+            # Format:  NAME \n IP \n hostname (if different from name)
             nb_name = next(iter(sorted(node.netbios_names)), '')
+            hostname = next(iter(sorted(node.hostnames)), '')
+
             if nb_name:
                 label = f"{nb_name}\n{node.ip}"
+                # Add hostname below if it's different from the NetBIOS name
+                if hostname and hostname.lower().split('.')[0] != nb_name.lower():
+                    label += f"\n{hostname}"
+            elif hostname:
+                label = f"{hostname}\n{node.ip}"
             elif node.vlan != '0':
                 label = f"{node.ip} (v{node.vlan})"
             else:
