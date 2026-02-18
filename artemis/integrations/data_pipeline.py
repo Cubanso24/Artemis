@@ -109,6 +109,7 @@ class DataPipeline:
         storage_mode: str = "ram",
         earliest_time: Optional[str] = None,
         latest_time: Optional[str] = None,
+        target_hosts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
@@ -125,6 +126,7 @@ class DataPipeline:
             earliest_time: Absolute start time (ISO 8601, e.g. "2025-01-15T08:00:00").
                            When set, overrides *time_range*.
             latest_time: Absolute end time (ISO 8601).
+            target_hosts: Optional list of host/sensor names to restrict queries.
 
         Returns:
             Hunting data (dict or SqliteEventStore).
@@ -152,6 +154,7 @@ class DataPipeline:
                 store=hunting_data,
                 earliest_time=earliest_time,
                 latest_time=latest_time,
+                target_hosts=target_hosts,
             )
 
         # Collect from Security Onion
@@ -266,7 +269,8 @@ class DataPipeline:
 
     def _collect_from_splunk(self, time_range: str, progress_callback=None,
                              store=None, earliest_time: Optional[str] = None,
-                             latest_time: Optional[str] = None) -> None:
+                             latest_time: Optional[str] = None,
+                             target_hosts: Optional[List[str]] = None) -> None:
         """
         Collect data from Splunk and merge into *store*.
 
@@ -301,10 +305,12 @@ class DataPipeline:
                 window = self._collect_splunk_window(
                     earliest_time, latest_time,
                     progress_callback=progress_callback,
+                    target_hosts=target_hosts,
                 )
             else:
                 window = self._collect_splunk_window(
                     time_range, "now", progress_callback=progress_callback,
+                    target_hosts=target_hosts,
                 )
             store.update(window)
             return
@@ -329,6 +335,7 @@ class DataPipeline:
                 progress_callback=progress_callback,
                 window_index=idx,
                 total_windows=len(windows),
+                target_hosts=target_hosts,
             )
 
             window_total = sum(
@@ -373,6 +380,7 @@ class DataPipeline:
         progress_callback=None,
         window_index: int = 1,
         total_windows: int = 1,
+        target_hosts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Collect all data types from Splunk for a single time window.
@@ -383,6 +391,7 @@ class DataPipeline:
             progress_callback: Optional callable for progress updates
             window_index: Current window number (1-based)
             total_windows: Total number of windows
+            target_hosts: Optional list of host/sensor names to restrict queries
 
         Returns:
             Dict keyed by data type, values are event lists
@@ -400,31 +409,31 @@ class DataPipeline:
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 futures = {
                     "network_connections": executor.submit(
-                        self.splunk.get_network_connections, earliest, None, latest
+                        self.splunk.get_network_connections, earliest, None, latest, target_hosts
                     ),
                     "dns_queries": executor.submit(
-                        self.splunk.get_dns_queries, earliest, latest
+                        self.splunk.get_dns_queries, earliest, latest, target_hosts
                     ),
                     "ntlm_logs": executor.submit(
-                        self.splunk.get_ntlm_logs, earliest, latest
+                        self.splunk.get_ntlm_logs, earliest, latest, target_hosts
                     ),
                     "authentication_logs": executor.submit(
-                        self.splunk.get_authentication_logs, earliest, latest
+                        self.splunk.get_authentication_logs, earliest, latest, target_hosts
                     ),
                     "process_logs": executor.submit(
-                        self.splunk.get_process_logs, earliest, None, latest
+                        self.splunk.get_process_logs, earliest, None, latest, target_hosts
                     ),
                     "powershell_logs": executor.submit(
-                        self.splunk.get_powershell_logs, earliest, latest
+                        self.splunk.get_powershell_logs, earliest, latest, target_hosts
                     ),
                     "file_operations": executor.submit(
-                        self.splunk.get_file_operations, earliest, latest
+                        self.splunk.get_file_operations, earliest, latest, target_hosts
                     ),
                     "scheduled_tasks": executor.submit(
-                        self.splunk.get_scheduled_tasks, earliest, latest
+                        self.splunk.get_scheduled_tasks, earliest, latest, target_hosts
                     ),
                     "registry_changes": executor.submit(
-                        self.splunk.get_registry_changes, earliest, latest
+                        self.splunk.get_registry_changes, earliest, latest, target_hosts
                     ),
                 }
 

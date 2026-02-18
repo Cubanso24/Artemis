@@ -112,6 +112,20 @@ class SplunkConnector:
 
         self.logger.info(f"Connected to Splunk at {host}:{port}")
 
+    @staticmethod
+    def _build_host_filter(hosts: Optional[List[str]]) -> str:
+        """Build an SPL host filter clause like ``host IN ("a","b")``.
+
+        Returns an empty string when *hosts* is None or empty.
+        """
+        if not hosts:
+            return ""
+        escaped = [h.replace('"', '\\"') for h in hosts]
+        if len(escaped) == 1:
+            return f' host="{escaped[0]}"'
+        terms = ", ".join(f'"{h}"' for h in escaped)
+        return f" host IN ({terms})"
+
     def query(
         self,
         search_query: str,
@@ -298,6 +312,7 @@ class SplunkConnector:
         time_range: str = "-1h",
         source_filter: Optional[str] = None,
         latest_time: str = "now",
+        target_hosts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get network connection data for reconnaissance/C2 detection.
@@ -306,14 +321,16 @@ class SplunkConnector:
             time_range: Time range / earliest_time (e.g., "-1h", "-24h", or ISO timestamp)
             source_filter: Optional filter for source IPs
             latest_time: End time (default "now", or ISO timestamp for windowed queries)
+            target_hosts: Optional list of host/sensor names to restrict results
 
         Returns:
             Network connections in Artemis format
         """
         # Use Zeek field names: id.orig_h, id.resp_h, id.resp_p, orig_bytes, resp_bytes
         # spath extracts JSON fields from _raw
-        query = '''
-        search index=zeek_conn OR index=suricata
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=zeek_conn OR index=suricata{host_clause}
         | spath
         | eval timestamp=_time
         | eval vlan=coalesce(vlan, "0")
@@ -351,7 +368,8 @@ class SplunkConnector:
 
         return connections
 
-    def get_dns_queries(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_dns_queries(self, time_range: str = "-1h", latest_time: str = "now",
+                        target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get DNS query data for reconnaissance/C2 detection.
 
@@ -361,8 +379,9 @@ class SplunkConnector:
         # Use Zeek DNS field names: id.orig_h, query, rcode_name
         # spath extracts JSON fields from _raw
         # Note: Zeek DNS doesn't always have 'answers' field, so we omit it
-        query = '''
-        search index=zeek_dns
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=zeek_dns{host_clause}
         | spath
         | eval vlan=coalesce(vlan, "0")
         | table _time host vlan id.orig_h query rcode_name
@@ -391,7 +410,8 @@ class SplunkConnector:
 
         return dns_queries
 
-    def get_ntlm_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_ntlm_logs(self, time_range: str = "-1h", latest_time: str = "now",
+                      target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get NTLM authentication logs from Zeek for NetBIOS name enrichment.
 
@@ -401,8 +421,9 @@ class SplunkConnector:
         Returns:
             NTLM events with hostname and domain info
         """
-        query = '''
-        search index=zeek_ntlm
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=zeek_ntlm{host_clause}
         | spath
         | eval vlan=coalesce(vlan, "0")
         | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
@@ -432,15 +453,17 @@ class SplunkConnector:
 
         return ntlm_logs
 
-    def get_authentication_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_authentication_logs(self, time_range: str = "-1h", latest_time: str = "now",
+                               target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get authentication logs for credential access/initial access detection.
 
         Returns:
             Authentication events in Artemis format
         """
-        query = '''
-        search index=security_win EventCode=4624 OR EventCode=4625
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=security_win EventCode=4624 OR EventCode=4625{host_clause}
         | eval result=if(EventCode=4624, "success", "failure")
         | table _time user src_ip dest_host result Logon_Type country
         | rename user as username, src_ip as source_ip, dest_host as target_hostname
@@ -467,6 +490,7 @@ class SplunkConnector:
         time_range: str = "-1h",
         hostname_filter: Optional[str] = None,
         latest_time: str = "now",
+        target_hosts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get process execution logs for execution/persistence detection.
@@ -474,8 +498,9 @@ class SplunkConnector:
         Returns:
             Process events in Artemis format
         """
-        query = '''
-        search index=sysmon_win EventCode=1 OR index=security_win EventCode=4688
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=sysmon_win EventCode=1 OR index=security_win EventCode=4688{host_clause}
         | table _time host user Process_Name CommandLine ParentProcessName ParentCommandLine
         | rename host as hostname, user as user, Process_Name as process_name,
                  CommandLine as command_line, ParentProcessName as parent_process
@@ -499,15 +524,17 @@ class SplunkConnector:
 
         return process_logs
 
-    def get_powershell_logs(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_powershell_logs(self, time_range: str = "-1h", latest_time: str = "now",
+                           target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get PowerShell execution logs.
 
         Returns:
             PowerShell events in Artemis format
         """
-        query = '''
-        search index=powershell_win EventCode=4104
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=powershell_win EventCode=4104{host_clause}
         | table _time host user ScriptBlockText Message
         | rename host as hostname, ScriptBlockText as command_line
         | eval command_line=coalesce(command_line, Message)
@@ -526,15 +553,17 @@ class SplunkConnector:
 
         return ps_logs
 
-    def get_file_operations(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_file_operations(self, time_range: str = "-1h", latest_time: str = "now",
+                           target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get file operation logs for collection/impact detection.
 
         Returns:
             File operations in Artemis format
         """
-        query = '''
-        search index=security_win EventCode=4663 OR index=sysmon_win EventCode=11
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=security_win EventCode=4663 OR index=sysmon_win EventCode=11{host_clause}
         | table _time host user Object_Name Access_Mask TargetFilename
         | rename host as hostname, Object_Name as filename, TargetFilename as filename
         | eval operation=case(
@@ -558,15 +587,17 @@ class SplunkConnector:
 
         return file_ops
 
-    def get_scheduled_tasks(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_scheduled_tasks(self, time_range: str = "-1h", latest_time: str = "now",
+                           target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get scheduled task creation events.
 
         Returns:
             Scheduled tasks in Artemis format
         """
-        query = '''
-        search index=security_win EventCode=4698
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=security_win EventCode=4698{host_clause}
         | table _time host user TaskName TaskContent
         | rename host as hostname, TaskName as task_name, TaskContent as command
         | eval event_type="created"
@@ -587,15 +618,17 @@ class SplunkConnector:
 
         return tasks
 
-    def get_registry_changes(self, time_range: str = "-1h", latest_time: str = "now") -> List[Dict[str, Any]]:
+    def get_registry_changes(self, time_range: str = "-1h", latest_time: str = "now",
+                            target_hosts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
         Get registry modification events.
 
         Returns:
             Registry changes in Artemis format
         """
-        query = '''
-        search index=security_win EventCode=4657 OR index=sysmon_win EventCode=13
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=security_win EventCode=4657 OR index=sysmon_win EventCode=13{host_clause}
         | table _time host user Object_Name Details TargetObject
         | rename host as hostname, Object_Name as key_path, TargetObject as key_path,
                  Details as value_data

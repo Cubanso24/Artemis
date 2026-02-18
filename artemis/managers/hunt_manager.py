@@ -68,7 +68,7 @@ def _build_splunk_config():
 
 def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
                          storage_mode="ram", earliest_time=None,
-                         latest_time=None):
+                         latest_time=None, target_hosts=None):
     """
     Run a complete hunt in a separate process.
 
@@ -201,6 +201,7 @@ def _hunt_worker_process(hunt_id, time_range, mode, description, db_path,
             storage_mode=storage_mode,
             earliest_time=earliest_time,
             latest_time=latest_time,
+            target_hosts=target_hosts,
         )
         if hasattr(hunting_data, 'total_count'):
             total_events = hunting_data.total_count()
@@ -473,6 +474,7 @@ class HuntManager:
         storage_mode: str = "ram",
         earliest_time: str = None,
         latest_time: str = None,
+        target_hosts: list = None,
     ):
         """Launch a hunt immediately if a slot is free, else queue it."""
         params = dict(
@@ -483,6 +485,7 @@ class HuntManager:
             storage_mode=storage_mode,
             earliest_time=earliest_time,
             latest_time=latest_time,
+            target_hosts=target_hosts,
         )
 
         if self._running_count() < self.MAX_CONCURRENT:
@@ -536,6 +539,7 @@ class HuntManager:
                 params['storage_mode'],
                 params['earliest_time'],
                 params['latest_time'],
+                params.get('target_hosts'),
             ),
             daemon=False,
         )
@@ -881,7 +885,7 @@ class HuntManager:
     # ------------------------------------------------------------------
 
     def start_continuous(self, interval_minutes, lookback_minutes, mode,
-                         progress_callback=None):
+                         progress_callback=None, target_hosts=None):
         if self._continuous_task and not self._continuous_task.done():
             raise RuntimeError("Continuous hunting is already running")
 
@@ -893,9 +897,11 @@ class HuntManager:
             'started_at': datetime.now().isoformat(),
             'cycles': 0,
             'last_hunt_id': None,
+            'target_hosts': target_hosts,
         }
         self._continuous_task = asyncio.ensure_future(
-            self._continuous_loop(interval_minutes, lookback_minutes, mode)
+            self._continuous_loop(interval_minutes, lookback_minutes, mode,
+                                  target_hosts=target_hosts)
         )
         logger.info(
             f"Continuous hunting started: interval={interval_minutes}m, "
@@ -917,7 +923,7 @@ class HuntManager:
             **self._continuous_config,
         }
 
-    async def _continuous_loop(self, interval, lookback, mode):
+    async def _continuous_loop(self, interval, lookback, mode, target_hosts=None):
         try:
             while not self._continuous_stop:
                 hunt_id = f"hunt_cont_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -926,7 +932,8 @@ class HuntManager:
 
                 logger.info(f"Continuous cycle: starting {hunt_id}")
                 try:
-                    await self.execute_hunt(hunt_id, time_range, mode, desc)
+                    await self.execute_hunt(hunt_id, time_range, mode, desc,
+                                            target_hosts=target_hosts)
                     # Wait for this hunt to finish before starting the next
                     while hunt_id in self._monitored_hunts:
                         if self._continuous_stop:

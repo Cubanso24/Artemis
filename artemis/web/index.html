@@ -517,6 +517,11 @@
             50% { opacity: 0.4; }
         }
 
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
         #log-output {
             background: #010409;
             padding: 12px 16px;
@@ -1220,6 +1225,14 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="target-hosts">Target Hosts (optional)</label>
+                        <input type="text" id="target-hosts" placeholder="e.g., sensor01, 10.0.1.5, fw-edge  (comma-separated, blank = all hosts)">
+                        <small style="color:var(--text-secondary); font-size:11px; margin-top:4px; display:block;">
+                            Filter to specific sensors or hosts. Useful for newly installed sensors to update the network map.
+                        </small>
+                    </div>
+
+                    <div class="form-group">
                         <label for="description">Description (optional)</label>
                         <textarea id="description" rows="3" placeholder="e.g., Investigating suspicious activity on subnet 10.0.1.0/24"></textarea>
                     </div>
@@ -1234,6 +1247,58 @@
                 <div id="queue-container" style="display:none; margin-top:12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
                     <h4 style="margin:0 0 8px 0; font-size:12px; text-transform:uppercase; opacity:0.6;">Queued Hunts</h4>
                     <div id="queue-list"></div>
+                </div>
+            </div>
+
+            <!-- Continuous Hunting Card -->
+            <div class="card" style="margin-top:16px;">
+                <h2>Continuous Hunting</h2>
+                <p style="color:var(--text-secondary); font-size:13px; margin-bottom:16px;">
+                    Automatically run hunts on a recurring schedule. Each cycle collects data for the lookback window and runs all hunting agents.
+                </p>
+
+                <div id="continuous-config">
+                    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                        <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                            <label for="cont-interval">Interval (minutes)</label>
+                            <input type="number" id="cont-interval" value="15" min="5" max="1440" style="width:100%;">
+                        </div>
+                        <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
+                            <label for="cont-lookback">Lookback (minutes)</label>
+                            <input type="number" id="cont-lookback" value="20" min="5" max="1440" style="width:100%;">
+                        </div>
+                        <div class="form-group" style="flex:1; min-width:160px; margin-bottom:0;">
+                            <label for="cont-mode">Mode</label>
+                            <select id="cont-mode" style="width:100%;">
+                                <option value="PARALLEL">Parallel</option>
+                                <option value="ADAPTIVE">Adaptive</option>
+                                <option value="SEQUENTIAL">Sequential</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-bottom:12px;">
+                        <label for="cont-target-hosts">Target Hosts (optional)</label>
+                        <input type="text" id="cont-target-hosts" placeholder="e.g., sensor01, 10.0.1.5  (comma-separated, blank = all hosts)">
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <button class="btn" id="cont-start-btn" onclick="startContinuousHunting()">
+                            <i class="fa-solid fa-play"></i> Start Continuous Hunting
+                        </button>
+                        <button class="btn btn-danger" id="cont-stop-btn" onclick="stopContinuousHunting()" style="display:none;">
+                            <i class="fa-solid fa-stop"></i> Stop
+                        </button>
+                    </div>
+                </div>
+
+                <div id="continuous-status" style="display:none; margin-top:14px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <span style="font-weight:600; font-size:13px;">
+                            <i class="fa-solid fa-rotate" style="color:var(--success); animation: spin 2s linear infinite;"></i>
+                            Continuous Hunting Active
+                        </span>
+                        <span id="cont-cycle-count" style="font-size:12px; color:var(--text-secondary);"></span>
+                    </div>
+                    <div id="cont-status-details" style="font-size:12px; color:var(--text-secondary); line-height:1.8;"></div>
                 </div>
             </div>
         </div>
@@ -3424,8 +3489,13 @@
             const mode = document.getElementById('hunt-mode').value;
             const description = document.getElementById('description').value;
             const storageMode = document.getElementById('storage-mode').value;
+            const targetHostsRaw = document.getElementById('target-hosts').value.trim();
 
             const body = { time_range: timeRange, mode, description, storage_mode: storageMode };
+
+            if (targetHostsRaw) {
+                body.target_hosts = targetHostsRaw.split(',').map(h => h.trim()).filter(Boolean);
+            }
 
             if (timeRange === 'custom') {
                 const earliest = document.getElementById('earliest-time').value;
@@ -3487,6 +3557,117 @@
             showTab('new-hunt');
             setTimeout(() => document.getElementById('hunt-form').dispatchEvent(new Event('submit')), 100);
         }
+
+        // --- Continuous Hunting ---
+
+        let continuousPollTimer = null;
+
+        async function startContinuousHunting() {
+            const interval = parseInt(document.getElementById('cont-interval').value) || 15;
+            const lookback = parseInt(document.getElementById('cont-lookback').value) || 20;
+            const mode = document.getElementById('cont-mode').value;
+            const hostsRaw = document.getElementById('cont-target-hosts').value.trim();
+
+            const body = { interval_minutes: interval, lookback_minutes: lookback, mode };
+            if (hostsRaw) {
+                body.target_hosts = hostsRaw.split(',').map(h => h.trim()).filter(Boolean);
+            }
+
+            try {
+                const resp = await fetch('/api/hunt/continuous/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    addLog(`Continuous hunting started: every ${interval}m, lookback ${lookback}m`, 'info');
+                    updateContinuousUI(true);
+                    startContinuousPolling();
+                } else {
+                    addLog(`Failed to start continuous hunting: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (err) {
+                addLog(`Error starting continuous hunting: ${err.message}`, 'error');
+            }
+        }
+
+        async function stopContinuousHunting() {
+            try {
+                const resp = await fetch('/api/hunt/continuous/stop', { method: 'POST' });
+                const data = await resp.json();
+                if (resp.ok) {
+                    addLog('Continuous hunting stop requested (will finish current cycle)', 'info');
+                    document.getElementById('cont-stop-btn').textContent = 'Stopping...';
+                    document.getElementById('cont-stop-btn').disabled = true;
+                } else {
+                    addLog(`Failed to stop: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (err) {
+                addLog(`Error stopping continuous hunting: ${err.message}`, 'error');
+            }
+        }
+
+        function startContinuousPolling() {
+            if (continuousPollTimer) clearInterval(continuousPollTimer);
+            continuousPollTimer = setInterval(pollContinuousStatus, 5000);
+            pollContinuousStatus();
+        }
+
+        async function pollContinuousStatus() {
+            try {
+                const resp = await fetch('/api/hunt/continuous/status');
+                const data = await resp.json();
+
+                if (data.running) {
+                    updateContinuousUI(true);
+                    const statusEl = document.getElementById('cont-status-details');
+                    const cycleEl = document.getElementById('cont-cycle-count');
+                    cycleEl.textContent = `${data.cycles} cycle${data.cycles !== 1 ? 's' : ''} completed`;
+
+                    let details = `Interval: ${data.interval_minutes}m &bull; Lookback: ${data.lookback_minutes}m &bull; Mode: ${data.mode}`;
+                    if (data.started_at) {
+                        details += `<br>Started: ${new Date(data.started_at).toLocaleString()}`;
+                    }
+                    if (data.last_cycle) {
+                        details += `<br>Last cycle: ${new Date(data.last_cycle).toLocaleString()}`;
+                    }
+                    if (data.last_hunt_id) {
+                        details += ` &bull; ${data.last_hunt_id}`;
+                    }
+                    if (data.target_hosts && data.target_hosts.length) {
+                        details += `<br>Target hosts: ${data.target_hosts.join(', ')}`;
+                    }
+                    if (data.stopping) {
+                        details += '<br><em style="color:var(--warning);">Stopping after current cycle...</em>';
+                    }
+                    statusEl.innerHTML = details;
+                } else {
+                    updateContinuousUI(false);
+                    if (continuousPollTimer) {
+                        clearInterval(continuousPollTimer);
+                        continuousPollTimer = null;
+                    }
+                }
+            } catch (err) {
+                // Ignore transient fetch errors
+            }
+        }
+
+        function updateContinuousUI(running) {
+            document.getElementById('cont-start-btn').style.display = running ? 'none' : '';
+            document.getElementById('cont-stop-btn').style.display = running ? '' : 'none';
+            document.getElementById('cont-stop-btn').disabled = false;
+            document.getElementById('cont-stop-btn').innerHTML = '<i class="fa-solid fa-stop"></i> Stop';
+            document.getElementById('continuous-status').style.display = running ? 'block' : 'none';
+            // Disable/enable config inputs while running
+            ['cont-interval', 'cont-lookback', 'cont-mode', 'cont-target-hosts'].forEach(id => {
+                document.getElementById(id).disabled = running;
+            });
+        }
+
+        // Poll on page load to restore UI if continuous hunting is already running
+        pollContinuousStatus();
 
         // All query type labels
         const QUERY_LABELS = {

@@ -35,6 +35,7 @@ async def start_hunt(request: HuntRequest, background_tasks: BackgroundTasks):
         request.storage_mode,
         request.earliest_time,
         request.latest_time,
+        request.target_hosts,
     )
     running = hunt_manager._running_count()
     if running >= hunt_manager.MAX_CONCURRENT:
@@ -157,6 +158,7 @@ async def start_continuous_hunt(request: ContinuousHuntRequest):
             request.interval_minutes,
             request.lookback_minutes,
             request.mode,
+            target_hosts=request.target_hosts,
         )
         return {
             'status': 'started',

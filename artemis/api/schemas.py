@@ -13,6 +13,7 @@ class HuntRequest(BaseModel):
     storage_mode: str = "ram"   # "ram" or "sqlite"
     earliest_time: Optional[str] = None   # ISO 8601, e.g. "2025-01-15T08:00:00"
     latest_time: Optional[str] = None     # ISO 8601, e.g. "2025-01-16T20:00:00"
+    target_hosts: Optional[list] = None   # Filter to specific hosts/sensors, e.g. ["sensor01", "10.0.1.5"]
 
 
 class BulkHuntRequest(BaseModel):
@@ -28,6 +29,7 @@ class ContinuousHuntRequest(BaseModel):
     interval_minutes: int = 15
     lookback_minutes: int = 20
     mode: str = "PARALLEL"
+    target_hosts: Optional[list] = None   # Filter to specific hosts/sensors
 
 
 class PluginConfig(BaseModel):
