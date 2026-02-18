@@ -1397,6 +1397,7 @@
                 <div class="graph-controls">
                     <input type="text" id="graph-search" placeholder="Search IP, hostname, vendor... (10.0.1.* for subnet)" onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:300px;">
                     <button class="btn" onclick="searchGraphNode()">Find</button>
+                    <button class="btn btn-secondary" onclick="collapseAllSubnets()" id="collapse-subnets-btn" style="display:none;" title="Collapse all expanded subnets back to grouped view"><i class="fa-solid fa-compress"></i> Collapse Subnets</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
                     <button class="btn btn-secondary" onclick="downloadGraphJSON()">Download JSON</button>
@@ -1450,6 +1451,9 @@
                     <div class="legend-item"><i class="fa-solid fa-sitemap" style="color:#00BCD4; width:16px; text-align:center;"></i><span>Core Infra (DNS/DC/DHCP)</span></div>
                     <div class="legend-item"><i class="fa-solid fa-server" style="color:#9C27B0; width:16px; text-align:center;"></i><span>Servers</span></div>
                     <div class="legend-item"><i class="fa-solid fa-desktop" style="color:#607D8B; width:16px; text-align:center;"></i><span>Endpoints</span></div>
+                    <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
+                    <div style="font-size:11px; opacity:0.7; font-weight:600;">GROUPING</div>
+                    <div class="legend-item"><div style="width:18px; height:14px; background:#1e293b; border:2px solid #667eea; border-radius:3px;"></div><span>Subnet (click to expand)</span></div>
                     <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
                     <div style="font-size:11px; opacity:0.7; font-weight:600;">CONNECTIONS</div>
                     <div class="legend-item"><div style="width:24px; height:3px; background:#ff1744; border-radius:2px;"></div><span>Malicious</span></div>
@@ -1625,6 +1629,9 @@
         // Device flags and LAN groups (loaded with graph data)
         let _deviceFlags = {};
         let _lanGroups = [];
+
+        // Subnet clustering state
+        let _expandedSubnets = new Set();
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -2201,15 +2208,20 @@
         function buildVlanTabs(graphData) {
             const tabBar = document.getElementById('vlan-tabs');
 
-            // Collect unique VLANs from internal nodes
-            const vlanCounts = {};
-            graphData.nodes.forEach(n => {
-                if (n.group === 'internet') return;
-                const v = n.vlan || '0';
-                vlanCounts[v] = (vlanCounts[v] || 0) + 1;
-            });
+            // Use all_vlans from API (covers ALL internal nodes, not just rendered subset)
+            let vlanCounts;
+            if (graphData.all_vlans && Object.keys(graphData.all_vlans).length > 0) {
+                vlanCounts = graphData.all_vlans;
+            } else {
+                vlanCounts = {};
+                graphData.nodes.forEach(n => {
+                    if (n.group === 'internet') return;
+                    const v = n.vlan || '0';
+                    vlanCounts[v] = (vlanCounts[v] || 0) + 1;
+                });
+            }
+
             const vlans = Object.keys(vlanCounts).sort((a, b) => {
-                // Sort numerically where possible
                 const na = parseInt(a), nb = parseInt(b);
                 if (!isNaN(na) && !isNaN(nb)) return na - nb;
                 return a.localeCompare(b);
@@ -2222,7 +2234,7 @@
             }
             tabBar.style.display = 'flex';
 
-            const totalInternal = graphData.nodes.filter(n => n.group !== 'internet').length;
+            const totalInternal = Object.values(vlanCounts).reduce((a, b) => a + b, 0);
 
             let html = `<button class="vlan-tab active" onclick="switchVlanTab(null)">All Networks<span class="vlan-tab-count">(${totalInternal})</span></button>`;
             vlans.forEach(v => {
@@ -2230,6 +2242,20 @@
                 html += `<button class="vlan-tab" onclick="switchVlanTab('${v}')">${label}<span class="vlan-tab-count">(${vlanCounts[v]})</span></button>`;
             });
             tabBar.innerHTML = html;
+        }
+
+        function _getVlanFilteredData(vlan) {
+            if (!_fullGraphData) return null;
+            if (vlan === null) return _fullGraphData;
+            const filteredNodes = _fullGraphData.nodes.filter(n => {
+                if (n.group === 'internet') return true;
+                return (n.vlan || '0') === vlan;
+            });
+            const nodeIds = new Set(filteredNodes.map(n => n.id));
+            const filteredEdges = _fullGraphData.edges.filter(e =>
+                nodeIds.has(e.from) && nodeIds.has(e.to)
+            );
+            return { nodes: filteredNodes, edges: filteredEdges };
         }
 
         function switchVlanTab(vlan) {
@@ -2240,7 +2266,6 @@
             document.querySelectorAll('#vlan-tabs .vlan-tab').forEach(btn => {
                 btn.classList.remove('active');
             });
-            // First child = "All", rest = VLANs in order
             const tabs = document.querySelectorAll('#vlan-tabs .vlan-tab');
             if (vlan === null) {
                 tabs[0].classList.add('active');
@@ -2252,19 +2277,133 @@
                 });
             }
 
-            // Filter graph data for selected VLAN
-            if (vlan === null) {
+            renderNetworkGraph(_getVlanFilteredData(vlan));
+        }
+
+        function getSubnetFromId(nodeId) {
+            const parts = (nodeId || '').split(':');
+            const ip = parts[parts.length - 1] || '';
+            const octets = ip.split('.');
+            if (octets.length === 4 && octets.every(o => !isNaN(o))) {
+                return octets.slice(0, 3).join('.') + '.0/24';
+            }
+            return null;
+        }
+
+        function buildSubnetView(graphData) {
+            const subnets = {};
+            const individualNodes = [];
+            const nodeToSubnet = {};
+
+            // Group internal nodes by subnet
+            graphData.nodes.forEach(n => {
+                if (n.group === 'internet') {
+                    individualNodes.push(n);
+                    return;
+                }
+                const subnet = n.subnet || getSubnetFromId(n.id);
+                if (!subnet) {
+                    individualNodes.push(n);
+                    return;
+                }
+                nodeToSubnet[n.id] = subnet;
+                if (!subnets[subnet]) {
+                    subnets[subnet] = { nodes: [], types: {}, tiers: {}, vlans: {}, totalConns: 0 };
+                }
+                const info = subnets[subnet];
+                info.nodes.push(n);
+                const dt = n.device_type || 'unknown';
+                info.types[dt] = (info.types[dt] || 0) + 1;
+                const tier = n.tier !== undefined ? n.tier : 3;
+                info.tiers[tier] = (info.tiers[tier] || 0) + 1;
+                info.vlans[n.vlan || '0'] = (info.vlans[n.vlan || '0'] || 0) + 1;
+            });
+
+            const result = { nodes: [...individualNodes], edges: [] };
+            const COLLAPSE_THRESHOLD = 4;
+
+            Object.entries(subnets).forEach(([subnet, info]) => {
+                if (_expandedSubnets.has(subnet) || info.nodes.length < COLLAPSE_THRESHOLD) {
+                    // Expanded or too small to collapse: show individual nodes
+                    info.nodes.forEach(n => result.nodes.push(n));
+                } else {
+                    // Collapsed: create aggregate subnet node
+                    const predominantTier = parseInt(
+                        Object.entries(info.tiers).sort((a, b) => b[1] - a[1])[0][0]
+                    );
+                    const predominantVlan = Object.entries(info.vlans)
+                        .sort((a, b) => b[1] - a[1])[0][0];
+
+                    // Build a type summary string (e.g. "8 workstations, 3 servers")
+                    const typeSummary = Object.entries(info.types)
+                        .filter(([t]) => t !== 'unknown')
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([t, c]) => `${c} ${t.replace('_', ' ')}`)
+                        .join(', ');
+
+                    const label = subnet + '\n' + info.nodes.length + ' devices'
+                        + (typeSummary ? '\n' + typeSummary : '');
+
+                    result.nodes.push({
+                        id: 'subnet:' + subnet,
+                        label: label,
+                        group: 'subnet',
+                        subnet: subnet,
+                        tier: predominantTier,
+                        vlan: predominantVlan,
+                        _memberCount: info.nodes.length,
+                        _types: info.types,
+                        _vlans: info.vlans,
+                        _memberIds: info.nodes.map(n => n.id),
+                    });
+                }
+            });
+
+            // Map each original node ID to its rendered target (itself or its subnet node)
+            const nodeTarget = {};
+            graphData.nodes.forEach(n => {
+                if (n.group === 'internet') {
+                    nodeTarget[n.id] = n.id;
+                    return;
+                }
+                const subnet = nodeToSubnet[n.id];
+                if (subnet && !_expandedSubnets.has(subnet) && subnets[subnet] && subnets[subnet].nodes.length >= COLLAPSE_THRESHOLD) {
+                    nodeTarget[n.id] = 'subnet:' + subnet;
+                } else {
+                    nodeTarget[n.id] = n.id;
+                }
+            });
+
+            // Aggregate edges: remap endpoints to subnet nodes where collapsed
+            const edgeMap = {};
+            graphData.edges.forEach(e => {
+                const from = nodeTarget[e.from] || e.from;
+                const to = nodeTarget[e.to] || e.to;
+                if (from === to) return; // skip intra-subnet edges
+                const key = from < to ? from + '|' + to : to + '|' + from;
+                if (!edgeMap[key]) {
+                    edgeMap[key] = { from, to, value: 0 };
+                }
+                edgeMap[key].value += (e.value || 1);
+            });
+            result.edges = Object.values(edgeMap).map(e => ({
+                from: e.from,
+                to: e.to,
+                value: e.value,
+                title: e.value + ' connections',
+            }));
+
+            return result;
+        }
+
+        function collapseAllSubnets() {
+            _expandedSubnets.clear();
+            document.getElementById('collapse-subnets-btn').style.display = 'none';
+            if (_activeVlan !== null) {
+                switchVlanTab(_activeVlan);
+            } else if (_fullGraphData) {
                 renderNetworkGraph(_fullGraphData);
-            } else {
-                const filteredNodes = _fullGraphData.nodes.filter(n => {
-                    if (n.group === 'internet') return true;  // keep internet cloud
-                    return (n.vlan || '0') === vlan;
-                });
-                const nodeIds = new Set(filteredNodes.map(n => n.id));
-                const filteredEdges = _fullGraphData.edges.filter(e =>
-                    nodeIds.has(e.from) && nodeIds.has(e.to)
-                );
-                renderNetworkGraph({ nodes: filteredNodes, edges: filteredEdges });
             }
         }
 
@@ -2276,9 +2415,12 @@
                 return;
             }
 
-            addLog(`Rendering graph: ${graphData.nodes.length} nodes, ${graphData.edges.length} edges`, 'info');
+            // Build subnet-aggregated view (collapses large subnets)
+            const viewData = buildSubnetView(graphData);
 
-            const nodeCount = graphData.nodes.length;
+            addLog(`Rendering graph: ${viewData.nodes.length} nodes (${graphData.nodes.length} total), ${viewData.edges.length} edges`, 'info');
+
+            const nodeCount = viewData.nodes.length;
 
             // Font Awesome icon map per device type
             const deviceIcons = {
@@ -2308,8 +2450,47 @@
                 4: 'Endpoints',
             };
 
-            const nodes = graphData.nodes.map(node => {
+            const nodes = viewData.nodes.map(node => {
                 const tier = node.tier !== undefined ? node.tier : (node.group === 'external' ? 0 : 3);
+
+                // Subnet aggregate node
+                if (node.group === 'subnet') {
+                    const types = node._types || {};
+                    const typeList = Object.entries(types)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 4)
+                        .map(([t, c]) => `${c} ${t.replace(/_/g, ' ')}`)
+                        .join('\n');
+                    const tooltip = `Subnet: ${node.subnet}\n${node._memberCount} devices\n${typeList}\nClick to expand`;
+
+                    // Pick border color based on predominant device type
+                    const topType = Object.entries(types).sort((a, b) => b[1] - a[1])[0];
+                    const typeColorMap = {
+                        'domain_controller': '#E91E63', 'dns_server': '#00BCD4',
+                        'web_server': '#FF5722', 'database_server': '#9C27B0',
+                        'gateway': '#FF9800', 'vpn_gateway': '#FF9800',
+                        'workstation': '#607D8B', 'iot_device': '#9E9E9E',
+                    };
+                    const borderColor = (topType && typeColorMap[topType[0]]) || '#667eea';
+
+                    return {
+                        id: node.id,
+                        label: node.label,
+                        title: tooltip,
+                        level: tier,
+                        shape: 'box',
+                        borderWidth: 2,
+                        margin: 10,
+                        color: {
+                            background: '#1e293b',
+                            border: borderColor,
+                            highlight: { background: '#334155', border: borderColor },
+                            hover: { background: '#334155', border: borderColor },
+                        },
+                        font: { size: 11, color: '#e2e8f0', multi: false, align: 'center' },
+                    };
+                }
+
                 const deviceStr = node.device_label || node.device_type || '';
                 const rolesStr = node.roles ? node.roles.join(', ') : 'none';
                 const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
@@ -2391,7 +2572,7 @@
             });
 
             // Prepare edges for vis.js — color by device flags
-            const edges = graphData.edges.map(edge => {
+            const edges = viewData.edges.map(edge => {
                 const fromFlag = _deviceFlags[edge.from];
                 const toFlag = _deviceFlags[edge.to];
 
@@ -2490,6 +2671,16 @@
                         return;
                     }
 
+                    // Subnet cluster click: expand subnet
+                    if (nodeId.startsWith('subnet:')) {
+                        const subnet = nodeId.replace('subnet:', '');
+                        _expandedSubnets.add(subnet);
+                        document.getElementById('collapse-subnets-btn').style.display = '';
+                        const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                        if (currentData) renderNetworkGraph(currentData);
+                        return;
+                    }
+
                     const node = rawRef.nodes.find(n => n.id === nodeId);
                     if (node) {
                         showNodeDetails(node);
@@ -2501,7 +2692,7 @@
             networkGraph.on('oncontext', function(params) {
                 params.event.preventDefault();
                 const nodeId = networkGraph.getNodeAt(params.pointer.DOM);
-                if (!nodeId || nodeId === '__internet__') return;
+                if (!nodeId || nodeId === '__internet__' || nodeId.startsWith('subnet:')) return;
                 const node = rawRef.nodes.find(n => n.id === nodeId);
                 showContextMenu(params.event, nodeId, node);
             });
@@ -3103,23 +3294,44 @@
                 const vlan = vlans.values().next().value;
                 if (_activeVlan !== vlan) switchVlanTab(vlan);
             } else if (_activeVlan !== null) {
-                // Multiple VLANs — show all networks
                 switchVlanTab(null);
             }
 
-            // Select and zoom to fit all matched nodes
-            const ids = matches.map(n => n.id);
-            networkGraph.selectNodes(ids);
-            networkGraph.fit({
-                nodes: ids,
-                animation: { duration: 600, easingFunction: 'easeInOutQuad' },
+            // Expand subnets that contain matched nodes
+            let needsRerender = false;
+            matches.forEach(m => {
+                const s = m.subnet || getSubnetFromId(m.id);
+                if (s && !_expandedSubnets.has(s)) {
+                    _expandedSubnets.add(s);
+                    needsRerender = true;
+                }
             });
+            if (needsRerender) {
+                document.getElementById('collapse-subnets-btn').style.display = '';
+                const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                if (currentData) renderNetworkGraph(currentData);
+            }
 
-            // Show subnet summary in the details panel
-            showSubnetDetails(matches, query);
+            // Select and zoom to fit all matched nodes (after potential re-render)
+            const doFocus = () => {
+                const ids = matches.map(n => n.id);
+                if (networkGraph) {
+                    networkGraph.selectNodes(ids);
+                    networkGraph.fit({
+                        nodes: ids,
+                        animation: { duration: 600, easingFunction: 'easeInOutQuad' },
+                    });
+                }
+                showSubnetDetails(matches, query);
+                searchInput.style.borderColor = '#43a047';
+                setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
+            };
 
-            searchInput.style.borderColor = '#43a047';
-            setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
+            if (needsRerender) {
+                setTimeout(doFocus, 100);
+            } else {
+                doFocus();
+            }
         }
 
         function showSubnetDetails(matches, query) {
@@ -3246,6 +3458,35 @@
                         const nodeVlan = match.vlan || '0';
                         if (_activeVlan !== null && nodeVlan !== _activeVlan) switchVlanTab(nodeVlan);
                     }
+
+                    // If the node is inside a collapsed subnet, expand it first
+                    const matchSubnet = match.subnet || getSubnetFromId(match.id);
+                    if (matchSubnet && !_expandedSubnets.has(matchSubnet)) {
+                        // Check if this subnet is currently collapsed (has a subnet: node)
+                        const subnetNodeId = 'subnet:' + matchSubnet;
+                        const isCollapsed = networkGraphData && networkGraphData.nodes.get(subnetNodeId);
+                        if (isCollapsed) {
+                            _expandedSubnets.add(matchSubnet);
+                            document.getElementById('collapse-subnets-btn').style.display = '';
+                            const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                            if (currentData) renderNetworkGraph(currentData);
+                            // Focus after a brief delay to let re-render complete
+                            setTimeout(() => {
+                                if (networkGraph) {
+                                    networkGraph.selectNodes([match.id]);
+                                    networkGraph.focus(match.id, {
+                                        scale: 1.5,
+                                        animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+                                    });
+                                }
+                            }, 100);
+                            showNodeDetails(match);
+                            searchInput.style.borderColor = '#43a047';
+                            setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
+                            return;
+                        }
+                    }
+
                     networkGraph.selectNodes([match.id]);
                     networkGraph.focus(match.id, {
                         scale: 1.5,
@@ -3253,6 +3494,27 @@
                     });
                     showNodeDetails(match);
                 } else {
+                    // Multiple matches: expand subnets of all matches
+                    let needsRerender = false;
+                    matches.forEach(m => {
+                        const s = m.subnet || getSubnetFromId(m.id);
+                        if (s && !_expandedSubnets.has(s)) {
+                            const subnetNodeId = 'subnet:' + s;
+                            if (networkGraphData && networkGraphData.nodes.get(subnetNodeId)) {
+                                _expandedSubnets.add(s);
+                                needsRerender = true;
+                            }
+                        }
+                    });
+                    if (needsRerender) {
+                        document.getElementById('collapse-subnets-btn').style.display = '';
+                        const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                        if (currentData) renderNetworkGraph(currentData);
+                        setTimeout(() => {
+                            handleSubnetResults(matches, query, searchInput);
+                        }, 100);
+                        return;
+                    }
                     handleSubnetResults(matches, query, searchInput);
                     return;
                 }
@@ -3270,16 +3532,38 @@
             });
             if (extMatch) {
                 addLog(`External IP "${query}" found in connections of ${extMatch.label}`, 'info');
-                // Switch to Network Graph tab if not already there
                 const graphTab = document.getElementById('network-graph-tab');
                 if (!graphTab.classList.contains('active')) {
                     showTab('network-graph-tab');
                 }
-                // Auto-switch VLAN tab if needed
                 if (_activeVlan !== null) {
                     const nodeVlan = extMatch.vlan || '0';
                     if (nodeVlan !== _activeVlan) {
                         switchVlanTab(nodeVlan);
+                    }
+                }
+                // Expand subnet if collapsed
+                const extSubnet = extMatch.subnet || getSubnetFromId(extMatch.id);
+                if (extSubnet && !_expandedSubnets.has(extSubnet)) {
+                    const subnetNodeId = 'subnet:' + extSubnet;
+                    if (networkGraphData && networkGraphData.nodes.get(subnetNodeId)) {
+                        _expandedSubnets.add(extSubnet);
+                        document.getElementById('collapse-subnets-btn').style.display = '';
+                        const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                        if (currentData) renderNetworkGraph(currentData);
+                        setTimeout(() => {
+                            if (networkGraph) {
+                                networkGraph.selectNodes([extMatch.id]);
+                                networkGraph.focus(extMatch.id, {
+                                    scale: 1.5,
+                                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+                                });
+                            }
+                        }, 100);
+                        showNodeDetails(extMatch);
+                        searchInput.style.borderColor = '#43a047';
+                        setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
+                        return;
                     }
                 }
                 networkGraph.selectNodes([extMatch.id]);

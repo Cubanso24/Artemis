@@ -2643,6 +2643,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             for n in filtered if not n.is_internal
         }
 
+        # Compute VLAN distribution from ALL internal nodes (not just top-N)
+        all_vlan_counts: Dict[str, int] = {}
+        for n in internal_nodes:
+            all_vlan_counts[n.vlan] = all_vlan_counts.get(n.vlan, 0) + 1
+
         # Take top N internal nodes by connection count
         top = sorted(
             internal_nodes, key=lambda n: n.total_connections, reverse=True
@@ -2710,11 +2715,19 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if node.mac_address and node.mac_address in self.mac_history:
                 mac_ip_count = len({b.ip for b in self.mac_history[node.mac_address]})
 
+            # Compute /24 subnet from IP
+            ip_parts = node.ip.split('.')
+            subnet = (
+                '.'.join(ip_parts[:3]) + '.0/24'
+                if len(ip_parts) == 4 else ''
+            )
+
             nodes.append({
                 'id': self._node_key(node.sensor_id, node.vlan, node.ip),
                 'label': label,
                 'sensor_id': node.sensor_id,
                 'vlan': node.vlan,
+                'subnet': subnet,
                 'group': 'internal',
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
@@ -2814,6 +2827,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'nodes': nodes,
             'edges': edges,
             'sensors': sorted(self.sensors),
+            'all_vlans': all_vlan_counts,
         }
 
     # ------------------------------------------------------------------
