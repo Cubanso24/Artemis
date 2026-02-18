@@ -188,7 +188,7 @@ async def reset_network_map():
 @router.get("/api/network-graph")
 async def get_network_graph(
     sensor_id: Optional[str] = None,
-    max_nodes: int = 200,
+    max_nodes: int = 5000,
 ):
     """Get network topology graph from network mapper plugin."""
     plugin = plugin_manager.get_plugin('network_mapper')

@@ -2612,7 +2612,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
     def get_network_graph(
         self,
         sensor_id: Optional[str] = None,
-        max_nodes: int = 200,
+        max_nodes: int = 5000,
     ) -> Dict:
         """
         Get network graph suitable for visualization.
@@ -2623,7 +2623,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         Args:
             sensor_id: Optional sensor filter
-            max_nodes: Maximum nodes to return (default 200)
+            max_nodes: Maximum nodes to return (default 5000)
 
         Returns:
             Dict with nodes, edges, and sensor list

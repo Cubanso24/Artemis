@@ -2940,7 +2940,7 @@
                                     <td style="padding:4px 8px; text-align:center;">IPs</td>
                                     <td style="padding:4px 8px;">Current IP</td>
                                 </tr>`;
-                    data.all_devices.slice(0, 200).forEach(d => {
+                    data.all_devices.forEach(d => {
                         const currentIp = d.bindings.length > 0 ? d.bindings[0].ip : '-';
                         html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); cursor:pointer;" onclick="expandMacDetail(this, '${escapeHtml(d.mac)}')">
                             <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(d.mac)}</td>
