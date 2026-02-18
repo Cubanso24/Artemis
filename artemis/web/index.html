@@ -2605,10 +2605,6 @@
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
 
-            // Adapt spacing based on whether subnet boxes are present
-            const hasSubnetBoxes = nodes.some(n => n.shape === 'box');
-            const adaptiveSpacing = hasSubnetBoxes ? 200 : 120;
-
             const options = {
                 nodes: {
                     font: { size: 11, color: '#ccc' },
@@ -2626,7 +2622,7 @@
                         direction: 'UD',
                         sortMethod: 'directed',
                         levelSeparation: 140,
-                        nodeSpacing: adaptiveSpacing,
+                        nodeSpacing: 150,
                         treeSpacing: 80,
                         blockShifting: true,
                         edgeMinimization: true,
@@ -2634,20 +2630,7 @@
                     },
                 },
                 physics: {
-                    enabled: true,
-                    hierarchicalRepulsion: {
-                        centralGravity: 0.0,
-                        springLength: 120,
-                        springConstant: 0.01,
-                        nodeDistance: adaptiveSpacing + 20,
-                        damping: 0.09,
-                    },
-                    solver: 'hierarchicalRepulsion',
-                    stabilization: {
-                        enabled: true,
-                        iterations: 200,
-                        updateInterval: 50,
-                    },
+                    enabled: false,
                 },
                 interaction: {
                     hover: true,
@@ -2667,9 +2650,78 @@
 
             networkGraph = new vis.Network(container, data, options);
 
-            // Freeze layout after physics stabilizes so dragging is smooth
-            networkGraph.once('stabilized', function() {
-                networkGraph.setOptions({ physics: { enabled: false } });
+            // Post-layout overlap resolver: adjusts x-positions based on actual node widths
+            networkGraph.once('afterDrawing', function() {
+                const positions = networkGraph.getPositions();
+                const nodeMap = {};
+                nodes.forEach(function(n) { nodeMap[n.id] = n; });
+
+                // Estimate rendered width of a node from its label and shape
+                function estimateWidth(n) {
+                    var label = n.label || '';
+                    var lines = label.split('\n');
+                    var maxLen = 0;
+                    for (var i = 0; i < lines.length; i++) {
+                        if (lines[i].length > maxLen) maxLen = lines[i].length;
+                    }
+                    if (n.shape === 'box') {
+                        // font-size 11, ~6.5px per char, + margin 10 each side
+                        return maxLen * 6.5 + 24;
+                    }
+                    if (n.shape === 'icon') {
+                        // icon width (~50) or label width, whichever is larger
+                        return Math.max(maxLen * 6.5, 50);
+                    }
+                    // dot/other
+                    return Math.max(maxLen * 6.5, 30);
+                }
+
+                // Group nodes by tier level (y-position rounded)
+                var tiers = {};
+                var ids = Object.keys(positions);
+                for (var i = 0; i < ids.length; i++) {
+                    var id = ids[i];
+                    var pos = positions[id];
+                    var node = nodeMap[id];
+                    if (!pos || !node) continue;
+                    var tierKey = Math.round(pos.y / 20) * 20;
+                    if (!tiers[tierKey]) tiers[tierKey] = [];
+                    tiers[tierKey].push({ id: id, x: pos.x, y: pos.y, w: estimateWidth(node) });
+                }
+
+                var anyMoved = false;
+                var tierKeys = Object.keys(tiers);
+                for (var t = 0; t < tierKeys.length; t++) {
+                    var tierNodes = tiers[tierKeys[t]];
+                    if (tierNodes.length < 2) continue;
+
+                    tierNodes.sort(function(a, b) { return a.x - b.x; });
+
+                    var origCenter = (tierNodes[0].x + tierNodes[tierNodes.length - 1].x) / 2;
+
+                    // Push nodes right where they overlap
+                    for (var i = 1; i < tierNodes.length; i++) {
+                        var prev = tierNodes[i - 1];
+                        var curr = tierNodes[i];
+                        var minDist = (prev.w + curr.w) / 2 + 18;
+                        if (curr.x - prev.x < minDist) {
+                            curr.x = prev.x + minDist;
+                            anyMoved = true;
+                        }
+                    }
+
+                    // Re-center the tier around its original midpoint
+                    var newCenter = (tierNodes[0].x + tierNodes[tierNodes.length - 1].x) / 2;
+                    var shift = origCenter - newCenter;
+                    for (var i = 0; i < tierNodes.length; i++) {
+                        tierNodes[i].x += shift;
+                        networkGraph.moveNode(tierNodes[i].id, tierNodes[i].x, tierNodes[i].y);
+                    }
+                }
+
+                if (anyMoved) {
+                    networkGraph.fit({ animation: false });
+                }
             });
             // Store raw reference: use _fullGraphData for click lookups when filtering
             const rawRef = _fullGraphData || graphData;
