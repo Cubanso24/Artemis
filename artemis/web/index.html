@@ -2605,6 +2605,10 @@
 
             const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
 
+            // Adapt spacing based on whether subnet boxes are present
+            const hasSubnetBoxes = nodes.some(n => n.shape === 'box');
+            const adaptiveSpacing = hasSubnetBoxes ? 200 : 120;
+
             const options = {
                 nodes: {
                     font: { size: 11, color: '#ccc' },
@@ -2621,16 +2625,29 @@
                         enabled: true,
                         direction: 'UD',
                         sortMethod: 'directed',
-                        levelSeparation: 120,
-                        nodeSpacing: 100,
-                        treeSpacing: 50,
+                        levelSeparation: 140,
+                        nodeSpacing: adaptiveSpacing,
+                        treeSpacing: 80,
                         blockShifting: true,
                         edgeMinimization: true,
                         parentCentralization: true,
                     },
                 },
                 physics: {
-                    enabled: false,
+                    enabled: true,
+                    hierarchicalRepulsion: {
+                        centralGravity: 0.0,
+                        springLength: 120,
+                        springConstant: 0.01,
+                        nodeDistance: adaptiveSpacing + 20,
+                        damping: 0.09,
+                    },
+                    solver: 'hierarchicalRepulsion',
+                    stabilization: {
+                        enabled: true,
+                        iterations: 200,
+                        updateInterval: 50,
+                    },
                 },
                 interaction: {
                     hover: true,
@@ -2649,6 +2666,11 @@
             }
 
             networkGraph = new vis.Network(container, data, options);
+
+            // Freeze layout after physics stabilizes so dragging is smooth
+            networkGraph.once('stabilized', function() {
+                networkGraph.setOptions({ physics: { enabled: false } });
+            });
             // Store raw reference: use _fullGraphData for click lookups when filtering
             const rawRef = _fullGraphData || graphData;
             networkGraphData = { nodes: data.nodes, edges: data.edges, raw: rawRef };
