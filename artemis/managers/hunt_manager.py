@@ -408,11 +408,16 @@ def _profile_worker_process(profile_id, time_range, db_path):
 
 def _bg_profile_worker_process(profile_id, time_range, num_workers,
                                 db_path):
-    """Continuously profile unprofiled devices in the background.
+    """Profile all unprofiled devices in the background.
 
-    Launches ``num_workers`` threads, each picking the next unprofiled IP
-    and running targeted per-device Splunk queries.  Progress is written
-    to SQLite so the UI can track it.
+    Phase 1 — Query: runs the global Splunk queries once (same as
+              batch profiling).  This is the slow part.
+    Phase 2 — Enrich: indexes results by IP, then fans out enrichment
+              + classification across ``num_workers`` threads.
+              Each thread processes pure Python — no Splunk calls —
+              so this phase finishes in seconds.
+
+    Progress is written to SQLite so the UI can track it.
     """
     import os, logging, traceback, json, time
     from datetime import datetime
@@ -432,15 +437,6 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
     db = DatabaseManager(db_path)
     pid = os.getpid()
 
-    # Shared state for progress tracking
-    lock = threading.Lock()
-    profiled_count = 0
-    failed_count = 0
-    current_workers = {}  # thread_id -> ip being profiled
-
-    # Stop flag — checked by workers; set when the parent signals cancellation
-    stop_flag = threading.Event()
-
     def send(stage, message, progress, extra=None):
         try:
             db.write_progress(profile_id, pid, stage, message, progress, extra)
@@ -455,7 +451,7 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
         pipeline = DataPipeline(cfg)
         splunk = pipeline.splunk
 
-        send('init', 'Loading network map...', 0)
+        send('init', 'Loading network map...', 2)
 
         # Load the network mapper plugin
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
@@ -475,13 +471,76 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
                  {'total': total, 'profiled': total, 'newly_profiled': 0})
             return
 
-        log.info(f"BG Profile: {len(unprofiled_ips)} devices to profile "
-                 f"with {num_workers} workers")
+        num_unprofiled = len(unprofiled_ips)
+        log.info(f"BG Profile: {num_unprofiled} devices to profile")
 
-        # Queue of IPs to profile
+        # ================================================================
+        # PHASE 1: Run global Splunk queries (same as batch profiling)
+        # ================================================================
+        send('querying',
+             f'Running global Splunk queries for {num_unprofiled} '
+             f'unprofiled devices...',
+             5,
+             {'total': total, 'profiled': already_profiled,
+              'newly_profiled': 0, 'phase': 'querying'})
+
+        windows = nm._generate_profile_windows(time_range, window_hours=24)
+        total_windows = len(windows)
+        log.info(f"BG Profile: {total_windows} query window(s)")
+
+        # Accumulator for cross-window merging
+        accumulated = {
+            'server_agg': {}, 'client_agg': {},
+            'ntlm': [], 'kerberos': [], 'dhcp': [], 'snmp': [],
+            'smb': [], 'software': [], 'ssh': [], 'x509': [],
+            'http_ua': [],
+            'ja3_ssl': [], 'ja3s_server': [], 'dns_profile': [],
+            'rdp': [], 'dhcp_extended': [], 'files': [],
+            'x509_extended': [],
+            'known_services': [], 'smtp_banner': [], 'ftp_banner': [],
+            'dhcp_gateway': [], 'snmp_oid': [],
+        }
+
+        for win_idx, (earliest, latest) in enumerate(windows, 1):
+            pct = 5 + int(40 * win_idx / total_windows)
+            win_label = (f"Window {win_idx}/{total_windows}: {earliest} -> {latest}"
+                         if total_windows > 1
+                         else "Running 23 Splunk queries in parallel...")
+            send('querying', win_label, pct,
+                 {'total': total, 'profiled': already_profiled,
+                  'newly_profiled': 0, 'phase': 'querying'})
+
+            log.info(f"BG Profile query window {win_idx}/{total_windows}: "
+                     f"{earliest} -> {latest}")
+            window_results = nm._run_profile_queries(splunk, earliest, latest)
+            nm._merge_profile_results(accumulated, window_results)
+            log.info(f"Window {win_idx} done — "
+                     f"server IPs: {len(accumulated['server_agg'])}, "
+                     f"client IPs: {len(accumulated['client_agg'])}")
+
+        # ================================================================
+        # PHASE 2: Index results and fan out enrichment
+        # ================================================================
+        send('profiling',
+             f'Queries complete. Indexing results for {num_unprofiled} '
+             f'devices...',
+             50,
+             {'total': total, 'profiled': already_profiled,
+              'newly_profiled': 0, 'phase': 'enriching'})
+
+        log.info("BG Profile: indexing results by IP...")
+        indexed = nm._index_results_by_ip(accumulated)
+        log.info("BG Profile: index built, starting enrichment workers")
+
+        # Shared state for progress tracking
+        lock = threading.Lock()
+        profiled_count = 0
+        failed_count = 0
+
+        # Queue of IPs to process
         ip_queue = list(unprofiled_ips)
         queue_lock = threading.Lock()
-        queue_idx = [0]  # mutable counter
+        queue_idx = [0]
 
         def get_next_ip():
             with queue_lock:
@@ -491,91 +550,57 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
                 queue_idx[0] = idx + 1
                 return ip_queue[idx]
 
-        # Create per-thread Splunk connectors so they don't contend
-        thread_splunks = {}
-        thread_splunk_lock = threading.Lock()
-
-        def get_thread_splunk():
-            tid = threading.current_thread().ident
-            with thread_splunk_lock:
-                if tid not in thread_splunks:
-                    thread_cfg = _build_splunk_config()
-                    thread_pipeline = DataPipeline(thread_cfg)
-                    thread_splunks[tid] = thread_pipeline.splunk
-                return thread_splunks[tid]
-
         def worker():
             nonlocal profiled_count, failed_count
-            while not stop_flag.is_set():
+            while True:
                 ip = get_next_ip()
                 if ip is None:
                     break
-
-                tid = threading.current_thread().name
-                with lock:
-                    current_workers[tid] = ip
-
                 try:
-                    thread_splunk = get_thread_splunk()
-                    nm.profile_single_device(thread_splunk, ip,
-                                             time_range=time_range)
+                    nm.enrich_device_from_cache(ip, indexed)
                     with lock:
                         profiled_count += 1
                         done = already_profiled + profiled_count
-                        pct = min(int(done / total * 100), 99)
-                        send('profiling',
-                             f'Profiled {done}/{total} devices '
-                             f'({profiled_count} new, '
-                             f'{len(ip_queue) - queue_idx[0]} remaining)',
-                             pct,
-                             {'total': total, 'profiled': done,
-                              'newly_profiled': profiled_count,
-                              'failed': failed_count})
+                        # Progress 50-99% for enrichment phase
+                        pct = 50 + min(
+                            int(49 * profiled_count / num_unprofiled), 49)
+                        # Only send progress every 50 devices to avoid
+                        # flooding SQLite
+                        if profiled_count % 50 == 0 or \
+                                profiled_count == num_unprofiled:
+                            send('profiling',
+                                 f'Enriched {done}/{total} devices '
+                                 f'({profiled_count} new, '
+                                 f'{num_unprofiled - profiled_count} '
+                                 f'remaining)',
+                                 pct,
+                                 {'total': total, 'profiled': done,
+                                  'newly_profiled': profiled_count,
+                                  'failed': failed_count,
+                                  'phase': 'enriching'})
                 except Exception as e:
-                    log.warning(f"Failed to profile {ip}: {e}")
+                    log.warning(f"Failed to enrich {ip}: {e}")
                     with lock:
                         failed_count += 1
-                finally:
-                    with lock:
-                        current_workers.pop(tid, None)
 
-        send('profiling',
-             f'Profiling {len(unprofiled_ips)} devices with '
-             f'{num_workers} workers...',
-             1,
-             {'total': total, 'profiled': already_profiled,
-              'newly_profiled': 0})
-
-        # Launch workers
+        # Launch workers (pure Python — no Splunk, very fast)
         with ThreadPoolExecutor(max_workers=num_workers,
                                 thread_name_prefix='bgp') as pool:
             futures = [pool.submit(worker) for _ in range(num_workers)]
-
-            # Wait for all workers, periodically saving
-            save_interval = 30  # save every 30 seconds
-            last_save = time.time()
             for fut in as_completed(futures):
                 try:
                     fut.result()
                 except Exception as e:
                     log.error(f"Worker thread error: {e}")
 
-                # Periodic save
-                now = time.time()
-                if now - last_save > save_interval:
-                    try:
-                        nm.save_map()
-                        last_save = now
-                    except Exception as e:
-                        log.warning(f"Periodic save failed: {e}")
-
         # Final save
         nm.save_map()
 
         final_stats = nm.get_profiling_stats()
         send('complete',
-             f'Background profiling complete: {final_stats["profiled"]}/{total} '
-             f'devices profiled ({profiled_count} new, {failed_count} failed)',
+             f'Background profiling complete: '
+             f'{final_stats["profiled"]}/{total} devices profiled '
+             f'({profiled_count} new, {failed_count} failed)',
              100,
              {'total': total, 'profiled': final_stats['profiled'],
               'newly_profiled': profiled_count,

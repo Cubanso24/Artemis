@@ -4124,8 +4124,25 @@
                 // In progress — update bar
                 const profiled = result.profiled || 0;
                 const total = result.total || 0;
-                const pct = total > 0 ? Math.min(Math.round(profiled / total * 100), 99) : 0;
+                const phase = result.phase || '';
+                const pct = data.progress || 0;
                 showBgProfileProgress(data.message, pct, profiled, total);
+
+                // Show phase-specific label
+                const label = document.getElementById('bg-profile-label');
+                if (data.stage === 'querying' || phase === 'querying') {
+                    label.innerHTML =
+                        '<i class="fa-solid fa-database fa-beat-fade" style="color:#FFA726; margin-right:6px;"></i>' +
+                        'Querying Splunk...';
+                    document.getElementById('bg-profile-fill').style.background =
+                        'linear-gradient(90deg, #E65100, #FFA726)';
+                } else {
+                    label.innerHTML =
+                        '<i class="fa-solid fa-microchip fa-spin" style="color:#42A5F5; margin-right:6px;"></i>' +
+                        'Enriching Devices...';
+                    document.getElementById('bg-profile-fill').style.background =
+                        'linear-gradient(90deg, #1E88E5, #42A5F5)';
+                }
 
                 // Periodically refresh the graph to show newly profiled devices
                 if (!handleBgProfileProgress._lastRefresh) handleBgProfileProgress._lastRefresh = 0;

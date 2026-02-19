@@ -2911,228 +2911,117 @@ class NetworkMapperPlugin(ArtemisPlugin):
         }
 
     @staticmethod
-    def _per_device_query_definitions(ip: str) -> Dict[str, str]:
-        """Return SPL queries targeted at a single IP address.
+    def _index_results_by_ip(accumulated: Dict) -> Dict:
+        """Pre-index global query results by IP for O(1) per-device lookups.
 
-        These are much faster than the global queries because Splunk
-        only needs to scan events matching this specific IP.
+        Takes the accumulated results dict (from _merge_profile_results)
+        and builds per-IP indexes so that enrich_device_from_cache() can
+        look up all data for a single IP without scanning the full lists.
+
+        Returns a dict of:
+            server_data  : {ip -> {ports, unique_clients, incoming_count}}
+            client_data  : {ip -> {unique_destinations, outgoing_count}}
+            ntlm_by_ip   : {ip -> [rows]}   (both source and dest)
+            kerberos_by_ip: {ip -> [rows]}
+            dhcp_by_ip   : {ip -> [rows]}
+            snmp_by_ip   : {ip -> [rows]}
+            smb_by_ip    : {ip -> [rows]}
+            software_by_ip: {ip -> [rows]}
+            ssh_by_ip    : {ip -> [rows]}  (both client and server)
+            http_ua_by_ip: {ip -> [rows]}
+            ja3_ssl_by_ip: {ip -> [rows]}
+            ja3s_server_by_ip: {ip -> [rows]}
+            dns_profile_by_ip: {ip -> [rows]}
+            dhcp_extended_by_ip: {ip -> [rows]}
+            known_services_by_ip: {ip -> [rows]}
+            smtp_banner_by_ip: {ip -> [rows]}
+            ftp_banner_by_ip: {ip -> [rows]}
+            snmp_oid_by_ip: {ip -> [rows]}
+            dhcp_gateway_ips: set(ip)
         """
-        # Escape dots for safe embedding in SPL
-        safe_ip = ip.replace('.', '.')  # IPs are safe but be explicit
-        return {
-            'server': f'''
-            search index=zeek_conn OR index=suricata "id.resp_h"="{safe_ip}"
-            | spath
-            | stats dc("id.orig_h") as unique_clients,
-                    values("id.resp_p") as ports,
-                    count as incoming_count
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'client': f'''
-            search index=zeek_conn OR index=suricata "id.orig_h"="{safe_ip}"
-            | spath
-            | stats dc("id.resp_h") as unique_destinations,
-                    count as outgoing_count
-              by "id.orig_h"
-            | rename "id.orig_h" as ip
-            ''',
-            'ntlm': f'''
-            search index=zeek_ntlm ("id.orig_h"="{safe_ip}" OR "id.resp_h"="{safe_ip}")
-            | spath
-            | eval vlan=coalesce(vlan, "0")
-            | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
-            | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
-            ''',
-            'kerberos': f'''
-            search index=zeek_kerberos "id.resp_h"="{safe_ip}"
-            | spath
-            | stats dc("id.orig_h") as unique_clients,
-                    values(service) as services,
-                    count as auth_count
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'dhcp': f'''
-            search index=zeek_dhcp assigned_addr="{safe_ip}"
-            | spath
-            | where isnotnull(mac)
-            | eval vlan=coalesce(vlan, "0")
-            | stats min(_time) as first_seen,
-                    max(_time) as last_seen,
-                    latest(host_name) as dhcp_hostname,
-                    latest(host) as sensor_id
-              by assigned_addr, mac, vlan
-            | rename assigned_addr as ip
-            ''',
-            'snmp': f'''
-            search index=zeek_snmp "id.resp_h"="{safe_ip}"
-            | spath
-            | stats latest(community) as community,
-                    latest(version) as snmp_version
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'smb': f'''
-            search (index=zeek_smb_mapping OR index=zeek_smb_files) "id.resp_h"="{safe_ip}"
-            | spath
-            | eval nb_name=coalesce(server_name, "")
-            | where nb_name!="" AND nb_name!="-"
-            | stats values(nb_name) as nb_names,
-                    values(share_type) as share_types
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'software': f'''
-            search index=zeek_software (host="{safe_ip}" OR "id.orig_h"="{safe_ip}")
-            | spath
-            | eval ip=coalesce(host, "id.orig_h")
-            | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
-            | stats values(sw) as software,
-                    values(software_type) as sw_types
-              by ip
-            ''',
-            'ssh': f'''
-            search index=zeek_ssh ("id.orig_h"="{safe_ip}" OR "id.resp_h"="{safe_ip}")
-            | spath
-            | stats latest(client) as ssh_client,
-                    latest(server) as ssh_server
-              by "id.orig_h", "id.resp_h"
-            | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
-            ''',
-            'http_ua': f'''
-            search index=zeek_http "id.orig_h"="{safe_ip}"
-            | spath
-            | where isnotnull(user_agent) AND user_agent!="-"
-            | stats values(user_agent) as user_agents,
-                    dc(host) as sites_visited,
-                    count as http_count
-              by "id.orig_h"
-            | rename "id.orig_h" as ip
-            ''',
-            'ja3_ssl': f'''
-            search index=zeek_ssl "id.orig_h"="{safe_ip}"
-            | spath
-            | where isnotnull(ja3) AND ja3!="-"
-            | stats values(ja3) as ja3_hashes,
-                    values(ja3s) as ja3s_hashes,
-                    values(server_name) as sni_names,
-                    values(version) as tls_versions,
-                    dc("id.resp_h") as unique_servers,
-                    count as tls_count
-              by "id.orig_h"
-            | rename "id.orig_h" as ip
-            ''',
-            'ja3s_server': f'''
-            search index=zeek_ssl "id.resp_h"="{safe_ip}"
-            | spath
-            | where isnotnull(ja3s) AND ja3s!="-"
-            | stats values(ja3s) as ja3s_hashes,
-                    values(subject) as cert_subjects,
-                    values(issuer) as cert_issuers,
-                    values(version) as tls_versions,
-                    dc("id.orig_h") as unique_clients
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'dns_profile': f'''
-            search index=zeek_dns "id.orig_h"="{safe_ip}"
-            | spath
-            | where isnotnull(query) AND query!="-"
-            | eval tld=mvindex(split(query, "."), -1)
-            | eval is_nxdomain=if(rcode_name=="NXDOMAIN", 1, 0)
-            | stats count as query_count,
-                    dc(query) as unique_domains,
-                    values(tld) as tlds,
-                    sum(is_nxdomain) as nxdomain_count,
-                    values(qtype_name) as query_types
-              by "id.orig_h"
-            | rename "id.orig_h" as ip
-            | eval nxdomain_ratio=round(nxdomain_count/query_count, 4)
-            ''',
-            'dhcp_extended': f'''
-            search index=zeek_dhcp assigned_addr="{safe_ip}"
-            | spath
-            | where isnotnull(mac)
-            | eval vlan=coalesce(vlan, "0")
-            | stats latest(client_fqdn) as client_fqdn,
-                    latest(domain) as dhcp_domain,
-                    latest(vendor_class) as vendor_class,
-                    latest(lease_time) as lease_time,
-                    values(msg_types) as msg_types,
-                    latest(host) as sensor_id
-              by assigned_addr, mac, vlan
-            | rename assigned_addr as ip
-            ''',
-            'known_services': f'''
-            search index=zeek_known_services host="{safe_ip}"
-            | spath
-            | where isnotnull(port_num)
-            | eval svc=if(isnotnull(service) AND service!="-" AND service!="",
-                          service, port_num."/".port_proto)
-            | stats values(svc) as service_names,
-                    dc(port_num) as port_count
-              by host
-            | rename host as ip
-            ''',
-            'smtp_banner': f'''
-            search index=zeek_smtp "id.resp_h"="{safe_ip}"
-            | spath
-            | stats values(helo) as helo_names,
-                    latest(last_reply) as last_banner,
-                    dc("id.orig_h") as unique_clients,
-                    count as smtp_count
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-            'ftp_banner': f'''
-            search index=zeek_ftp "id.resp_h"="{safe_ip}"
-            | spath
-            | stats latest(reply_msg) as ftp_banner,
-                    dc("id.orig_h") as unique_clients,
-                    count as ftp_count
-              by "id.resp_h"
-            | rename "id.resp_h" as ip
-            ''',
-        }
+        def _s(val):
+            if isinstance(val, list):
+                return str(val[0]) if val else ''
+            return str(val) if val is not None else ''
 
-    def profile_single_device(self, splunk_connector, ip: str,
-                              time_range: str = "-24h") -> Dict:
-        """Profile a single device by running targeted Splunk queries.
+        idx = {}
 
-        This is used by the background profiling system to incrementally
-        profile one device at a time.  Much faster than global queries
-        because each query is filtered to a single IP.
+        # server_data and client_data are already aggregated dicts
+        idx['server_data'] = dict(accumulated.get('server_agg', {}))
+        idx['client_data'] = dict(accumulated.get('client_agg', {}))
+
+        # Index enrichment result lists by IP
+        def _index_by_field(rows, field='ip'):
+            """Group rows by a given field name."""
+            d = {}
+            for row in rows:
+                ip = _s(row.get(field))
+                if ip:
+                    d.setdefault(ip, []).append(row)
+            return d
+
+        idx['ntlm_by_ip'] = {}
+        for row in accumulated.get('ntlm', []):
+            src = _s(row.get('source_ip'))
+            dst = _s(row.get('dest_ip'))
+            if src:
+                idx['ntlm_by_ip'].setdefault(src, []).append(row)
+            if dst and dst != src:
+                idx['ntlm_by_ip'].setdefault(dst, []).append(row)
+
+        idx['kerberos_by_ip'] = _index_by_field(accumulated.get('kerberos', []))
+        idx['dhcp_by_ip'] = _index_by_field(accumulated.get('dhcp', []))
+        idx['snmp_by_ip'] = _index_by_field(accumulated.get('snmp', []))
+        idx['smb_by_ip'] = _index_by_field(accumulated.get('smb', []))
+        idx['software_by_ip'] = _index_by_field(accumulated.get('software', []))
+
+        idx['ssh_by_ip'] = {}
+        for row in accumulated.get('ssh', []):
+            cip = _s(row.get('client_ip'))
+            sip = _s(row.get('server_ip'))
+            if cip:
+                idx['ssh_by_ip'].setdefault(cip, []).append(row)
+            if sip and sip != cip:
+                idx['ssh_by_ip'].setdefault(sip, []).append(row)
+
+        idx['http_ua_by_ip'] = _index_by_field(accumulated.get('http_ua', []))
+        idx['ja3_ssl_by_ip'] = _index_by_field(accumulated.get('ja3_ssl', []))
+        idx['ja3s_server_by_ip'] = _index_by_field(accumulated.get('ja3s_server', []))
+        idx['dns_profile_by_ip'] = _index_by_field(accumulated.get('dns_profile', []))
+        idx['dhcp_extended_by_ip'] = _index_by_field(accumulated.get('dhcp_extended', []))
+        idx['known_services_by_ip'] = _index_by_field(accumulated.get('known_services', []))
+        idx['smtp_banner_by_ip'] = _index_by_field(accumulated.get('smtp_banner', []))
+        idx['ftp_banner_by_ip'] = _index_by_field(accumulated.get('ftp_banner', []))
+        idx['snmp_oid_by_ip'] = _index_by_field(accumulated.get('snmp_oid', []))
+
+        # DHCP gateway IPs (set)
+        idx['dhcp_gateway_ips'] = set()
+        for row in accumulated.get('dhcp_gateway', []):
+            gw_ip = _s(row.get('gateway_ip', row.get('ip', '')))
+            if gw_ip:
+                idx['dhcp_gateway_ips'].add(gw_ip)
+
+        return idx
+
+    def enrich_device_from_cache(self, ip: str, idx: Dict) -> Dict:
+        """Enrich and classify a single device from pre-indexed results.
+
+        This is used by the background profiling system to process one
+        device at a time from cached global query results.  No Splunk
+        queries are run — all data comes from the pre-built index.
 
         Args:
-            splunk_connector: SplunkConnector instance
-            ip: The IP address to profile
-            time_range: Splunk time range (default -24h)
+            ip: The IP address to enrich
+            idx: Pre-indexed results from _index_results_by_ip()
 
         Returns:
             Dict with profiling result for this single device
         """
-        from concurrent.futures import ThreadPoolExecutor
 
-        queries = self._per_device_query_definitions(ip)
-        _TIMEOUT = 300  # 5 min per query (they're very fast for single IP)
-
-        # Run all queries for this IP in parallel
-        with ThreadPoolExecutor(max_workers=len(queries)) as executor:
-            futures = {}
-            for name, spl in queries.items():
-                futures[name] = executor.submit(
-                    splunk_connector.query, spl,
-                    earliest_time=time_range, latest_time='now',
-                )
-
-            results = {}
-            for name, fut in futures.items():
-                try:
-                    results[name] = fut.result(timeout=_TIMEOUT)
-                except Exception as e:
-                    logger.warning(f"Per-device query {name} failed for {ip}: {e}")
-                    results[name] = []
+        def _sv(val, default=""):
+            if isinstance(val, list):
+                return str(val[0]) if val else default
+            return str(val) if val is not None else default
 
         # Find which node keys correspond to this IP
         ip_to_keys: Dict[str, List[str]] = {}
@@ -3143,52 +3032,22 @@ class NetworkMapperPlugin(ArtemisPlugin):
         if not ip_to_keys.get(ip):
             return {'ip': ip, 'status': 'not_found'}
 
-        # ---- Enrich this device ----
-        _sv = self._safe_value
+        # ---- Server / Client profile ----
+        server_info = idx['server_data'].get(ip, {})
+        client_info = idx['client_data'].get(ip, {})
 
-        # Server profile
-        server_data = {}
-        for row in results.get('server', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
-            ports = row.get('ports', [])
-            if isinstance(ports, str):
-                ports = [ports]
-            port_set = set()
-            for p in ports:
-                try:
-                    port_set.add(int(p))
-                except (ValueError, TypeError):
-                    pass
-            server_data = {
-                'ports': port_set,
-                'unique_clients': int(_sv(row.get('unique_clients'), '0')),
-            }
+        ports_served = set(server_info.get('ports', set()))
+        unique_clients = server_info.get('unique_clients', 0)
+        unique_dests = client_info.get('unique_destinations', 0)
+        outbound = client_info.get('outgoing_count', 0)
 
-        # Client profile
-        client_data = {}
-        for row in results.get('client', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
-            client_data = {
-                'unique_destinations': int(_sv(row.get('unique_destinations'), '0')),
-                'outgoing_count': int(_sv(row.get('outgoing_count'), '0')),
-            }
-
-        # Enrich with NTLM
+        # ---- Enrich with NTLM ----
         kdc_ips = set()
-        ntlm_auth_servers = set()
-        for row in results.get('ntlm', []):
-            source_ip = _sv(row.get('source_ip'))
-            dest_ip = _sv(row.get('dest_ip'))
+        for row in idx['ntlm_by_ip'].get(ip, []):
             nb_name = _sv(row.get('hostname'))
             domain = _sv(row.get('domainname'))
             server_nb = _sv(row.get('server_nb_computer_name'))
-
-            target_ip = ip
-            for key in ip_to_keys.get(target_ip, []):
+            for key in ip_to_keys.get(ip, []):
                 node = self.nodes[key]
                 if nb_name and nb_name != '-':
                     node.netbios_names.add(nb_name.upper())
@@ -3198,18 +3057,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     node.netbios_names.add(server_nb.upper())
 
         # Kerberos
-        for row in results.get('kerberos', []):
-            r_ip = _sv(row.get('ip'))
+        for row in idx['kerberos_by_ip'].get(ip, []):
             auth_count = int(_sv(row.get('auth_count'), '0'))
-            unique_clients = int(_sv(row.get('unique_clients'), '0'))
-            if r_ip == ip and auth_count >= 10 and unique_clients >= 3:
+            unique_kclients = int(_sv(row.get('unique_clients'), '0'))
+            if auth_count >= 10 and unique_kclients >= 3:
                 kdc_ips.add(ip)
 
-        # DHCP enrichment (MAC, hostname, vendor, VM detection)
-        for row in results.get('dhcp', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        # DHCP enrichment
+        for row in idx['dhcp_by_ip'].get(ip, []):
             mac = _sv(row.get('mac'))
             dhcp_hostname = _sv(row.get('dhcp_hostname'))
             for key in ip_to_keys.get(ip, []):
@@ -3228,10 +3083,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     node.hostnames.add(dhcp_hostname.lower())
 
         # SNMP
-        for row in results.get('snmp', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['snmp_by_ip'].get(ip, []):
             community = _sv(row.get('community'))
             snmp_version = _sv(row.get('snmp_version'))
             for key in ip_to_keys.get(ip, []):
@@ -3243,10 +3095,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.device_model = f"SNMPv{snmp_version}"
 
         # SMB
-        for row in results.get('smb', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['smb_by_ip'].get(ip, []):
             nb_names = row.get('nb_names', [])
             if isinstance(nb_names, str):
                 nb_names = [nb_names]
@@ -3258,23 +3107,16 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.netbios_names.add(nb)
 
         # Software
-        for row in results.get('software', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['software_by_ip'].get(ip, []):
             sw_list = row.get('software', [])
-            sw_types = row.get('sw_types', [])
             if isinstance(sw_list, str):
                 sw_list = [sw_list]
-            if isinstance(sw_types, str):
-                sw_types = [sw_types]
             for key in ip_to_keys.get(ip, []):
                 node = self.nodes[key]
                 for sw in sw_list:
                     sw = str(sw).strip()
                     if sw and sw != '-' and sw not in node.software:
                         node.software.append(sw)
-                        # Infer OS from software
                         sw_lower = sw.lower()
                         if not node.os_info:
                             if 'windows' in sw_lower:
@@ -3287,7 +3129,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                                 node.os_info = 'macOS'
 
         # SSH
-        for row in results.get('ssh', []):
+        for row in idx['ssh_by_ip'].get(ip, []):
             client_ip = _sv(row.get('client_ip'))
             server_ip = _sv(row.get('server_ip'))
             ssh_client = _sv(row.get('ssh_client'))
@@ -3322,10 +3164,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                             node.os_info = 'Windows'
 
         # HTTP User-Agent
-        for row in results.get('http_ua', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['http_ua_by_ip'].get(ip, []):
             ua_list = row.get('user_agents', [])
             if isinstance(ua_list, str):
                 ua_list = [ua_list]
@@ -3349,10 +3188,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                             node.os_info = 'iOS'
 
         # JA3/SSL
-        for row in results.get('ja3_ssl', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['ja3_ssl_by_ip'].get(ip, []):
             ja3_list = row.get('ja3_hashes', [])
             sni_list = row.get('sni_names', [])
             tls_vers = row.get('tls_versions', [])
@@ -3378,10 +3214,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.tls_versions_seen.append(tv)
 
         # JA3S server
-        for row in results.get('ja3s_server', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['ja3s_server_by_ip'].get(ip, []):
             ja3s_list = row.get('ja3s_hashes', [])
             cert_subj = row.get('cert_subjects', [])
             cert_iss = row.get('cert_issuers', [])
@@ -3407,10 +3240,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.cert_issuers.append(i)
 
         # DNS profile
-        for row in results.get('dns_profile', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['dns_profile_by_ip'].get(ip, []):
             for key in ip_to_keys.get(ip, []):
                 node = self.nodes[key]
                 node.dns_profile = {
@@ -3421,10 +3251,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 }
 
         # DHCP extended
-        for row in results.get('dhcp_extended', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['dhcp_extended_by_ip'].get(ip, []):
             client_fqdn = _sv(row.get('client_fqdn'))
             vendor_class = _sv(row.get('vendor_class'))
             dhcp_domain = _sv(row.get('dhcp_domain'))
@@ -3444,10 +3271,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.domain = dhcp_domain.upper()
 
         # Known services
-        for row in results.get('known_services', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['known_services_by_ip'].get(ip, []):
             svc_names = row.get('service_names', [])
             if isinstance(svc_names, str):
                 svc_names = [svc_names]
@@ -3459,10 +3283,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.known_services_names.append(svc)
 
         # SMTP banner
-        for row in results.get('smtp_banner', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['smtp_banner_by_ip'].get(ip, []):
             helo_names = row.get('helo_names', [])
             last_banner = _sv(row.get('last_banner'))
             if isinstance(helo_names, str):
@@ -3479,10 +3300,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.software.append(entry)
 
         # FTP banner
-        for row in results.get('ftp_banner', []):
-            r_ip = _sv(row.get('ip'))
-            if r_ip != ip:
-                continue
+        for row in idx['ftp_banner_by_ip'].get(ip, []):
             ftp_banner = _sv(row.get('ftp_banner'))
             if ftp_banner and ftp_banner != '-':
                 for key in ip_to_keys.get(ip, []):
@@ -3492,11 +3310,6 @@ class NetworkMapperPlugin(ArtemisPlugin):
                         node.software.append(entry)
 
         # ---- Classify this device ----
-        ports_served = server_data.get('ports', set())
-        unique_clients = server_data.get('unique_clients', 0)
-        unique_dests = client_data.get('unique_destinations', 0)
-        outbound = client_data.get('outgoing_count', 0)
-
         # Add ports from node.services
         for key in ip_to_keys.get(ip, []):
             node = self.nodes[key]
@@ -3506,7 +3319,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 except (ValueError, TypeError):
                     pass
 
-        dc_ports = {88, 389, 636, 3268, 3269, 445}
+        # DC detection
         device_type = ''
         if ip in kdc_ips:
             device_type = 'domain_controller'
@@ -3515,26 +3328,52 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 ports_served, unique_clients, unique_dests, outbound
             )
 
+        # Infrastructure detection
+        if not device_type or device_type in ('gateway', 'iot_device', 'workstation'):
+            infra_evidence = 0
+            inferred_type = ''
+
+            snmp_oid_rows = idx.get('snmp_oid_by_ip', {}).get(ip, [])
+            for row in snmp_oid_rows:
+                infra_evidence += 2
+                inferred_type = inferred_type or 'router'
+
+            if ip in idx.get('dhcp_gateway_ips', set()):
+                infra_evidence += 2
+                inferred_type = inferred_type or 'router'
+
+            # MAC vendor infrastructure detection
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if node.vendor:
+                    infra_hint = self._detect_network_infra(node.vendor)
+                    if infra_hint:
+                        infra_evidence += 1
+                        if not inferred_type:
+                            inferred_type = 'firewall' if 'firewall' in infra_hint else 'router'
+
+            if infra_evidence >= 2 and inferred_type:
+                device_type = inferred_type
+
         # Downgrade protection
-        _FALLBACK_TYPES = {'gateway', 'workstation', 'iot_device'}
         _SPECIFIC_TYPES = {
             'domain_controller', 'dns_server', 'web_server',
             'database_server', 'mail_server', 'file_server',
             'print_server', 'voip_server', 'monitoring_server',
             'router', 'firewall',
         }
+        _FALLBACK_TYPES = {'gateway', 'workstation', 'iot_device'}
 
         for key in ip_to_keys.get(ip, []):
             node = self.nodes[key]
             old_type = node.device_type
             if old_type in _SPECIFIC_TYPES and device_type in _FALLBACK_TYPES:
-                # Don't downgrade
-                pass
+                pass  # Don't downgrade
             elif device_type:
                 node.device_type = device_type
                 node.roles.add(self._infer_node_role(ports_served))
 
-        # Build host_id for this node
+        # Build host_id
         self._build_host_id_for_node(ip, ip_to_keys)
 
         return {
