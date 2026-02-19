@@ -3858,6 +3858,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
             if dtype not in device_inventory_ordered:
                 device_inventory_ordered[dtype] = device_inventory[dtype]
 
+        # Per-sensor device type counts
+        sensor_inventory: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for n in nodes:
+            if n.device_type and n.is_internal:
+                sensor_inventory[n.sensor_id][n.device_type] += 1
+        # Convert to regular dicts and add totals
+        sensor_inventory_out = {}
+        for sid in sorted(sensor_inventory):
+            counts = dict(sensor_inventory[sid])
+            counts['_total'] = sum(counts.values())
+            sensor_inventory_out[sid] = counts
+
         summary = {
             '_key': cache_key,
             'total_nodes': len(nodes),
@@ -3877,6 +3889,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 for ip, sid, v, c in top_talkers
             ],
             'device_inventory': device_inventory_ordered,
+            'sensor_inventory': sensor_inventory_out,
             'device_counts': {
                 dtype: len(items) for dtype, items in device_inventory_ordered.items()
             },

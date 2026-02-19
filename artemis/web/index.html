@@ -3158,62 +3158,54 @@
                     </div>
                 `;
 
-                // Device inventory sections
-                const inventory = summary.device_inventory || {};
-                if (Object.keys(inventory).length > 0) {
-                    html += '<h4 style="margin:15px 0 10px 0;">Device Inventory</h4>';
+                // Device inventory — per-sensor count table
+                const sensorInv = summary.sensor_inventory || {};
+                const deviceCounts = summary.device_counts || {};
+                const sensorIds = Object.keys(sensorInv);
 
-                    for (const [dtype, devices] of Object.entries(inventory)) {
-                        const info = deviceLabels[dtype] || { label: dtype, icon: '❓' };
-                        const isDC = dtype === 'domain_controller';
-                        // DCs open by default — they're critical infrastructure
-                        html += `
-                            <details ${isDC ? 'open' : ''} style="margin-bottom:8px; background:var(--bg-tertiary); border-radius:5px; padding:0;${isDC ? ' border-left:3px solid #E91E63;' : ''}">
-                                <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
-                                    <span>${info.icon} ${info.label}</span>
-                                    <span style="background:${isDC ? '#E91E63' : 'var(--accent)'}; color:#fff; padding:2px 10px; border-radius:10px; font-size:12px;">${devices.length}</span>
-                                </summary>
-                                <div style="padding:0 14px 10px 14px;">
-                                    <table style="width:100%; font-size:13px; border-collapse:collapse;">
-                                        <tr style="opacity:0.7; font-size:11px; text-transform:uppercase;">
-                                            <td style="padding:4px 8px;">IP Address</td>
-                                            <td style="padding:4px 8px;">Name</td>
-                                            ${isDC ? '<td style="padding:4px 8px;">Domain</td>' : ''}
-                                            <td style="padding:4px 8px;">Vendor / Model</td>
-                                            <td style="padding:4px 8px;">OS / Software</td>
-                                            <td style="padding:4px 8px;">Services</td>
-                                            <td style="padding:4px 8px; text-align:right;">Connections</td>
-                                        </tr>
-                                        ${devices.map(d => {
-                                            const name = (d.netbios_names && d.netbios_names.length > 0)
-                                                ? d.netbios_names[0]
-                                                : (d.hostnames && d.hostnames.length > 0 ? d.hostnames[0] : '-');
-                                            const domain = d.domain || '-';
-                                            const vendor = d.vendor || '';
-                                            const model = d.device_model || '';
-                                            const vendorModel = [vendor, model].filter(Boolean).join(' / ') || '-';
-                                            const osInfo = d.os_info || '';
-                                            const sw = (d.software || []).slice(0, 2).join(', ');
-                                            const osSw = [osInfo, sw].filter(Boolean).join(' — ') || '-';
-                                            const vmBadge = d.is_virtual ? ` <span style="color:#CE93D8; font-size:10px; font-weight:600;" title="${escapeHtml(d.virtual_platform || 'VM')}"><i class="fa-solid fa-cloud"></i> VM</span>` : '';
-                                            const gwCount = (d.is_gateway_for || []).length;
-                                            const infraBadge = (d.device_type === 'router' || d.device_type === 'firewall') ? ` <span style="color:${d.device_type === 'firewall' ? '#EF5350' : '#FFB74D'}; font-size:10px; font-weight:600;" title="${gwCount > 0 ? 'Gateway for ' + gwCount + ' subnet(s)' : d.device_type}"><i class="fa-solid ${d.device_type === 'firewall' ? 'fa-fire' : 'fa-route'}"></i> ${d.device_type === 'firewall' ? 'FW' : 'RTR'}${gwCount > 0 ? ' (' + gwCount + ')' : ''}</span>` : '';
-                                            return `
-                                            <tr style="border-top:1px solid rgba(255,255,255,0.05);">
-                                                <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${d.ip}'; searchGraphNode();">${d.ip}${vmBadge}${infraBadge}</td>
-                                                <td style="padding:4px 8px; opacity:0.8; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
-                                                ${isDC ? '<td style="padding:4px 8px; opacity:0.8;">' + escapeHtml(domain) + '</td>' : ''}
-                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(vendorModel)}">${escapeHtml(vendorModel)}</td>
-                                                <td style="padding:4px 8px; opacity:0.7; font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(osSw)}">${escapeHtml(osSw)}</td>
-                                                <td style="padding:4px 8px; opacity:0.7; font-size:11px;">${d.services.slice(0, 5).join(', ') || '-'}</td>
-                                                <td style="padding:4px 8px; text-align:right;">${d.connections.toLocaleString()}</td>
-                                            </tr>`;
-                                        }).join('')}
-                                    </table>
-                                </div>
-                            </details>
-                        `;
-                    }
+                if (sensorIds.length > 0) {
+                    // Collect all device types present across sensors, in SOC order
+                    const allTypes = Object.keys(deviceCounts);
+
+                    html += '<h4 style="margin:15px 0 10px 0;">Device Inventory</h4>';
+                    html += `<div style="overflow-x:auto; background:var(--bg-tertiary); border-radius:5px; padding:10px 14px;">
+                        <table style="width:100%; font-size:13px; border-collapse:collapse;">
+                            <tr style="opacity:0.7; font-size:11px; text-transform:uppercase;">
+                                <td style="padding:6px 8px; font-weight:600;">Sensor</td>
+                                ${allTypes.map(dt => {
+                                    const info = deviceLabels[dt] || { label: dt, icon: '❓' };
+                                    return `<td style="padding:6px 6px; text-align:center;" title="${info.label}">${info.icon}</td>`;
+                                }).join('')}
+                                <td style="padding:6px 8px; text-align:center; font-weight:600;">Total</td>
+                            </tr>
+                            ${sensorIds.map(sid => {
+                                const counts = sensorInv[sid];
+                                return `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                                    <td style="padding:6px 8px; font-family:monospace; white-space:nowrap;">${escapeHtml(sid)}</td>
+                                    ${allTypes.map(dt => {
+                                        const c = counts[dt] || 0;
+                                        return `<td style="padding:6px 6px; text-align:center; opacity:${c ? '1' : '0.3'};">${c}</td>`;
+                                    }).join('')}
+                                    <td style="padding:6px 8px; text-align:center; font-weight:600;">${counts._total || 0}</td>
+                                </tr>`;
+                            }).join('')}
+                            <tr style="border-top:2px solid rgba(255,255,255,0.15); font-weight:600;">
+                                <td style="padding:6px 8px;">All Sensors</td>
+                                ${allTypes.map(dt => {
+                                    return `<td style="padding:6px 6px; text-align:center;">${deviceCounts[dt] || 0}</td>`;
+                                }).join('')}
+                                <td style="padding:6px 8px; text-align:center;">${Object.values(deviceCounts).reduce((a, b) => a + b, 0)}</td>
+                            </tr>
+                        </table>
+                    </div>`;
+
+                    // Legend row mapping icons to labels
+                    html += `<div style="margin-top:6px; font-size:11px; opacity:0.6; line-height:1.8;">
+                        ${allTypes.map(dt => {
+                            const info = deviceLabels[dt] || { label: dt, icon: '❓' };
+                            return `${info.icon} ${info.label}`;
+                        }).join(' &bull; ')}
+                    </div>`;
                 } else {
                     html += '<p style="opacity:0.6; margin-top:10px;">No devices profiled yet. Click <strong>Profile Devices</strong> above to classify network hosts.</p>';
                 }
