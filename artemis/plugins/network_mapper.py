@@ -3024,15 +3024,26 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     ext_conns_in.append({'ip': src_ip, 'count': count})
                     internet_unique_ips.add(src_ip)
 
-            # Collect internal peer connections for click details
-            int_conns = []
+            # Collect internal peer connections for click details.
+            # Include ALL internal peers (both directions) regardless
+            # of whether the peer is in the current graph view.
+            int_conns_out = []
+            own_key = self._node_key(node.sensor_id, node.vlan, node.ip)
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1], reverse=True,
-            )[:20]:
+            )[:30]:
                 dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
-                if dst_key in top_keys and dst_key != self._node_key(node.sensor_id, node.vlan, node.ip):
-                    int_conns.append({'ip': dst_ip, 'count': count})
+                if dst_key != own_key and dst_key not in external_keys:
+                    int_conns_out.append({'ip': dst_ip, 'count': count})
+            int_conns_in = []
+            for src_ip, count in sorted(
+                node.connections_from.items(),
+                key=lambda x: x[1], reverse=True,
+            )[:30]:
+                src_key = self._node_key(node.sensor_id, node.vlan, src_ip)
+                if src_key != own_key and src_key not in external_keys:
+                    int_conns_in.append({'ip': src_ip, 'count': count})
 
             # Count how many IPs this MAC has been seen with
             mac_ip_count = 0
@@ -3056,6 +3067,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
                 'services': len(node.services),
+                'services_list': sorted(
+                    [f"{port}/{proto}" for port, proto in node.services],
+                    key=lambda s: int(s.split('/')[0]) if s.split('/')[0].isdigit() else 0,
+                )[:50],
                 'device_type': node.device_type,
                 'device_label': self._device_label(node.device_type),
                 'tier': self._device_tier(node.device_type, node.is_internal),
@@ -3085,7 +3100,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'file_mime_types': node.file_mime_types[:10],
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],
-                'internal_connections': int_conns,
+                'internal_connections_out': int_conns_out,
+                'internal_connections_in': int_conns_in,
                 'is_gateway_for': sorted(node.is_gateway_for) if node.is_gateway_for else [],
                 'gateway_evidence': node.gateway_evidence[:10] if node.gateway_evidence else [],
             })

@@ -2661,24 +2661,34 @@
                 const nodeMap = {};
                 nodes.forEach(function(n) { nodeMap[n.id] = n; });
 
-                // Estimate rendered width of a node from its label and shape
+                // Estimate rendered width of a node from its label and shape.
+                // For icon nodes the label renders BELOW the icon, so the
+                // effective width = max(icon_size, widest_label_line).
+                // We use a canvas to measure text for accuracy.
+                var _measureCanvas = document.createElement('canvas');
+                var _measureCtx = _measureCanvas.getContext('2d');
+                _measureCtx.font = '11px sans-serif';
+
                 function estimateWidth(n) {
                     var label = n.label || '';
                     var lines = label.split('\n');
-                    var maxLen = 0;
+                    var maxPx = 0;
                     for (var i = 0; i < lines.length; i++) {
-                        if (lines[i].length > maxLen) maxLen = lines[i].length;
+                        var w = _measureCtx.measureText(lines[i]).width;
+                        if (w > maxPx) maxPx = w;
                     }
                     if (n.shape === 'box') {
-                        // font-size 11, ~6.5px per char, + margin 10 each side
-                        return maxLen * 6.5 + 24;
+                        // box: text width + margin (10 each side) + border
+                        return maxPx + 24;
                     }
                     if (n.shape === 'icon') {
-                        // icon width (~50) or label width, whichever is larger
-                        return Math.max(maxLen * 6.5, 50);
+                        // icon nodes: label sits below the icon, so the
+                        // clickable/visible area is the wider of icon or label
+                        var iconSize = (n.icon && n.icon.size) || 30;
+                        return Math.max(maxPx + 8, iconSize);
                     }
-                    // dot/other
-                    return Math.max(maxLen * 6.5, 30);
+                    // dot/ellipse/other
+                    return Math.max(maxPx + 8, 30);
                 }
 
                 // Group nodes by tier level (y-position rounded)
@@ -2876,6 +2886,7 @@
                     ${osInfo ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">OS / Platform:</span> <strong>${escapeHtml(osInfo)}</strong></div>` : ''}
                     <div><span style="opacity:0.6;">Sensor:</span> ${escapeHtml(node.sensor_id || 'default')}</div>
                     <div><span style="opacity:0.6;">Services:</span> ${escapeHtml(servicesStr)}</div>
+                    ${(node.services_list || []).length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Ports:</span> <span style="font-family:monospace; font-size:12px;">${(node.services_list || []).map(s => escapeHtml(s)).join(', ')}</span></div>` : ''}
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
                     ${softwareList.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Software:</span> ${escapeHtml(softwareList.join(', '))}</div>` : ''}
                 </div>
@@ -2910,19 +2921,28 @@
                 <div style="margin-bottom:16px;"></div>
             `;
 
-            // Internal connections table
-            const intConns = node.internal_connections || [];
-            if (intConns.length > 0) {
-                html += `<h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;">Internal Connections</h4>`;
+            // Internal connections table (bidirectional)
+            const intConnsOut = node.internal_connections_out || node.internal_connections || [];
+            const intConnsIn = node.internal_connections_in || [];
+            // Merge into a single view: ip -> { out, in }
+            const intPeers = {};
+            intConnsOut.forEach(c => { intPeers[c.ip] = intPeers[c.ip] || { out: 0, in: 0 }; intPeers[c.ip].out = c.count; });
+            intConnsIn.forEach(c => { intPeers[c.ip] = intPeers[c.ip] || { out: 0, in: 0 }; intPeers[c.ip].in = c.count; });
+            const intSorted = Object.entries(intPeers).sort((a, b) => (b[1].out + b[1].in) - (a[1].out + a[1].in));
+            if (intSorted.length > 0) {
+                html += `<h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-network-wired"></i> Internal Connections (${intSorted.length} peers)</h4>`;
                 html += `<table style="width:100%; font-size:13px; border-collapse:collapse; margin-bottom:16px;">`;
-                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">IP</td><td style="padding:4px 8px; text-align:right;">Connections</td></tr>`;
-                intConns.forEach(c => {
+                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">Peer IP</td><td style="padding:4px 8px; text-align:right;">Out</td><td style="padding:4px 8px; text-align:right;">In</td><td style="padding:4px 8px; text-align:right;">Total</td></tr>`;
+                intSorted.slice(0, 30).forEach(([ip, info]) => {
                     html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
-                        <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${c.ip}'; searchGraphNode();">${escapeHtml(c.ip)}</td>
-                        <td style="padding:4px 8px; text-align:right;">${c.count.toLocaleString()}</td>
+                        <td style="padding:4px 8px; font-family:monospace; cursor:pointer;" onclick="document.getElementById('graph-search').value='${escapeHtml(ip)}'; searchGraphNode();">${escapeHtml(ip)}</td>
+                        <td style="padding:4px 8px; text-align:right; opacity:0.8;">${info.out.toLocaleString()}</td>
+                        <td style="padding:4px 8px; text-align:right; opacity:0.8;">${info.in.toLocaleString()}</td>
+                        <td style="padding:4px 8px; text-align:right; font-weight:600;">${(info.out + info.in).toLocaleString()}</td>
                     </tr>`;
                 });
                 html += '</table>';
+                if (intSorted.length > 30) html += `<p style="opacity:0.5; font-size:12px; margin-top:4px;">Showing 30 of ${intSorted.length}</p>`;
             }
 
             // External connections table
