@@ -1468,7 +1468,7 @@
                         <h3 id="node-details-title" style="margin:0; font-size:15px;"></h3>
                         <button onclick="document.getElementById('node-details-panel').style.display='none'" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:18px; padding:0 4px;">&times;</button>
                     </div>
-                    <div id="node-details-body" style="padding:16px; max-height:400px; overflow-y:auto;"></div>
+                    <div id="node-details-body" style="padding:16px; max-height:600px; overflow-y:auto;"></div>
                 </div>
 
                 <div class="card" style="margin-top: 20px;">
@@ -2792,7 +2792,7 @@
             });
         }
 
-        function showNodeDetails(node) {
+        function showNodeDetails(node, delayScroll) {
             const panel = document.getElementById('node-details-panel');
             const title = document.getElementById('node-details-title');
             const body = document.getElementById('node-details-body');
@@ -2974,7 +2974,16 @@
 
             body.innerHTML = html;
             panel.style.display = 'block';
-            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            // When called from search, delay scroll so it happens AFTER the
+            // graph focus animation (500ms) finishes — otherwise the animation
+            // scrolls the viewport back to the graph and the panel is never seen.
+            if (delayScroll) {
+                setTimeout(() => {
+                    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 600);
+            } else {
+                panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
         }
 
         async function loadDeviceIdentity(ip) {
@@ -3681,7 +3690,8 @@
                                     });
                                 }
                             }, 100);
-                            showNodeDetails(match);
+                            // Show details and scroll AFTER graph animation completes
+                            showNodeDetails(match, true);
                             searchInput.style.borderColor = '#43a047';
                             setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
                             return;
@@ -3693,7 +3703,8 @@
                         scale: 1.5,
                         animation: { duration: 500, easingFunction: 'easeInOutQuad' }
                     });
-                    showNodeDetails(match);
+                    // Show details and scroll AFTER graph animation completes
+                    showNodeDetails(match, true);
                 } else {
                     // Multiple matches: expand subnets of all matches
                     let needsRerender = false;
