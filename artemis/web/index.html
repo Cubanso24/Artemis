@@ -4337,6 +4337,10 @@
 
                 if (data.running) {
                     updateContinuousUI(true);
+                    // Ensure polling continues after page reload
+                    if (!continuousPollTimer) {
+                        continuousPollTimer = setInterval(pollContinuousStatus, 5000);
+                    }
                     const statusEl = document.getElementById('cont-status-details');
                     const cycleEl = document.getElementById('cont-cycle-count');
                     cycleEl.textContent = `${data.cycles} cycle${data.cycles !== 1 ? 's' : ''} completed`;
