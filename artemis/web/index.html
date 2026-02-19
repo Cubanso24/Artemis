@@ -2862,6 +2862,8 @@
             const gatewayFor = node.is_gateway_for || [];
             const gatewayEvidence = node.gateway_evidence || [];
             const isInfra = node.device_type === 'router' || node.device_type === 'firewall' || (node.device_type === 'gateway' && gatewayFor.length > 0);
+            const hostId = node.host_id || null;
+            const knownServices = node.known_services_names || [];
 
             let html = `
                 ${isInfra ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(255,111,0,0.15); border:1px solid rgba(255,111,0,0.4); border-radius:6px; padding:6px 12px; margin-bottom:12px; font-size:13px;">
@@ -2889,7 +2891,32 @@
                     ${(node.services_list || []).length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Ports:</span> <span style="font-family:monospace; font-size:12px;">${(node.services_list || []).map(s => escapeHtml(s)).join(', ')}</span></div>` : ''}
                     <div style="grid-column:1/-1;"><span style="opacity:0.6;">Roles:</span> ${escapeHtml(rolesStr)}</div>
                     ${softwareList.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Software:</span> ${escapeHtml(softwareList.join(', '))}</div>` : ''}
+                    ${knownServices.length > 0 ? `<div style="grid-column:1/-1;"><span style="opacity:0.6;">Known Services:</span> <span style="font-family:monospace; font-size:12px;">${knownServices.map(s => escapeHtml(s)).join(', ')}</span></div>` : ''}
                 </div>
+                ${hostId ? `
+                <div style="margin-bottom:16px; background:rgba(33,150,243,0.08); border:1px solid rgba(33,150,243,0.25); border-radius:8px; padding:12px;">
+                    <h4 style="margin:0 0 10px 0; font-size:13px; display:flex; align-items:center; gap:8px;">
+                        <i class="fa-solid fa-fingerprint" style="color:#42A5F5;"></i>
+                        <span>Host Identification</span>
+                        <span style="margin-left:auto; font-size:11px; padding:2px 8px; border-radius:10px; background:${hostId.confidence >= 70 ? 'rgba(76,175,80,0.2); color:#66BB6A;' : hostId.confidence >= 40 ? 'rgba(255,152,0,0.2); color:#FFB74D;' : 'rgba(158,158,158,0.2); color:#BDBDBD;'}">${hostId.confidence}% confidence</span>
+                    </h4>
+                    ${hostId.os && hostId.os !== 'Unknown' ? `
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:8px 10px; background:rgba(0,0,0,0.15); border-radius:6px;">
+                        <i class="${((o) => o.includes('windows') ? 'fa-brands fa-windows' : o.includes('linux') || o.includes('ubuntu') || o.includes('debian') || o.includes('centos') ? 'fa-brands fa-linux' : o.includes('macos') || o.includes('ios') ? 'fa-brands fa-apple' : o.includes('android') ? 'fa-brands fa-android' : 'fa-solid fa-desktop')(hostId.os.toLowerCase())}" style="font-size:18px; color:#42A5F5;"></i>
+                        <div>
+                            <div style="font-weight:600; font-size:14px;">${escapeHtml(hostId.os)}</div>
+                            <div style="font-size:11px; opacity:0.6;">via ${escapeHtml(hostId.os_source)} (${hostId.os_confidence}%)</div>
+                        </div>
+                    </div>` : ''}
+                    <div style="font-size:12px;">
+                        <div style="opacity:0.6; font-size:11px; text-transform:uppercase; margin-bottom:6px;">Identification Signals (${hostId.signal_count})</div>
+                        ${(hostId.signals || []).map(s => `
+                        <div style="display:flex; gap:8px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.04);">
+                            <span style="min-width:120px; opacity:0.5; font-size:11px;">${escapeHtml(s.source)}</span>
+                            <span style="font-family:monospace; word-break:break-all;">${escapeHtml(s.value)}</span>
+                        </div>`).join('')}
+                    </div>
+                </div>` : ''}
                 ${userAgentsList.length > 0 ? `
                 <div style="margin-bottom:16px;">
                     <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-globe"></i> User Agents (${userAgentsList.length})</h4>
@@ -3098,6 +3125,11 @@
                         <div onclick="scrollToMultiIpDetails()" style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #FF9800; cursor:pointer;" title="Click to view multi-IP devices">
                             <div style="font-size:20px; font-weight:700; color:#FF9800;">${summary.mac_tracking.multi_ip_count}</div>
                             <div style="font-size:11px; opacity:0.7;">Multi-IP Devices</div>
+                        </div>` : ''}
+                        ${((summary.fingerprint_coverage || {}).host_identified || 0) > 0 ? `
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #42A5F5;">
+                            <div style="font-size:20px; font-weight:700; color:#42A5F5;">${summary.fingerprint_coverage.host_identified}</div>
+                            <div style="font-size:11px; opacity:0.7;">Host IDs</div>
                         </div>` : ''}
                     </div>
                 `;

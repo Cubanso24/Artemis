@@ -67,6 +67,9 @@ class NetworkNode:
         # Router/firewall/gateway fields
         'is_gateway_for',       # set of /24 subnets this device is a gateway for
         'gateway_evidence',     # list of evidence strings explaining why detected
+        # Host identification (combined Zeek Workbench-style)
+        'host_id',              # dict with unified host identification summary
+        'known_services_names', # service names from zeek_known_services
     )
 
     def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
@@ -99,6 +102,8 @@ class NetworkNode:
         self.file_mime_types: List[str] = []  # MIME types of files transferred by this host
         self.is_gateway_for: Set[str] = set()  # /24 subnets this device acts as gateway for
         self.gateway_evidence: List[str] = []  # Evidence strings for router/firewall detection
+        self.host_id: Dict = {}  # Unified host identification: {os, os_source, confidence, signals}
+        self.known_services_names: List[str] = []  # Named services from zeek_known_services
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
         self.total_connections = 0
@@ -182,6 +187,8 @@ class NetworkNode:
             'file_mime_types': self.file_mime_types[:20],
             'is_gateway_for': sorted(self.is_gateway_for),
             'gateway_evidence': self.gateway_evidence[:10],
+            'host_id': self.host_id,
+            'known_services_names': self.known_services_names[:30],
         }
 
 
@@ -320,6 +327,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Router/firewall fields
         node.is_gateway_for = set(node_data.get('is_gateway_for', []))
         node.gateway_evidence = node_data.get('gateway_evidence', [])
+        # Host identification
+        node.host_id = node_data.get('host_id', {})
+        node.known_services_names = node_data.get('known_services_names', [])
 
         # Restore connection maps (edges)
         for dst_ip, count in node_data.get('connections_to', {}).items():
@@ -1378,6 +1388,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                      'software', 'ssh', 'x509', 'http_ua',
                      'ja3_ssl', 'ja3s_server', 'dns_profile', 'rdp',
                      'dhcp_extended', 'files', 'x509_extended',
+                     'known_services', 'smtp_banner', 'ftp_banner',
                      'dhcp_gateway', 'snmp_oid'):
             accumulated[key].extend(new_results.get(key, []))
 
@@ -1594,6 +1605,41 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by host
             | rename host as sensor_id
             ''',
+            # --- Host identification queries (Zeek Workbench style) ---
+            'known_services': '''
+            search index=zeek_known_services
+            | spath
+            | where isnotnull(host) AND isnotnull(port_num)
+            | eval svc=if(isnotnull(service) AND service!="-" AND service!="",
+                          service, port_num."/".port_proto)
+            | stats values(svc) as service_names,
+                    dc(port_num) as port_count
+              by host
+            | rename host as ip
+            ''',
+            'smtp_banner': '''
+            search index=zeek_smtp
+            | spath
+            | where isnotnull("id.resp_h")
+            | stats values(helo) as helo_names,
+                    latest(last_reply) as last_banner,
+                    dc("id.orig_h") as unique_clients,
+                    count as smtp_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where smtp_count >= 2
+            ''',
+            'ftp_banner': '''
+            search index=zeek_ftp
+            | spath
+            | where isnotnull("id.resp_h")
+            | stats latest(reply_msg) as ftp_banner,
+                    dc("id.orig_h") as unique_clients,
+                    count as ftp_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where ftp_count >= 1
+            ''',
             # --- Router / firewall detection queries ---
             'dhcp_gateway': '''
             search index=zeek_dhcp
@@ -1675,6 +1721,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'ja3_ssl': [], 'ja3s_server': [], 'dns_profile': [],
             'rdp': [], 'dhcp_extended': [], 'files': [],
             'x509_extended': [],
+            # Host identification accumulators
+            'known_services': [], 'smtp_banner': [], 'ftp_banner': [],
             # Router/firewall detection accumulators
             'dhcp_gateway': [], 'snmp_oid': [],
         }
@@ -1689,7 +1737,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                          if total_windows > 1 else "Querying Splunk...")
             pct = int(pct_query_start + (win_idx - 1) * pct_per_window)
             _progress('profile',
-                      f'{win_label} — submitting 20 queries in parallel...',
+                      f'{win_label} — submitting 23 queries in parallel...',
                       pct)
             logger.info(f"Profiling window {win_idx}/{total_windows}: "
                         f"{earliest} → {latest}")
@@ -1724,6 +1772,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         dhcp_extended_results = accumulated['dhcp_extended']
         files_results = accumulated['files']
         x509_extended_results = accumulated['x509_extended']
+        # Host identification results
+        known_services_results = accumulated['known_services']
+        smtp_banner_results = accumulated['smtp_banner']
+        ftp_banner_results = accumulated['ftp_banner']
         # Router/firewall detection results
         dhcp_gateway_results = accumulated['dhcp_gateway']
         snmp_oid_results = accumulated['snmp_oid']
@@ -2244,6 +2296,283 @@ class NetworkMapperPlugin(ArtemisPlugin):
                                         node.cert_issuers.append(iss_entry)
                             x509_ext_enriched += 1
 
+        # ---- Zeek Workbench host identification enrichment ----
+
+        # Enrich with known_services (zeek_known_services)
+        known_svc_enriched = 0
+        for row in known_services_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            svc_names = row.get('service_names', [])
+            if isinstance(svc_names, str):
+                svc_names = [svc_names]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for svc in svc_names:
+                    svc = str(svc).strip()
+                    if svc and svc != '-' and svc not in node.known_services_names:
+                        node.known_services_names.append(svc)
+                known_svc_enriched += 1
+
+        # Enrich with SMTP banner data
+        smtp_enriched = 0
+        for row in smtp_banner_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            helo_names = row.get('helo_names', [])
+            last_banner = _sv(row.get('last_banner'))
+            if isinstance(helo_names, str):
+                helo_names = [helo_names]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                # SMTP HELO reveals server identity
+                for helo in helo_names:
+                    helo = str(helo).strip()
+                    if helo and helo != '-':
+                        node.hostnames.add(helo.lower())
+                # SMTP banner often reveals software/OS
+                if last_banner and last_banner != '-':
+                    entry = f"SMTP: {last_banner[:120]}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+                    # Extract OS hints from SMTP banner
+                    banner_lower = last_banner.lower()
+                    if not node.os_info:
+                        if 'ubuntu' in banner_lower:
+                            node.os_info = 'Ubuntu Linux'
+                        elif 'debian' in banner_lower:
+                            node.os_info = 'Debian Linux'
+                        elif 'centos' in banner_lower:
+                            node.os_info = 'CentOS Linux'
+                        elif 'microsoft' in banner_lower or 'exchange' in banner_lower:
+                            node.os_info = 'Windows Server'
+                smtp_enriched += 1
+
+        # Enrich with FTP banner data
+        ftp_enriched = 0
+        for row in ftp_banner_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            ftp_banner = _sv(row.get('ftp_banner'))
+            if not ftp_banner or ftp_banner == '-':
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                entry = f"FTP: {ftp_banner[:120]}"
+                if entry not in node.software:
+                    node.software.append(entry)
+                # Extract OS hints from FTP banner
+                banner_lower = ftp_banner.lower()
+                if not node.os_info:
+                    if 'windows' in banner_lower or 'microsoft' in banner_lower:
+                        node.os_info = 'Windows Server'
+                    elif 'ubuntu' in banner_lower:
+                        node.os_info = 'Ubuntu Linux'
+                    elif 'debian' in banner_lower:
+                        node.os_info = 'Debian Linux'
+                    elif 'vsftpd' in banner_lower or 'proftpd' in banner_lower:
+                        node.os_info = 'Linux'
+                ftp_enriched += 1
+
+        # ---- Build unified host_id for every internal node ----
+        # Combines ALL identification signals into a single summary dict.
+        host_id_built = 0
+        for key, node in self.nodes.items():
+            if not node.is_internal:
+                continue
+
+            signals = []  # List of {source, value, confidence} dicts
+            os_candidates = []  # (os_string, source, confidence)
+
+            # 1) OS from DHCP vendor class (high confidence)
+            if node.dhcp_vendor_class:
+                vc = node.dhcp_vendor_class
+                signals.append({
+                    'source': 'DHCP Vendor Class',
+                    'value': vc,
+                })
+                vc_lower = vc.lower()
+                if 'msft' in vc_lower or 'microsoft' in vc_lower:
+                    os_candidates.append(('Windows', 'DHCP Vendor Class', 90))
+                elif 'android' in vc_lower:
+                    os_candidates.append(('Android', 'DHCP Vendor Class', 85))
+                elif 'linux' in vc_lower:
+                    os_candidates.append(('Linux', 'DHCP Vendor Class', 80))
+                elif 'apple' in vc_lower or 'darwin' in vc_lower:
+                    os_candidates.append(('macOS/iOS', 'DHCP Vendor Class', 85))
+
+            # 2) OS from software.log (high confidence)
+            for sw in node.software[:10]:
+                sw_lower = sw.lower()
+                if 'windows' in sw_lower:
+                    # Try to extract specific version
+                    if 'windows 10' in sw_lower or 'windows 11' in sw_lower:
+                        os_candidates.append((sw.split(',')[0][:60], 'Zeek Software', 90))
+                    else:
+                        os_candidates.append(('Windows', 'Zeek Software', 85))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif any(x in sw_lower for x in ['ubuntu', 'debian', 'centos', 'rhel', 'fedora']):
+                    os_candidates.append((sw.split(',')[0][:60], 'Zeek Software', 90))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif 'macos' in sw_lower or 'darwin' in sw_lower:
+                    os_candidates.append(('macOS', 'Zeek Software', 85))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif any(x in sw_lower for x in ['ssh server:', 'ssh client:', 'smtp:', 'ftp:']):
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+
+            # 3) OS from direct os_info field
+            if node.os_info:
+                os_candidates.append((node.os_info, 'OS Detection', 80))
+                if not any(s['source'] == 'OS Detection' for s in signals):
+                    signals.append({
+                        'source': 'OS Detection',
+                        'value': node.os_info,
+                    })
+
+            # 4) SSH banners (medium-high confidence)
+            for sw in node.software[:10]:
+                if sw.startswith('SSH server:') or sw.startswith('SSH client:'):
+                    banner = sw.split(':', 1)[1].strip()
+                    if not any(s['source'] == 'SSH Banner' for s in signals):
+                        signals.append({
+                            'source': 'SSH Banner',
+                            'value': banner[:80],
+                        })
+                    banner_lower = banner.lower()
+                    if 'ubuntu' in banner_lower:
+                        os_candidates.append(('Ubuntu Linux', 'SSH Banner', 75))
+                    elif 'debian' in banner_lower:
+                        os_candidates.append(('Debian Linux', 'SSH Banner', 75))
+                    elif 'windows' in banner_lower:
+                        os_candidates.append(('Windows', 'SSH Banner', 75))
+
+            # 5) HTTP User-Agent (medium confidence, client-side)
+            for ua in node.user_agents[:3]:
+                ua_lower = ua.lower()
+                signals.append({
+                    'source': 'HTTP User-Agent',
+                    'value': ua[:100],
+                })
+                if 'windows nt 10' in ua_lower:
+                    os_candidates.append(('Windows 10/11', 'HTTP User-Agent', 65))
+                elif 'windows nt 6.3' in ua_lower:
+                    os_candidates.append(('Windows 8.1', 'HTTP User-Agent', 65))
+                elif 'windows nt 6.1' in ua_lower:
+                    os_candidates.append(('Windows 7', 'HTTP User-Agent', 65))
+                elif 'macintosh' in ua_lower or 'mac os x' in ua_lower:
+                    os_candidates.append(('macOS', 'HTTP User-Agent', 65))
+                elif 'linux' in ua_lower and 'android' not in ua_lower:
+                    os_candidates.append(('Linux', 'HTTP User-Agent', 60))
+                elif 'android' in ua_lower:
+                    os_candidates.append(('Android', 'HTTP User-Agent', 65))
+                elif 'iphone' in ua_lower or 'ipad' in ua_lower:
+                    os_candidates.append(('iOS', 'HTTP User-Agent', 65))
+                break  # Only use first UA
+
+            # 6) RDP build number (high confidence for Windows)
+            if node.rdp_info:
+                build = node.rdp_info.get('client_build')
+                if build:
+                    signals.append({
+                        'source': 'RDP Build',
+                        'value': f"Build {build}",
+                    })
+                    rdp_os = self._lookup_rdp_build(build)
+                    if rdp_os:
+                        os_candidates.append((rdp_os, 'RDP Build', 92))
+
+            # 7) DHCP client FQDN
+            if node.dhcp_client_fqdn:
+                signals.append({
+                    'source': 'DHCP FQDN',
+                    'value': node.dhcp_client_fqdn,
+                })
+
+            # 8) SMTP/FTP banners
+            for sw in node.software[:15]:
+                if sw.startswith('SMTP:'):
+                    if not any(s['source'] == 'SMTP Banner' for s in signals):
+                        signals.append({
+                            'source': 'SMTP Banner',
+                            'value': sw[5:].strip()[:80],
+                        })
+                elif sw.startswith('FTP:'):
+                    if not any(s['source'] == 'FTP Banner' for s in signals):
+                        signals.append({
+                            'source': 'FTP Banner',
+                            'value': sw[4:].strip()[:80],
+                        })
+
+            # 9) Known services
+            if node.known_services_names:
+                signals.append({
+                    'source': 'Zeek Known Services',
+                    'value': ', '.join(node.known_services_names[:10]),
+                })
+
+            # 10) TLS/JA3 data
+            if node.tls_server_names:
+                signals.append({
+                    'source': 'TLS SNI',
+                    'value': ', '.join(node.tls_server_names[:5]),
+                })
+            if node.ja3_fingerprints:
+                signals.append({
+                    'source': 'JA3 Client',
+                    'value': ', '.join(node.ja3_fingerprints[:3]),
+                })
+
+            # 11) Cert subjects
+            if node.cert_subjects:
+                signals.append({
+                    'source': 'TLS Certificate',
+                    'value': ', '.join(node.cert_subjects[:3]),
+                })
+
+            # 12) MAC vendor
+            if node.vendor:
+                signals.append({
+                    'source': 'MAC Vendor',
+                    'value': node.vendor,
+                })
+
+            # Skip nodes with no identification signals
+            if not signals:
+                continue
+
+            # Pick best OS candidate by confidence
+            best_os = None
+            best_os_source = None
+            best_os_confidence = 0
+            for os_str, source, conf in os_candidates:
+                if conf > best_os_confidence:
+                    best_os = os_str
+                    best_os_source = source
+                    best_os_confidence = conf
+
+            # Compute overall confidence based on signal count + OS confidence
+            signal_count = len(signals)
+            overall_confidence = min(
+                best_os_confidence + (signal_count * 3),
+                100,
+            ) if best_os else min(signal_count * 12, 60)
+
+            node.host_id = {
+                'os': best_os or 'Unknown',
+                'os_source': best_os_source or '',
+                'os_confidence': best_os_confidence,
+                'confidence': overall_confidence,
+                'signal_count': signal_count,
+                'signals': signals[:15],  # Cap to 15 signals
+            }
+            host_id_built += 1
+
         logger.info(
             f"Device profiling ({total_windows} window(s)): "
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -2269,6 +2598,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(dhcp_extended_results)} DHCP extended ({dhcp_ext_enriched} enrichments), "
             f"{len(files_results)} file transfers ({files_enriched} enrichments), "
             f"{len(x509_extended_results)} x509 extended ({x509_ext_enriched} enrichments)"
+        )
+        logger.info(
+            f"Host identification: "
+            f"{len(known_services_results)} known services ({known_svc_enriched} enrichments), "
+            f"{len(smtp_banner_results)} SMTP banners ({smtp_enriched} enrichments), "
+            f"{len(ftp_banner_results)} FTP banners ({ftp_enriched} enrichments), "
+            f"{host_id_built} host IDs built"
         )
 
         # Use pre-aggregated server/client data from windowed merge
@@ -2954,6 +3290,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'os_identified': sum(
                     1 for n in nodes if n.is_internal and n.os_info
                 ),
+                'host_identified': sum(
+                    1 for n in nodes if n.is_internal and n.host_id
+                ),
             },
         }
 
@@ -3132,6 +3471,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'internal_connections_in': int_conns_in,
                 'is_gateway_for': sorted(node.is_gateway_for) if node.is_gateway_for else [],
                 'gateway_evidence': node.gateway_evidence[:10] if node.gateway_evidence else [],
+                # Host identification
+                'host_id': node.host_id if node.host_id else None,
+                'known_services_names': node.known_services_names[:20] if node.known_services_names else [],
             })
 
         # Add a single "Internet" cloud node if there are external connections
