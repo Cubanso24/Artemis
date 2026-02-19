@@ -2404,8 +2404,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     evidence.append(f"Cross-subnet traffic to {len(subs)} subnets")
                 if ip in mac_infra_ips:
                     evidence.append(f"Network vendor: {node.vendor} ({mac_infra_ips[ip]})")
-                node.is_gateway_for = gw_subnets
-                node.gateway_evidence = evidence
+                # Merge with any existing gateway data from previous runs
+                node.is_gateway_for = (node.is_gateway_for or set()) | gw_subnets
+                for ev in evidence:
+                    if ev not in node.gateway_evidence:
+                        node.gateway_evidence.append(ev)
 
         logger.info(
             f"Router/firewall detection: "
@@ -2498,10 +2501,35 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 if infra_evidence_count >= 2 and inferred_infra_type:
                     device_type = inferred_infra_type
 
+            # Protect existing specific classifications from being
+            # downgraded to generic fallback types on short profiling runs.
+            # A short time window may not see enough clients to re-confirm a
+            # profile match, causing the fallback heuristics (gateway,
+            # workstation, iot_device) to mis-classify.
+            _FALLBACK_TYPES = {'gateway', 'workstation', 'iot_device'}
+            _SPECIFIC_TYPES = {
+                'domain_controller', 'dns_server', 'web_server',
+                'database_server', 'mail_server', 'file_server',
+                'dhcp_server', 'ssh_server', 'vpn_gateway',
+                'router', 'firewall', 'print_server',
+                'syslog_server', 'monitoring',
+            }
+
             if device_type:
-                node.device_type = device_type
+                old_type = node.device_type
+                # Never downgrade a specific type to a generic fallback
+                if old_type in _SPECIFIC_TYPES and device_type in _FALLBACK_TYPES:
+                    # Keep old classification; still count it
+                    type_counts[old_type] += 1
+                    classified += 1
+                else:
+                    node.device_type = device_type
+                    classified += 1
+                    type_counts[device_type] += 1
+            elif node.device_type:
+                # No new classification but old one exists — preserve it
+                type_counts[node.device_type] += 1
                 classified += 1
-                type_counts[device_type] += 1
 
         # Save updated map
         self.save_map()
