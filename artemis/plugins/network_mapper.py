@@ -64,6 +64,9 @@ class NetworkNode:
         'rdp_info',
         'cert_subjects', 'cert_issuers',
         'file_mime_types',
+        # Router/firewall/gateway fields
+        'is_gateway_for',       # set of /24 subnets this device is a gateway for
+        'gateway_evidence',     # list of evidence strings explaining why detected
     )
 
     def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
@@ -94,6 +97,8 @@ class NetworkNode:
         self.cert_subjects: List[str] = []  # x509 certificate subjects served
         self.cert_issuers: List[str] = []  # x509 certificate issuers
         self.file_mime_types: List[str] = []  # MIME types of files transferred by this host
+        self.is_gateway_for: Set[str] = set()  # /24 subnets this device acts as gateway for
+        self.gateway_evidence: List[str] = []  # Evidence strings for router/firewall detection
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
         self.total_connections = 0
@@ -175,6 +180,8 @@ class NetworkNode:
             'cert_subjects': self.cert_subjects[:20],
             'cert_issuers': self.cert_issuers[:20],
             'file_mime_types': self.file_mime_types[:20],
+            'is_gateway_for': sorted(self.is_gateway_for),
+            'gateway_evidence': self.gateway_evidence[:10],
         }
 
 
@@ -309,6 +316,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         node.cert_subjects = node_data.get('cert_subjects', [])
         node.cert_issuers = node_data.get('cert_issuers', [])
         node.file_mime_types = node_data.get('file_mime_types', [])
+
+        # Router/firewall fields
+        node.is_gateway_for = set(node_data.get('is_gateway_for', []))
+        node.gateway_evidence = node_data.get('gateway_evidence', [])
 
         # Restore connection maps (edges)
         for dst_ip, count in node_data.get('connections_to', {}).items():
@@ -639,6 +650,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
             for p in [(25, 'tcp'), (587, 'tcp'), (993, 'tcp')]
         ):
             node.roles.add('mail_server')
+        # Routing protocol ports: BGP, HSRP, RIP
+        if any(
+            p in node.services
+            for p in [(179, 'tcp'), (1985, 'udp'), (520, 'udp')]
+        ):
+            node.roles.add('router')
 
     # ------------------------------------------------------------------
     # Device profiling
@@ -655,6 +672,32 @@ class NetworkMapperPlugin(ArtemisPlugin):
         '08:00:27': 'VirtualBox',
         '00:1C:42': 'Parallels',
         '02:42:AC': 'Docker',  # Default Docker bridge (02:42:xx)
+    }
+
+    # Network infrastructure vendors — used to identify likely routers,
+    # switches, firewalls, and access points based on MAC OUI.
+    # Maps vendor name (from OUI_TABLE) to an infrastructure hint.
+    NETWORK_INFRA_VENDORS = {
+        'Cisco': 'router_or_switch',
+        'Juniper': 'router_or_firewall',
+        'Fortinet': 'firewall',
+        'Palo Alto': 'firewall',
+        'CheckPoint': 'firewall',
+        'Aruba': 'wireless_controller',
+        'Meraki': 'router_or_switch',
+        'Ubiquiti': 'router_or_switch',
+        'Brocade': 'switch',
+        'MikroTik': 'router',
+    }
+
+    # Additional MAC OUI prefixes for MikroTik (not in main OUI_TABLE)
+    MIKROTIK_OUI = {
+        '00:0C:42': 'MikroTik', '2C:C8:1B': 'MikroTik',
+        '48:A9:8A': 'MikroTik', '4C:5E:0C': 'MikroTik',
+        '6C:3B:6B': 'MikroTik', '74:4D:28': 'MikroTik',
+        'B8:69:F4': 'MikroTik', 'CC:2D:E0': 'MikroTik',
+        'D4:01:C3': 'MikroTik', 'E4:8D:8C': 'MikroTik',
+        '18:FD:74': 'MikroTik', '08:55:31': 'MikroTik',
     }
 
     # OUI (Organizationally Unique Identifier) lookup table.
@@ -688,6 +731,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
         '00:18:0A': 'Meraki', '00:18:74': 'Meraki', '0C:8D:DB': 'Meraki',
         '34:56:FE': 'Meraki', '68:3A:1E': 'Meraki', 'E0:55:3D': 'Meraki',
         '00:04:0B': 'CheckPoint', '00:1C:7F': 'CheckPoint',
+        # MikroTik
+        '00:0C:42': 'MikroTik', '2C:C8:1B': 'MikroTik',
+        '48:A9:8A': 'MikroTik', '4C:5E:0C': 'MikroTik',
+        '6C:3B:6B': 'MikroTik', '74:4D:28': 'MikroTik',
+        'B8:69:F4': 'MikroTik', 'CC:2D:E0': 'MikroTik',
+        'D4:01:C3': 'MikroTik', 'E4:8D:8C': 'MikroTik',
+        '18:FD:74': 'MikroTik', '08:55:31': 'MikroTik',
         # Server / enterprise
         '00:25:90': 'SuperMicro', '00:25:B5': 'SuperMicro',
         '0C:C4:7A': 'SuperMicro', 'AC:1F:6B': 'SuperMicro',
@@ -980,6 +1030,24 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'min_match': 1,
         },
         {
+            'type': 'router',
+            'label': 'Router',
+            # Routing protocol ports: BGP, OSPF (often not visible in Zeek),
+            # HSRP, VRRP, RIP, Cisco EIGRP, BFD
+            'required': {179, 1985, 520, 521},
+            'bonus': {22, 23, 161, 2601, 2602, 2604, 2605},  # SSH, Telnet, SNMP, Zebra/Quagga
+            'min_match': 1,
+        },
+        {
+            'type': 'firewall',
+            'label': 'Firewall',
+            # Firewall management ports: PAN-OS, FortiGate, Check Point, pfSense
+            'required': {4443, 8443, 18264, 443, 981, 4434},
+            'bonus': {22, 161, 500, 4500},  # SSH, SNMP, IPSec
+            'min_match': 2,
+            'min_clients': 3,
+        },
+        {
             'type': 'print_server',
             'label': 'Printer',
             'required': {9100, 515, 631},
@@ -1042,6 +1110,44 @@ class NetworkMapperPlugin(ArtemisPlugin):
         return cls.OUI_TABLE.get(prefix, '')
 
     @classmethod
+    def _detect_network_infra(cls, vendor: str) -> str:
+        """Detect if a MAC vendor is a known network infrastructure manufacturer.
+
+        Returns an infrastructure hint string (e.g. 'router_or_switch',
+        'firewall') or empty string if the vendor is not network infra.
+        """
+        if not vendor:
+            return ''
+        return cls.NETWORK_INFRA_VENDORS.get(vendor, '')
+
+    @classmethod
+    def _infer_type_from_snmp_oid(cls, device_model: str) -> str:
+        """Infer device_type from SNMP OID-derived device model string.
+
+        The SNMP_OID_TABLE maps OIDs to strings like 'Cisco Router/Switch',
+        'FortiGate Firewall', etc.  This method parses those strings to
+        return a device_type suitable for classification.
+        """
+        if not device_model:
+            return ''
+        model_lower = device_model.lower()
+        # Firewall matches
+        if 'firewall' in model_lower or 'asa' in model_lower or 'ftd' in model_lower:
+            return 'firewall'
+        if 'fortigate' in model_lower:
+            return 'firewall'
+        # Router matches
+        if 'router' in model_lower:
+            return 'router'
+        # Switch matches (switches are not routers/firewalls but worth noting)
+        if 'switch' in model_lower and 'router' not in model_lower:
+            return 'switch'
+        # Access point / wireless controller
+        if 'access point' in model_lower or 'controller' in model_lower:
+            return ''  # Not a router/firewall
+        return ''
+
+    @classmethod
     def _detect_virtual(cls, mac: str) -> str:
         """Detect virtualization platform from MAC address OUI.
 
@@ -1073,6 +1179,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'dhcp_server': 'DHCP',
             'ssh_server': 'SSH',
             'vpn_gateway': 'VPN',
+            'router': 'Router',
+            'firewall': 'Firewall',
             'print_server': 'Printer',
             'syslog_server': 'SIEM',
             'monitoring': 'Monitor',
@@ -1097,6 +1205,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         tiers = {
             'gateway': 1,
             'vpn_gateway': 1,
+            'router': 1,
+            'firewall': 1,
             'domain_controller': 2,
             'dns_server': 2,
             'dhcp_server': 2,
@@ -1267,7 +1377,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         for key in ('ntlm', 'kerberos', 'dhcp', 'snmp', 'smb',
                      'software', 'ssh', 'x509', 'http_ua',
                      'ja3_ssl', 'ja3s_server', 'dns_profile', 'rdp',
-                     'dhcp_extended', 'files', 'x509_extended'):
+                     'dhcp_extended', 'files', 'x509_extended',
+                     'dhcp_gateway', 'snmp_oid'):
             accumulated[key].extend(new_results.get(key, []))
 
     def _profile_query_definitions(self):
@@ -1483,6 +1594,30 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by host
             | rename host as sensor_id
             ''',
+            # --- Router / firewall detection queries ---
+            'dhcp_gateway': '''
+            search index=zeek_dhcp
+            | spath
+            | where isnotnull(assigned_addr) AND isnotnull(router)
+            | eval vlan=coalesce(vlan, "0")
+            | eval gw=mvindex(router, 0)
+            | where isnotnull(gw) AND gw!="" AND gw!="-"
+            | stats dc(assigned_addr) as client_count,
+                    values(assigned_addr) as clients
+              by gw, vlan
+            | rename gw as gateway_ip
+            | where client_count >= 1
+            ''',
+            'snmp_oid': '''
+            search index=zeek_snmp
+            | spath
+            | where isnotnull("id.resp_h")
+            | eval oid=coalesce(community, "")
+            | stats latest(community) as community,
+                    latest(version) as snmp_version
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
         }
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
@@ -1540,6 +1675,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'ja3_ssl': [], 'ja3s_server': [], 'dns_profile': [],
             'rdp': [], 'dhcp_extended': [], 'files': [],
             'x509_extended': [],
+            # Router/firewall detection accumulators
+            'dhcp_gateway': [], 'snmp_oid': [],
         }
 
         # Progress: queries run from 35% to 70%.  Divide evenly across windows.
@@ -1552,7 +1689,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                          if total_windows > 1 else "Querying Splunk...")
             pct = int(pct_query_start + (win_idx - 1) * pct_per_window)
             _progress('profile',
-                      f'{win_label} — submitting 18 queries in parallel...',
+                      f'{win_label} — submitting 20 queries in parallel...',
                       pct)
             logger.info(f"Profiling window {win_idx}/{total_windows}: "
                         f"{earliest} → {latest}")
@@ -1587,6 +1724,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         dhcp_extended_results = accumulated['dhcp_extended']
         files_results = accumulated['files']
         x509_extended_results = accumulated['x509_extended']
+        # Router/firewall detection results
+        dhcp_gateway_results = accumulated['dhcp_gateway']
+        snmp_oid_results = accumulated['snmp_oid']
 
         query_counts = (
             f"{len(accumulated['server_agg'])} server IPs, "
@@ -2135,6 +2275,147 @@ class NetworkMapperPlugin(ArtemisPlugin):
         server_data = accumulated['server_agg']
         client_data = accumulated['client_agg']
 
+        # ---- Router / firewall detection ----
+        # Phase 1: Build gateway IP set from DHCP Option 3 (router field)
+        dhcp_gateway_ips: Dict[str, set] = defaultdict(set)  # ip -> set of subnets
+        for row in dhcp_gateway_results:
+            gw_ip = _sv(row.get('gateway_ip'))
+            vlan = _sv(row.get('vlan'), '0')
+            client_count = int(_sv(row.get('client_count'), '0'))
+            clients = row.get('clients', [])
+            if isinstance(clients, str):
+                clients = [clients]
+            if not gw_ip or gw_ip == '-':
+                continue
+            # Compute subnet from a sample client IP
+            for client_ip in clients:
+                client_ip = str(client_ip).strip()
+                parts = client_ip.split('.')
+                if len(parts) == 4:
+                    subnet = '.'.join(parts[:3]) + '.0/24'
+                    dhcp_gateway_ips[gw_ip].add(subnet)
+                    break
+            else:
+                # No client IP to derive subnet — use gateway's own /24
+                parts = gw_ip.split('.')
+                if len(parts) == 4:
+                    dhcp_gateway_ips[gw_ip].add('.'.join(parts[:3]) + '.0/24')
+
+        # Phase 2: SNMP OID enrichment for network infrastructure
+        snmp_infra_ips: Dict[str, str] = {}  # ip -> inferred type from OID
+        for row in snmp_oid_results:
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            # Try to get device model from OID for the node
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if node.device_model:
+                    oid_type = self._infer_type_from_snmp_oid(node.device_model)
+                    if oid_type:
+                        snmp_infra_ips[ip] = oid_type
+
+        # Phase 3: Detect default gateways from subnet .1 / .254 heuristic
+        # Any IP ending in .1 or .254 that has significant inbound connections
+        # from its own /24 subnet is likely a gateway
+        subnet_gateway_ips: Dict[str, set] = defaultdict(set)  # ip -> subnets
+        for key, node in self.nodes.items():
+            if not node.is_internal:
+                continue
+            parts = node.ip.split('.')
+            if len(parts) != 4:
+                continue
+            last_octet = int(parts[3])
+            if last_octet not in (1, 254):
+                continue
+            subnet = '.'.join(parts[:3]) + '.0/24'
+            # Check: does this IP have many clients from its own subnet?
+            same_subnet_clients = 0
+            for src_ip in node.connections_from:
+                src_parts = src_ip.split('.')
+                if len(src_parts) == 4 and src_parts[:3] == parts[:3]:
+                    same_subnet_clients += 1
+            if same_subnet_clients >= 3:
+                subnet_gateway_ips[node.ip].add(subnet)
+
+        # Phase 4: Cross-subnet traffic analysis
+        # Devices that communicate with many DIFFERENT subnets (≥4) and have
+        # high bidirectional traffic are likely routers/firewalls
+        cross_subnet_ips: Dict[str, set] = defaultdict(set)  # ip -> set of /24 subnets
+        for key, node in self.nodes.items():
+            if not node.is_internal:
+                continue
+            subnets_seen = set()
+            own_parts = node.ip.split('.')
+            if len(own_parts) != 4:
+                continue
+            own_subnet = '.'.join(own_parts[:3])
+            for peer_ip in list(node.connections_to.keys())[:500]:
+                p = peer_ip.split('.')
+                if len(p) == 4:
+                    peer_sub = '.'.join(p[:3])
+                    if peer_sub != own_subnet:
+                        subnets_seen.add(peer_sub + '.0/24')
+            for peer_ip in list(node.connections_from.keys())[:500]:
+                p = peer_ip.split('.')
+                if len(p) == 4:
+                    peer_sub = '.'.join(p[:3])
+                    if peer_sub != own_subnet:
+                        subnets_seen.add(peer_sub + '.0/24')
+            if len(subnets_seen) >= 4:
+                cross_subnet_ips[node.ip] = subnets_seen
+
+        # Phase 5: MAC vendor-based infrastructure detection
+        mac_infra_ips: Dict[str, str] = {}  # ip -> infra hint
+        for key, node in self.nodes.items():
+            if not node.is_internal or not node.vendor:
+                continue
+            hint = self._detect_network_infra(node.vendor)
+            if hint:
+                mac_infra_ips[node.ip] = hint
+
+        # Combine all gateway/router/firewall evidence
+        all_infra_candidates = set()
+        all_infra_candidates.update(dhcp_gateway_ips.keys())
+        all_infra_candidates.update(snmp_infra_ips.keys())
+        all_infra_candidates.update(subnet_gateway_ips.keys())
+        all_infra_candidates.update(cross_subnet_ips.keys())
+        all_infra_candidates.update(mac_infra_ips.keys())
+
+        # Annotate nodes with gateway evidence and is_gateway_for subnets
+        for ip in all_infra_candidates:
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                evidence = []
+                gw_subnets = set()
+                if ip in dhcp_gateway_ips:
+                    subs = dhcp_gateway_ips[ip]
+                    gw_subnets.update(subs)
+                    evidence.append(f"DHCP Option 3 gateway for {', '.join(sorted(subs))}")
+                if ip in snmp_infra_ips:
+                    evidence.append(f"SNMP OID: {node.device_model} ({snmp_infra_ips[ip]})")
+                if ip in subnet_gateway_ips:
+                    subs = subnet_gateway_ips[ip]
+                    gw_subnets.update(subs)
+                    evidence.append(f"Subnet gateway (.1/.254) for {', '.join(sorted(subs))}")
+                if ip in cross_subnet_ips:
+                    subs = cross_subnet_ips[ip]
+                    gw_subnets.update(subs)
+                    evidence.append(f"Cross-subnet traffic to {len(subs)} subnets")
+                if ip in mac_infra_ips:
+                    evidence.append(f"Network vendor: {node.vendor} ({mac_infra_ips[ip]})")
+                node.is_gateway_for = gw_subnets
+                node.gateway_evidence = evidence
+
+        logger.info(
+            f"Router/firewall detection: "
+            f"{len(dhcp_gateway_ips)} DHCP gateways, "
+            f"{len(snmp_infra_ips)} SNMP infra, "
+            f"{len(subnet_gateway_ips)} subnet gateways (.1/.254), "
+            f"{len(cross_subnet_ips)} cross-subnet forwarders, "
+            f"{len(mac_infra_ips)} vendor-identified infra"
+        )
+
         # Classify each node in the network map
         _progress('profile',
                   f'Classifying {internal_count} internal devices '
@@ -2176,6 +2457,46 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 device_type = self._classify_device(
                     ports_served, unique_clients, unique_dests, outbound
                 )
+
+            # Router/firewall override: use multi-signal evidence when
+            # the port-based classifier returned gateway or no match
+            if not device_type or device_type in ('gateway', 'iot_device', 'workstation'):
+                infra_evidence_count = 0
+                inferred_infra_type = ''
+
+                if ip in snmp_infra_ips:
+                    inferred_infra_type = snmp_infra_ips[ip]
+                    infra_evidence_count += 2  # SNMP OID is strong evidence
+
+                if ip in dhcp_gateway_ips:
+                    infra_evidence_count += 2  # DHCP Option 3 is strong evidence
+                    if not inferred_infra_type:
+                        inferred_infra_type = 'router'
+
+                if ip in mac_infra_ips:
+                    hint = mac_infra_ips[ip]
+                    infra_evidence_count += 1
+                    if not inferred_infra_type:
+                        if 'firewall' in hint:
+                            inferred_infra_type = 'firewall'
+                        else:
+                            inferred_infra_type = 'router'
+
+                if ip in subnet_gateway_ips:
+                    infra_evidence_count += 1
+                    if not inferred_infra_type:
+                        inferred_infra_type = 'router'
+
+                if ip in cross_subnet_ips:
+                    n_subs = len(cross_subnet_ips[ip])
+                    infra_evidence_count += 1 if n_subs < 8 else 2
+                    if not inferred_infra_type:
+                        inferred_infra_type = 'router'
+
+                # Require at least 2 evidence points to override, or
+                # 1 strong signal (SNMP OID or DHCP gateway)
+                if infra_evidence_count >= 2 and inferred_infra_type:
+                    device_type = inferred_infra_type
 
             if device_type:
                 node.device_type = device_type
@@ -2573,6 +2894,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
             'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
             'virtual_machines': sum(1 for n in nodes if n.is_internal and n.is_virtual),
+            'routers': sum(1 for n in nodes if n.is_internal and n.device_type == 'router'),
+            'firewalls': sum(1 for n in nodes if n.is_internal and n.device_type == 'firewall'),
+            'gateways': sum(1 for n in nodes if n.is_internal and n.device_type in ('gateway', 'router', 'firewall') and n.is_gateway_for),
             'mac_tracking': {
                 'total_macs': len(self.mac_history),
                 'multi_ip_count': sum(
@@ -2762,6 +3086,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'external_connections_out': ext_conns_out[:50],
                 'external_connections_in': ext_conns_in[:50],
                 'internal_connections': int_conns,
+                'is_gateway_for': sorted(node.is_gateway_for) if node.is_gateway_for else [],
+                'gateway_evidence': node.gateway_evidence[:10] if node.gateway_evidence else [],
             })
 
         # Add a single "Internet" cloud node if there are external connections
