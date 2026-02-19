@@ -15,7 +15,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.responses import Response
 
 from artemis.api.schemas import (
-    PluginConfig, ProfileRequest, LanGroupCreate, LanGroupUpdate,
+    PluginConfig, ProfileRequest, BackgroundProfileRequest,
+    LanGroupCreate, LanGroupUpdate,
     DeviceFlagRequest, ThreatIntelConfigRequest, ThreatIntelLookupRequest,
     ThreatIntelBatchRequest,
 )
@@ -259,6 +260,37 @@ async def cancel_profile():
         return JSONResponse(status_code=404, content=result)
     logger.info(f"Profile {profile_id} cancelled via API")
     return result
+
+
+# --- Background profiling -------------------------------------------------
+
+@router.post("/api/network-graph/profile/background/start")
+async def start_background_profile(request: BackgroundProfileRequest):
+    """Start background per-device profiling with multiple workers."""
+    try:
+        profile_id = await hunt_manager.start_background_profile(
+            time_range=request.time_range,
+            num_workers=request.num_workers,
+        )
+        return {'profile_id': profile_id, 'status': 'started',
+                'num_workers': request.num_workers}
+    except RuntimeError as e:
+        return JSONResponse(status_code=409, content={'error': str(e)})
+    except Exception as e:
+        logger.error(f"Background profiling failed to start: {e}")
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
+@router.get("/api/network-graph/profile/background/status")
+async def background_profile_status():
+    """Get background profiling status."""
+    return hunt_manager.get_bg_profile_status()
+
+
+@router.post("/api/network-graph/profile/background/stop")
+async def stop_background_profile():
+    """Stop background profiling."""
+    return await hunt_manager.stop_background_profile()
 
 
 # --- MAC-to-IP tracking ---------------------------------------------------

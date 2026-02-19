@@ -403,6 +403,195 @@ def _profile_worker_process(profile_id, time_range, db_path):
 
 
 # ---------------------------------------------------------------------------
+# Background profiling worker — profiles devices one at a time
+# ---------------------------------------------------------------------------
+
+def _bg_profile_worker_process(profile_id, time_range, num_workers,
+                                db_path):
+    """Continuously profile unprofiled devices in the background.
+
+    Launches ``num_workers`` threads, each picking the next unprofiled IP
+    and running targeted per-device Splunk queries.  Progress is written
+    to SQLite so the UI can track it.
+    """
+    import os, logging, traceback, json, time
+    from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+    import threading
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+    log = logging.getLogger('artemis.bg_profile_worker')
+
+    db = DatabaseManager(db_path)
+    pid = os.getpid()
+
+    # Shared state for progress tracking
+    lock = threading.Lock()
+    profiled_count = 0
+    failed_count = 0
+    current_workers = {}  # thread_id -> ip being profiled
+
+    # Stop flag — checked by workers; set when the parent signals cancellation
+    stop_flag = threading.Event()
+
+    def send(stage, message, progress, extra=None):
+        try:
+            db.write_progress(profile_id, pid, stage, message, progress, extra)
+        except Exception as e:
+            log.warning(f"BG Profile {profile_id}: progress write failed: {e}")
+
+    try:
+        send('init', 'Starting background profiler...', 0)
+
+        # Build Splunk connector
+        cfg = _build_splunk_config()
+        pipeline = DataPipeline(cfg)
+        splunk = pipeline.splunk
+
+        send('init', 'Loading network map...', 0)
+
+        # Load the network mapper plugin
+        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm.initialize()
+
+        stats = nm.get_profiling_stats()
+        total = stats['total']
+        already_profiled = stats['profiled']
+
+        if total == 0:
+            send('error', 'No internal devices found. Run a hunt first.', 0)
+            return
+
+        unprofiled_ips = nm.get_unprofiled_ips()
+        if not unprofiled_ips:
+            send('complete', f'All {total} devices already profiled.', 100,
+                 {'total': total, 'profiled': total, 'newly_profiled': 0})
+            return
+
+        log.info(f"BG Profile: {len(unprofiled_ips)} devices to profile "
+                 f"with {num_workers} workers")
+
+        # Queue of IPs to profile
+        ip_queue = list(unprofiled_ips)
+        queue_lock = threading.Lock()
+        queue_idx = [0]  # mutable counter
+
+        def get_next_ip():
+            with queue_lock:
+                idx = queue_idx[0]
+                if idx >= len(ip_queue):
+                    return None
+                queue_idx[0] = idx + 1
+                return ip_queue[idx]
+
+        # Create per-thread Splunk connectors so they don't contend
+        thread_splunks = {}
+        thread_splunk_lock = threading.Lock()
+
+        def get_thread_splunk():
+            tid = threading.current_thread().ident
+            with thread_splunk_lock:
+                if tid not in thread_splunks:
+                    thread_cfg = _build_splunk_config()
+                    thread_pipeline = DataPipeline(thread_cfg)
+                    thread_splunks[tid] = thread_pipeline.splunk
+                return thread_splunks[tid]
+
+        def worker():
+            nonlocal profiled_count, failed_count
+            while not stop_flag.is_set():
+                ip = get_next_ip()
+                if ip is None:
+                    break
+
+                tid = threading.current_thread().name
+                with lock:
+                    current_workers[tid] = ip
+
+                try:
+                    thread_splunk = get_thread_splunk()
+                    nm.profile_single_device(thread_splunk, ip,
+                                             time_range=time_range)
+                    with lock:
+                        profiled_count += 1
+                        done = already_profiled + profiled_count
+                        pct = min(int(done / total * 100), 99)
+                        send('profiling',
+                             f'Profiled {done}/{total} devices '
+                             f'({profiled_count} new, '
+                             f'{len(ip_queue) - queue_idx[0]} remaining)',
+                             pct,
+                             {'total': total, 'profiled': done,
+                              'newly_profiled': profiled_count,
+                              'failed': failed_count})
+                except Exception as e:
+                    log.warning(f"Failed to profile {ip}: {e}")
+                    with lock:
+                        failed_count += 1
+                finally:
+                    with lock:
+                        current_workers.pop(tid, None)
+
+        send('profiling',
+             f'Profiling {len(unprofiled_ips)} devices with '
+             f'{num_workers} workers...',
+             1,
+             {'total': total, 'profiled': already_profiled,
+              'newly_profiled': 0})
+
+        # Launch workers
+        with ThreadPoolExecutor(max_workers=num_workers,
+                                thread_name_prefix='bgp') as pool:
+            futures = [pool.submit(worker) for _ in range(num_workers)]
+
+            # Wait for all workers, periodically saving
+            save_interval = 30  # save every 30 seconds
+            last_save = time.time()
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    log.error(f"Worker thread error: {e}")
+
+                # Periodic save
+                now = time.time()
+                if now - last_save > save_interval:
+                    try:
+                        nm.save_map()
+                        last_save = now
+                    except Exception as e:
+                        log.warning(f"Periodic save failed: {e}")
+
+        # Final save
+        nm.save_map()
+
+        final_stats = nm.get_profiling_stats()
+        send('complete',
+             f'Background profiling complete: {final_stats["profiled"]}/{total} '
+             f'devices profiled ({profiled_count} new, {failed_count} failed)',
+             100,
+             {'total': total, 'profiled': final_stats['profiled'],
+              'newly_profiled': profiled_count,
+              'failed': failed_count})
+
+        log.info(f"BG Profile complete: {profiled_count} newly profiled, "
+                 f"{failed_count} failed")
+
+    except Exception as e:
+        log.error(f'BG Profile {profile_id} failed: {e}')
+        log.error(traceback.format_exc())
+        send('error', f'Background profiling failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc()})
+
+
+# ---------------------------------------------------------------------------
 # HuntManager — lives in the web server process
 # ---------------------------------------------------------------------------
 
@@ -640,12 +829,19 @@ class HuntManager:
 
         # Broadcast the cancellation to WS clients
         if self._broadcast_fn:
-            is_profile = hunt_id.startswith('profile_')
+            is_bg_profile = hunt_id.startswith('bgprofile_')
+            is_profile = hunt_id.startswith('profile_') and not is_bg_profile
+            if is_bg_profile:
+                msg_type = 'bg_profile_progress'
+            elif is_profile:
+                msg_type = 'profile_progress'
+            else:
+                msg_type = 'hunt_progress'
             await self._broadcast_fn({
-                'type': 'profile_progress' if is_profile else 'hunt_progress',
+                'type': msg_type,
                 'hunt_id': hunt_id,
                 'stage': 'cancelled',
-                'message': f'{"Profiling" if is_profile else "Hunt"} was cancelled.',
+                'message': f'{"Profiling" if is_profile or is_bg_profile else "Hunt"} was cancelled.',
                 'progress': 0,
             })
 
@@ -733,6 +929,131 @@ class HuntManager:
         }
 
     # ------------------------------------------------------------------
+    # Background profiling (continuous per-device)
+    # ------------------------------------------------------------------
+
+    _bg_profile_id: Optional[str] = None
+    _bg_profile_pid: Optional[int] = None
+
+    async def start_background_profile(self, time_range: str = "-24h",
+                                        num_workers: int = 16) -> str:
+        """Launch background per-device profiling in a subprocess."""
+        import multiprocessing
+
+        # Don't allow if batch profiling is already running
+        if self._profile_id and self._profile_pid and _pid_alive(self._profile_pid):
+            raise RuntimeError("Batch profiling is already running")
+
+        # Don't allow if bg profiling is already running
+        if (self._bg_profile_id and self._bg_profile_pid
+                and _pid_alive(self._bg_profile_pid)):
+            raise RuntimeError(
+                f"Background profiling already running ({self._bg_profile_id})"
+            )
+
+        # Cap workers to reasonable range
+        num_workers = max(1, min(num_workers, 32))
+
+        profile_id = f"bgprofile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        proc = multiprocessing.Process(
+            target=_bg_profile_worker_process,
+            args=(profile_id, time_range, num_workers, self.db.db_path),
+            daemon=False,
+        )
+        proc.start()
+
+        self._bg_profile_id = profile_id
+        self._bg_profile_pid = proc.pid
+        self._monitored_hunts[profile_id] = proc.pid
+        self.active_hunts[profile_id] = {
+            'status': 'running',
+            'progress': 0,
+            'start_time': datetime.now(),
+            'collection_stats': {},
+            'last_progress': None,
+        }
+        logger.info(
+            f'Background profile {profile_id} started (pid {proc.pid}, '
+            f'{num_workers} workers, time_range={time_range})'
+        )
+        self._ensure_poll_task()
+        return profile_id
+
+    def get_bg_profile_status(self) -> dict:
+        """Return the current background profiling state for the UI."""
+        pid = self._bg_profile_id
+        if not pid:
+            return {'running': False}
+
+        state = self.active_hunts.get(pid, {})
+        status = state.get('status', 'unknown')
+        if status not in ('running',) and not (
+            self._bg_profile_pid and _pid_alive(self._bg_profile_pid)
+        ):
+            return {'running': False, 'last_profile_id': pid}
+
+        row = state.get('last_progress') or {}
+        extra = row.get('data', {}) or {}
+        return {
+            'running': True,
+            'profile_id': pid,
+            'progress': state.get('progress', 0),
+            'stage': row.get('stage', 'init'),
+            'message': row.get('message', 'Running...'),
+            'total': extra.get('total', 0),
+            'profiled': extra.get('profiled', 0),
+            'newly_profiled': extra.get('newly_profiled', 0),
+            'failed': extra.get('failed', 0),
+        }
+
+    async def stop_background_profile(self) -> dict:
+        """Stop the running background profile process."""
+        pid = self._bg_profile_pid
+        profile_id = self._bg_profile_id
+
+        if not pid or not profile_id:
+            return {'status': 'error', 'error': 'No background profiling running'}
+
+        if not _pid_alive(pid):
+            self._bg_profile_pid = None
+            return {'status': 'error', 'error': 'Process already exited'}
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info(f"Sent SIGTERM to bg profile pid {pid}")
+            # Give it a moment to clean up
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                if not _pid_alive(pid):
+                    break
+            else:
+                # Force kill if still alive
+                os.kill(pid, signal.SIGKILL)
+                logger.warning(f"Force killed bg profile pid {pid}")
+        except ProcessLookupError:
+            pass
+
+        self._bg_profile_pid = None
+
+        # Update state
+        if profile_id in self.active_hunts:
+            self.active_hunts[profile_id]['status'] = 'cancelled'
+        self.db.clear_progress(profile_id)
+        self._monitored_hunts.pop(profile_id, None)
+
+        # Broadcast cancellation
+        if self._broadcast_fn:
+            await self._broadcast_fn({
+                'type': 'bg_profile_progress',
+                'stage': 'cancelled',
+                'message': 'Background profiling stopped by user',
+                'progress': 0,
+                'hunt_id': profile_id,
+            })
+
+        return {'status': 'stopped', 'profile_id': profile_id}
+
+    # ------------------------------------------------------------------
     # Progress polling loop
     # ------------------------------------------------------------------
 
@@ -762,16 +1083,24 @@ class HuntManager:
 
                     # Broadcast to WebSocket clients
                     if self._broadcast_fn:
-                        is_profile = hunt_id.startswith('profile_')
+                        is_bg_profile = hunt_id.startswith('bgprofile_')
+                        is_profile = (hunt_id.startswith('profile_')
+                                      and not is_bg_profile)
+                        if is_bg_profile:
+                            msg_type = 'bg_profile_progress'
+                        elif is_profile:
+                            msg_type = 'profile_progress'
+                        else:
+                            msg_type = 'hunt_progress'
                         msg = {
-                            'type': 'profile_progress' if is_profile else 'hunt_progress',
+                            'type': msg_type,
                             'stage': row['stage'],
                             'message': row['message'],
                             'progress': row['progress'],
                             'hunt_id': hunt_id,
                         }
                         if row.get('data'):
-                            if is_profile:
+                            if is_profile or is_bg_profile:
                                 msg['result'] = row['data']
                             elif 'collection' not in msg:
                                 msg['collection'] = row['data']
@@ -789,6 +1118,8 @@ class HuntManager:
                         # Clear profile tracking if this was a profile job
                         if hunt_id == self._profile_id:
                             self._profile_pid = None
+                        if hunt_id == self._bg_profile_id:
+                            self._bg_profile_pid = None
                         finished.append(hunt_id)
                     elif not _pid_alive(pid):
                         # Process died without writing terminal state

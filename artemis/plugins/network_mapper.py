@@ -2888,6 +2888,792 @@ class NetworkMapperPlugin(ArtemisPlugin):
         return result
 
     # ------------------------------------------------------------------
+    # Per-device background profiling
+    # ------------------------------------------------------------------
+
+    def get_unprofiled_ips(self) -> List[str]:
+        """Return list of internal IPs that have not been profiled yet."""
+        return [
+            n.ip for n in self.nodes.values()
+            if n.is_internal and not n.device_type
+        ]
+
+    def get_profiling_stats(self) -> Dict:
+        """Return profiling progress counts."""
+        internal = [n for n in self.nodes.values() if n.is_internal]
+        profiled = sum(1 for n in internal if n.device_type)
+        host_ided = sum(1 for n in internal if n.host_id)
+        return {
+            'total': len(internal),
+            'profiled': profiled,
+            'unprofiled': len(internal) - profiled,
+            'host_identified': host_ided,
+        }
+
+    @staticmethod
+    def _per_device_query_definitions(ip: str) -> Dict[str, str]:
+        """Return SPL queries targeted at a single IP address.
+
+        These are much faster than the global queries because Splunk
+        only needs to scan events matching this specific IP.
+        """
+        # Escape dots for safe embedding in SPL
+        safe_ip = ip.replace('.', '.')  # IPs are safe but be explicit
+        return {
+            'server': f'''
+            search index=zeek_conn OR index=suricata "id.resp_h"="{safe_ip}"
+            | spath
+            | stats dc("id.orig_h") as unique_clients,
+                    values("id.resp_p") as ports,
+                    count as incoming_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'client': f'''
+            search index=zeek_conn OR index=suricata "id.orig_h"="{safe_ip}"
+            | spath
+            | stats dc("id.resp_h") as unique_destinations,
+                    count as outgoing_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            ''',
+            'ntlm': f'''
+            search index=zeek_ntlm ("id.orig_h"="{safe_ip}" OR "id.resp_h"="{safe_ip}")
+            | spath
+            | eval vlan=coalesce(vlan, "0")
+            | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
+            | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
+            ''',
+            'kerberos': f'''
+            search index=zeek_kerberos "id.resp_h"="{safe_ip}"
+            | spath
+            | stats dc("id.orig_h") as unique_clients,
+                    values(service) as services,
+                    count as auth_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'dhcp': f'''
+            search index=zeek_dhcp assigned_addr="{safe_ip}"
+            | spath
+            | where isnotnull(mac)
+            | eval vlan=coalesce(vlan, "0")
+            | stats min(_time) as first_seen,
+                    max(_time) as last_seen,
+                    latest(host_name) as dhcp_hostname,
+                    latest(host) as sensor_id
+              by assigned_addr, mac, vlan
+            | rename assigned_addr as ip
+            ''',
+            'snmp': f'''
+            search index=zeek_snmp "id.resp_h"="{safe_ip}"
+            | spath
+            | stats latest(community) as community,
+                    latest(version) as snmp_version
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'smb': f'''
+            search (index=zeek_smb_mapping OR index=zeek_smb_files) "id.resp_h"="{safe_ip}"
+            | spath
+            | eval nb_name=coalesce(server_name, "")
+            | where nb_name!="" AND nb_name!="-"
+            | stats values(nb_name) as nb_names,
+                    values(share_type) as share_types
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'software': f'''
+            search index=zeek_software (host="{safe_ip}" OR "id.orig_h"="{safe_ip}")
+            | spath
+            | eval ip=coalesce(host, "id.orig_h")
+            | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
+            | stats values(sw) as software,
+                    values(software_type) as sw_types
+              by ip
+            ''',
+            'ssh': f'''
+            search index=zeek_ssh ("id.orig_h"="{safe_ip}" OR "id.resp_h"="{safe_ip}")
+            | spath
+            | stats latest(client) as ssh_client,
+                    latest(server) as ssh_server
+              by "id.orig_h", "id.resp_h"
+            | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
+            ''',
+            'http_ua': f'''
+            search index=zeek_http "id.orig_h"="{safe_ip}"
+            | spath
+            | where isnotnull(user_agent) AND user_agent!="-"
+            | stats values(user_agent) as user_agents,
+                    dc(host) as sites_visited,
+                    count as http_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            ''',
+            'ja3_ssl': f'''
+            search index=zeek_ssl "id.orig_h"="{safe_ip}"
+            | spath
+            | where isnotnull(ja3) AND ja3!="-"
+            | stats values(ja3) as ja3_hashes,
+                    values(ja3s) as ja3s_hashes,
+                    values(server_name) as sni_names,
+                    values(version) as tls_versions,
+                    dc("id.resp_h") as unique_servers,
+                    count as tls_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            ''',
+            'ja3s_server': f'''
+            search index=zeek_ssl "id.resp_h"="{safe_ip}"
+            | spath
+            | where isnotnull(ja3s) AND ja3s!="-"
+            | stats values(ja3s) as ja3s_hashes,
+                    values(subject) as cert_subjects,
+                    values(issuer) as cert_issuers,
+                    values(version) as tls_versions,
+                    dc("id.orig_h") as unique_clients
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'dns_profile': f'''
+            search index=zeek_dns "id.orig_h"="{safe_ip}"
+            | spath
+            | where isnotnull(query) AND query!="-"
+            | eval tld=mvindex(split(query, "."), -1)
+            | eval is_nxdomain=if(rcode_name=="NXDOMAIN", 1, 0)
+            | stats count as query_count,
+                    dc(query) as unique_domains,
+                    values(tld) as tlds,
+                    sum(is_nxdomain) as nxdomain_count,
+                    values(qtype_name) as query_types
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | eval nxdomain_ratio=round(nxdomain_count/query_count, 4)
+            ''',
+            'dhcp_extended': f'''
+            search index=zeek_dhcp assigned_addr="{safe_ip}"
+            | spath
+            | where isnotnull(mac)
+            | eval vlan=coalesce(vlan, "0")
+            | stats latest(client_fqdn) as client_fqdn,
+                    latest(domain) as dhcp_domain,
+                    latest(vendor_class) as vendor_class,
+                    latest(lease_time) as lease_time,
+                    values(msg_types) as msg_types,
+                    latest(host) as sensor_id
+              by assigned_addr, mac, vlan
+            | rename assigned_addr as ip
+            ''',
+            'known_services': f'''
+            search index=zeek_known_services host="{safe_ip}"
+            | spath
+            | where isnotnull(port_num)
+            | eval svc=if(isnotnull(service) AND service!="-" AND service!="",
+                          service, port_num."/".port_proto)
+            | stats values(svc) as service_names,
+                    dc(port_num) as port_count
+              by host
+            | rename host as ip
+            ''',
+            'smtp_banner': f'''
+            search index=zeek_smtp "id.resp_h"="{safe_ip}"
+            | spath
+            | stats values(helo) as helo_names,
+                    latest(last_reply) as last_banner,
+                    dc("id.orig_h") as unique_clients,
+                    count as smtp_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+            'ftp_banner': f'''
+            search index=zeek_ftp "id.resp_h"="{safe_ip}"
+            | spath
+            | stats latest(reply_msg) as ftp_banner,
+                    dc("id.orig_h") as unique_clients,
+                    count as ftp_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            ''',
+        }
+
+    def profile_single_device(self, splunk_connector, ip: str,
+                              time_range: str = "-24h") -> Dict:
+        """Profile a single device by running targeted Splunk queries.
+
+        This is used by the background profiling system to incrementally
+        profile one device at a time.  Much faster than global queries
+        because each query is filtered to a single IP.
+
+        Args:
+            splunk_connector: SplunkConnector instance
+            ip: The IP address to profile
+            time_range: Splunk time range (default -24h)
+
+        Returns:
+            Dict with profiling result for this single device
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        queries = self._per_device_query_definitions(ip)
+        _TIMEOUT = 300  # 5 min per query (they're very fast for single IP)
+
+        # Run all queries for this IP in parallel
+        with ThreadPoolExecutor(max_workers=len(queries)) as executor:
+            futures = {}
+            for name, spl in queries.items():
+                futures[name] = executor.submit(
+                    splunk_connector.query, spl,
+                    earliest_time=time_range, latest_time='now',
+                )
+
+            results = {}
+            for name, fut in futures.items():
+                try:
+                    results[name] = fut.result(timeout=_TIMEOUT)
+                except Exception as e:
+                    logger.warning(f"Per-device query {name} failed for {ip}: {e}")
+                    results[name] = []
+
+        # Find which node keys correspond to this IP
+        ip_to_keys: Dict[str, List[str]] = {}
+        for key, node in self.nodes.items():
+            if node.ip == ip and node.is_internal:
+                ip_to_keys.setdefault(ip, []).append(key)
+
+        if not ip_to_keys.get(ip):
+            return {'ip': ip, 'status': 'not_found'}
+
+        # ---- Enrich this device ----
+        _sv = self._safe_value
+
+        # Server profile
+        server_data = {}
+        for row in results.get('server', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            ports = row.get('ports', [])
+            if isinstance(ports, str):
+                ports = [ports]
+            port_set = set()
+            for p in ports:
+                try:
+                    port_set.add(int(p))
+                except (ValueError, TypeError):
+                    pass
+            server_data = {
+                'ports': port_set,
+                'unique_clients': int(_sv(row.get('unique_clients'), '0')),
+            }
+
+        # Client profile
+        client_data = {}
+        for row in results.get('client', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            client_data = {
+                'unique_destinations': int(_sv(row.get('unique_destinations'), '0')),
+                'outgoing_count': int(_sv(row.get('outgoing_count'), '0')),
+            }
+
+        # Enrich with NTLM
+        kdc_ips = set()
+        ntlm_auth_servers = set()
+        for row in results.get('ntlm', []):
+            source_ip = _sv(row.get('source_ip'))
+            dest_ip = _sv(row.get('dest_ip'))
+            nb_name = _sv(row.get('hostname'))
+            domain = _sv(row.get('domainname'))
+            server_nb = _sv(row.get('server_nb_computer_name'))
+
+            target_ip = ip
+            for key in ip_to_keys.get(target_ip, []):
+                node = self.nodes[key]
+                if nb_name and nb_name != '-':
+                    node.netbios_names.add(nb_name.upper())
+                if domain and domain != '-':
+                    node.domain = domain.upper()
+                if server_nb and server_nb != '-':
+                    node.netbios_names.add(server_nb.upper())
+
+        # Kerberos
+        for row in results.get('kerberos', []):
+            r_ip = _sv(row.get('ip'))
+            auth_count = int(_sv(row.get('auth_count'), '0'))
+            unique_clients = int(_sv(row.get('unique_clients'), '0'))
+            if r_ip == ip and auth_count >= 10 and unique_clients >= 3:
+                kdc_ips.add(ip)
+
+        # DHCP enrichment (MAC, hostname, vendor, VM detection)
+        for row in results.get('dhcp', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            mac = _sv(row.get('mac'))
+            dhcp_hostname = _sv(row.get('dhcp_hostname'))
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if mac and mac != '-':
+                    mac = mac.upper()
+                    node.mac_address = mac
+                    vendor = self._lookup_oui(mac)
+                    if vendor:
+                        node.vendor = vendor
+                    is_vm, platform = self._detect_virtual(mac)
+                    if is_vm:
+                        node.is_virtual = True
+                        node.virtual_platform = platform
+                if dhcp_hostname and dhcp_hostname != '-':
+                    node.hostnames.add(dhcp_hostname.lower())
+
+        # SNMP
+        for row in results.get('snmp', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            community = _sv(row.get('community'))
+            snmp_version = _sv(row.get('snmp_version'))
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if community and community != '-':
+                    node.device_model = f"SNMP: {community}"
+                if snmp_version and snmp_version != '-':
+                    if not node.device_model:
+                        node.device_model = f"SNMPv{snmp_version}"
+
+        # SMB
+        for row in results.get('smb', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            nb_names = row.get('nb_names', [])
+            if isinstance(nb_names, str):
+                nb_names = [nb_names]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for nb in nb_names:
+                    nb = str(nb).strip().upper()
+                    if nb and nb != '-':
+                        node.netbios_names.add(nb)
+
+        # Software
+        for row in results.get('software', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            sw_list = row.get('software', [])
+            sw_types = row.get('sw_types', [])
+            if isinstance(sw_list, str):
+                sw_list = [sw_list]
+            if isinstance(sw_types, str):
+                sw_types = [sw_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for sw in sw_list:
+                    sw = str(sw).strip()
+                    if sw and sw != '-' and sw not in node.software:
+                        node.software.append(sw)
+                        # Infer OS from software
+                        sw_lower = sw.lower()
+                        if not node.os_info:
+                            if 'windows' in sw_lower:
+                                node.os_info = 'Windows'
+                            elif 'ubuntu' in sw_lower:
+                                node.os_info = 'Ubuntu Linux'
+                            elif 'debian' in sw_lower:
+                                node.os_info = 'Debian Linux'
+                            elif 'macos' in sw_lower or 'darwin' in sw_lower:
+                                node.os_info = 'macOS'
+
+        # SSH
+        for row in results.get('ssh', []):
+            client_ip = _sv(row.get('client_ip'))
+            server_ip = _sv(row.get('server_ip'))
+            ssh_client = _sv(row.get('ssh_client'))
+            ssh_server = _sv(row.get('ssh_server'))
+            if client_ip == ip and ssh_client and ssh_client != '-':
+                for key in ip_to_keys.get(ip, []):
+                    node = self.nodes[key]
+                    entry = f"SSH client: {ssh_client}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+                    if not node.os_info:
+                        b = ssh_client.lower()
+                        if 'ubuntu' in b:
+                            node.os_info = 'Ubuntu Linux'
+                        elif 'debian' in b:
+                            node.os_info = 'Debian Linux'
+                        elif 'windows' in b:
+                            node.os_info = 'Windows'
+            if server_ip == ip and ssh_server and ssh_server != '-':
+                for key in ip_to_keys.get(ip, []):
+                    node = self.nodes[key]
+                    entry = f"SSH server: {ssh_server}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+                    if not node.os_info:
+                        b = ssh_server.lower()
+                        if 'ubuntu' in b:
+                            node.os_info = 'Ubuntu Linux'
+                        elif 'debian' in b:
+                            node.os_info = 'Debian Linux'
+                        elif 'windows' in b:
+                            node.os_info = 'Windows'
+
+        # HTTP User-Agent
+        for row in results.get('http_ua', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            ua_list = row.get('user_agents', [])
+            if isinstance(ua_list, str):
+                ua_list = [ua_list]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for ua in ua_list:
+                    ua = str(ua).strip()
+                    if ua and ua != '-' and ua not in node.user_agents:
+                        node.user_agents.append(ua)
+                    if not node.os_info:
+                        ua_lower = ua.lower()
+                        if 'windows' in ua_lower:
+                            node.os_info = 'Windows'
+                        elif 'macintosh' in ua_lower:
+                            node.os_info = 'macOS'
+                        elif 'linux' in ua_lower and 'android' not in ua_lower:
+                            node.os_info = 'Linux'
+                        elif 'android' in ua_lower:
+                            node.os_info = 'Android'
+                        elif 'iphone' in ua_lower or 'ipad' in ua_lower:
+                            node.os_info = 'iOS'
+
+        # JA3/SSL
+        for row in results.get('ja3_ssl', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            ja3_list = row.get('ja3_hashes', [])
+            sni_list = row.get('sni_names', [])
+            tls_vers = row.get('tls_versions', [])
+            if isinstance(ja3_list, str):
+                ja3_list = [ja3_list]
+            if isinstance(sni_list, str):
+                sni_list = [sni_list]
+            if isinstance(tls_vers, str):
+                tls_vers = [tls_vers]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for h in ja3_list:
+                    h = str(h).strip()
+                    if h and h != '-' and h not in node.ja3_fingerprints:
+                        node.ja3_fingerprints.append(h)
+                for sni in sni_list:
+                    sni = str(sni).strip()
+                    if sni and sni != '-' and sni not in node.tls_server_names:
+                        node.tls_server_names.append(sni)
+                for tv in tls_vers:
+                    tv = str(tv).strip()
+                    if tv and tv != '-' and tv not in node.tls_versions_seen:
+                        node.tls_versions_seen.append(tv)
+
+        # JA3S server
+        for row in results.get('ja3s_server', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            ja3s_list = row.get('ja3s_hashes', [])
+            cert_subj = row.get('cert_subjects', [])
+            cert_iss = row.get('cert_issuers', [])
+            if isinstance(ja3s_list, str):
+                ja3s_list = [ja3s_list]
+            if isinstance(cert_subj, str):
+                cert_subj = [cert_subj]
+            if isinstance(cert_iss, str):
+                cert_iss = [cert_iss]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for h in ja3s_list:
+                    h = str(h).strip()
+                    if h and h != '-' and h not in node.ja3s_fingerprints:
+                        node.ja3s_fingerprints.append(h)
+                for s in cert_subj:
+                    s = str(s).strip()
+                    if s and s != '-' and s not in node.cert_subjects:
+                        node.cert_subjects.append(s)
+                for i in cert_iss:
+                    i = str(i).strip()
+                    if i and i != '-' and i not in node.cert_issuers:
+                        node.cert_issuers.append(i)
+
+        # DNS profile
+        for row in results.get('dns_profile', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.dns_profile = {
+                    'query_count': int(_sv(row.get('query_count'), '0')),
+                    'unique_domains': int(_sv(row.get('unique_domains'), '0')),
+                    'nxdomain_ratio': float(_sv(row.get('nxdomain_ratio'), '0')),
+                    'query_types': row.get('query_types', []),
+                }
+
+        # DHCP extended
+        for row in results.get('dhcp_extended', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            client_fqdn = _sv(row.get('client_fqdn'))
+            vendor_class = _sv(row.get('vendor_class'))
+            dhcp_domain = _sv(row.get('dhcp_domain'))
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                if client_fqdn and client_fqdn != '-' and client_fqdn != 'null':
+                    node.dhcp_client_fqdn = client_fqdn.lower()
+                    node.hostnames.add(client_fqdn.lower())
+                if vendor_class and vendor_class != '-' and vendor_class != 'null':
+                    node.dhcp_vendor_class = vendor_class
+                    if not node.os_info:
+                        vc_os = self._lookup_dhcp_vendor_class(vendor_class)
+                        if vc_os:
+                            node.os_info = vc_os
+                if dhcp_domain and dhcp_domain != '-' and dhcp_domain != 'null':
+                    if not node.domain:
+                        node.domain = dhcp_domain.upper()
+
+        # Known services
+        for row in results.get('known_services', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            svc_names = row.get('service_names', [])
+            if isinstance(svc_names, str):
+                svc_names = [svc_names]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for svc in svc_names:
+                    svc = str(svc).strip()
+                    if svc and svc != '-' and svc not in node.known_services_names:
+                        node.known_services_names.append(svc)
+
+        # SMTP banner
+        for row in results.get('smtp_banner', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            helo_names = row.get('helo_names', [])
+            last_banner = _sv(row.get('last_banner'))
+            if isinstance(helo_names, str):
+                helo_names = [helo_names]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for helo in helo_names:
+                    helo = str(helo).strip()
+                    if helo and helo != '-':
+                        node.hostnames.add(helo.lower())
+                if last_banner and last_banner != '-':
+                    entry = f"SMTP: {last_banner[:120]}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+
+        # FTP banner
+        for row in results.get('ftp_banner', []):
+            r_ip = _sv(row.get('ip'))
+            if r_ip != ip:
+                continue
+            ftp_banner = _sv(row.get('ftp_banner'))
+            if ftp_banner and ftp_banner != '-':
+                for key in ip_to_keys.get(ip, []):
+                    node = self.nodes[key]
+                    entry = f"FTP: {ftp_banner[:120]}"
+                    if entry not in node.software:
+                        node.software.append(entry)
+
+        # ---- Classify this device ----
+        ports_served = server_data.get('ports', set())
+        unique_clients = server_data.get('unique_clients', 0)
+        unique_dests = client_data.get('unique_destinations', 0)
+        outbound = client_data.get('outgoing_count', 0)
+
+        # Add ports from node.services
+        for key in ip_to_keys.get(ip, []):
+            node = self.nodes[key]
+            for port_str, _proto in node.services:
+                try:
+                    ports_served.add(int(port_str))
+                except (ValueError, TypeError):
+                    pass
+
+        dc_ports = {88, 389, 636, 3268, 3269, 445}
+        device_type = ''
+        if ip in kdc_ips:
+            device_type = 'domain_controller'
+        else:
+            device_type = self._classify_device(
+                ports_served, unique_clients, unique_dests, outbound
+            )
+
+        # Downgrade protection
+        _FALLBACK_TYPES = {'gateway', 'workstation', 'iot_device'}
+        _SPECIFIC_TYPES = {
+            'domain_controller', 'dns_server', 'web_server',
+            'database_server', 'mail_server', 'file_server',
+            'print_server', 'voip_server', 'monitoring_server',
+            'router', 'firewall',
+        }
+
+        for key in ip_to_keys.get(ip, []):
+            node = self.nodes[key]
+            old_type = node.device_type
+            if old_type in _SPECIFIC_TYPES and device_type in _FALLBACK_TYPES:
+                # Don't downgrade
+                pass
+            elif device_type:
+                node.device_type = device_type
+                node.roles.add(self._infer_node_role(ports_served))
+
+        # Build host_id for this node
+        self._build_host_id_for_node(ip, ip_to_keys)
+
+        return {
+            'ip': ip,
+            'status': 'profiled',
+            'device_type': device_type,
+        }
+
+    def _build_host_id_for_node(self, ip: str,
+                                ip_to_keys: Dict[str, List[str]]):
+        """Build the unified host_id dict for a single device."""
+        for key in ip_to_keys.get(ip, []):
+            node = self.nodes[key]
+            if not node.is_internal:
+                continue
+
+            signals = []
+            os_candidates = []
+
+            if node.dhcp_vendor_class:
+                vc = node.dhcp_vendor_class
+                signals.append({'source': 'DHCP Vendor Class', 'value': vc})
+                vc_lower = vc.lower()
+                if 'msft' in vc_lower or 'microsoft' in vc_lower:
+                    os_candidates.append(('Windows', 'DHCP Vendor Class', 90))
+                elif 'android' in vc_lower:
+                    os_candidates.append(('Android', 'DHCP Vendor Class', 85))
+                elif 'linux' in vc_lower:
+                    os_candidates.append(('Linux', 'DHCP Vendor Class', 80))
+                elif 'apple' in vc_lower or 'darwin' in vc_lower:
+                    os_candidates.append(('macOS/iOS', 'DHCP Vendor Class', 85))
+
+            for sw in node.software[:10]:
+                sw_lower = sw.lower()
+                if 'windows' in sw_lower:
+                    os_candidates.append((sw.split(',')[0][:60], 'Zeek Software', 90))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif any(x in sw_lower for x in ['ubuntu', 'debian', 'centos', 'rhel']):
+                    os_candidates.append((sw.split(',')[0][:60], 'Zeek Software', 90))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif 'macos' in sw_lower or 'darwin' in sw_lower:
+                    os_candidates.append(('macOS', 'Zeek Software', 85))
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+                    break
+                elif any(x in sw_lower for x in ['ssh server:', 'ssh client:', 'smtp:', 'ftp:']):
+                    signals.append({'source': 'Zeek Software', 'value': sw[:80]})
+
+            if node.os_info:
+                os_candidates.append((node.os_info, 'OS Detection', 80))
+                if not any(s['source'] == 'OS Detection' for s in signals):
+                    signals.append({'source': 'OS Detection', 'value': node.os_info})
+
+            for sw in node.software[:10]:
+                if sw.startswith('SSH server:') or sw.startswith('SSH client:'):
+                    banner = sw.split(':', 1)[1].strip()
+                    if not any(s['source'] == 'SSH Banner' for s in signals):
+                        signals.append({'source': 'SSH Banner', 'value': banner[:80]})
+                    bl = banner.lower()
+                    if 'ubuntu' in bl:
+                        os_candidates.append(('Ubuntu Linux', 'SSH Banner', 75))
+                    elif 'debian' in bl:
+                        os_candidates.append(('Debian Linux', 'SSH Banner', 75))
+
+            for ua in node.user_agents[:3]:
+                signals.append({'source': 'HTTP User-Agent', 'value': ua[:100]})
+                ua_lower = ua.lower()
+                if 'windows nt 10' in ua_lower:
+                    os_candidates.append(('Windows 10/11', 'HTTP User-Agent', 65))
+                elif 'macintosh' in ua_lower:
+                    os_candidates.append(('macOS', 'HTTP User-Agent', 65))
+                elif 'linux' in ua_lower and 'android' not in ua_lower:
+                    os_candidates.append(('Linux', 'HTTP User-Agent', 60))
+                elif 'android' in ua_lower:
+                    os_candidates.append(('Android', 'HTTP User-Agent', 65))
+                break
+
+            if node.rdp_info:
+                build = node.rdp_info.get('client_build')
+                if build:
+                    signals.append({'source': 'RDP Build', 'value': f"Build {build}"})
+                    rdp_os = self._lookup_rdp_build(build)
+                    if rdp_os:
+                        os_candidates.append((rdp_os, 'RDP Build', 92))
+
+            if node.dhcp_client_fqdn:
+                signals.append({'source': 'DHCP FQDN', 'value': node.dhcp_client_fqdn})
+
+            for sw in node.software[:15]:
+                if sw.startswith('SMTP:'):
+                    if not any(s['source'] == 'SMTP Banner' for s in signals):
+                        signals.append({'source': 'SMTP Banner', 'value': sw[5:].strip()[:80]})
+                elif sw.startswith('FTP:'):
+                    if not any(s['source'] == 'FTP Banner' for s in signals):
+                        signals.append({'source': 'FTP Banner', 'value': sw[4:].strip()[:80]})
+
+            if node.known_services_names:
+                signals.append({'source': 'Zeek Known Services',
+                                'value': ', '.join(node.known_services_names[:10])})
+            if node.tls_server_names:
+                signals.append({'source': 'TLS SNI',
+                                'value': ', '.join(node.tls_server_names[:5])})
+            if node.ja3_fingerprints:
+                signals.append({'source': 'JA3 Client',
+                                'value': ', '.join(node.ja3_fingerprints[:3])})
+            if node.cert_subjects:
+                signals.append({'source': 'TLS Certificate',
+                                'value': ', '.join(node.cert_subjects[:3])})
+            if node.vendor:
+                signals.append({'source': 'MAC Vendor', 'value': node.vendor})
+
+            if not signals:
+                continue
+
+            best_os = None
+            best_os_source = None
+            best_os_confidence = 0
+            for os_str, source, conf in os_candidates:
+                if conf > best_os_confidence:
+                    best_os = os_str
+                    best_os_source = source
+                    best_os_confidence = conf
+
+            signal_count = len(signals)
+            overall_confidence = min(
+                best_os_confidence + (signal_count * 3), 100,
+            ) if best_os else min(signal_count * 12, 60)
+
+            node.host_id = {
+                'os': best_os or 'Unknown',
+                'os_source': best_os_source or '',
+                'os_confidence': best_os_confidence,
+                'confidence': overall_confidence,
+                'signal_count': signal_count,
+                'signals': signals[:15],
+            }
+
+    # ------------------------------------------------------------------
     # Eviction
     # ------------------------------------------------------------------
 
