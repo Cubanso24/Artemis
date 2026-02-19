@@ -1395,7 +1395,7 @@
                 <h2>Network Topology Graph</h2>
 
                 <div class="graph-controls">
-                    <input type="text" id="graph-search" placeholder="Search IP, hostname, vendor... (10.0.1.* for subnet)" onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:300px;">
+                    <input type="text" id="graph-search" placeholder="Search IP, hostname, vendor, external IP... (10.0.1.* for subnet)" onkeydown="if(event.key==='Enter') searchGraphNode()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); width:300px;">
                     <button class="btn" onclick="searchGraphNode()">Find</button>
                     <button class="btn btn-secondary" onclick="collapseAllSubnets()" id="collapse-subnets-btn" style="display:none;" title="Collapse all expanded subnets back to grouped view"><i class="fa-solid fa-compress"></i> Collapse Subnets</button>
                     <button class="btn btn-secondary" onclick="resetGraphZoom()">Reset Zoom</button>
@@ -3513,6 +3513,81 @@
             panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
+        function showExternalIpResults(extMatches, query) {
+            const panel = document.getElementById('node-details-panel');
+            const title = document.getElementById('node-details-title');
+            const body = document.getElementById('node-details-body');
+
+            const tierNames = { 0: 'WAN/External', 1: 'Gateway', 2: 'Core Infra', 3: 'Server', 4: 'Endpoint' };
+
+            // Sort by total connections descending
+            extMatches.sort((a, b) => (b.conns_out + b.conns_in) - (a.conns_out + a.conns_in));
+
+            const totalOut = extMatches.reduce((s, m) => s + m.conns_out, 0);
+            const totalIn = extMatches.reduce((s, m) => s + m.conns_in, 0);
+
+            title.textContent = `External IP: ${query} (${extMatches.length} devices)`;
+
+            let html = `
+                <div style="display:flex; gap:16px; margin-bottom:16px;">
+                    <div style="background:rgba(102,126,234,0.1); border:1px solid rgba(102,126,234,0.3); border-radius:6px; padding:10px 16px; flex:1; text-align:center;">
+                        <div style="font-size:20px; font-weight:700; color:var(--accent-primary);">${extMatches.length}</div>
+                        <div style="font-size:11px; opacity:0.6; text-transform:uppercase;">Devices</div>
+                    </div>
+                    <div style="background:rgba(255,152,0,0.1); border:1px solid rgba(255,152,0,0.3); border-radius:6px; padding:10px 16px; flex:1; text-align:center;">
+                        <div style="font-size:20px; font-weight:700; color:#FF9800;">${totalOut.toLocaleString()}</div>
+                        <div style="font-size:11px; opacity:0.6; text-transform:uppercase;">Conns Out</div>
+                    </div>
+                    <div style="background:rgba(0,188,212,0.1); border:1px solid rgba(0,188,212,0.3); border-radius:6px; padding:10px 16px; flex:1; text-align:center;">
+                        <div style="font-size:20px; font-weight:700; color:#00BCD4;">${totalIn.toLocaleString()}</div>
+                        <div style="font-size:11px; opacity:0.6; text-transform:uppercase;">Conns In</div>
+                    </div>
+                </div>
+            `;
+
+            html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">`;
+            html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                <td style="padding:4px 8px;">Internal IP</td>
+                <td style="padding:4px 8px;">Name</td>
+                <td style="padding:4px 8px;">Type</td>
+                <td style="padding:4px 8px;">VLAN</td>
+                <td style="padding:4px 8px; text-align:right;">Out</td>
+                <td style="padding:4px 8px; text-align:right;">In</td>
+                <td style="padding:4px 8px; text-align:right;">Total</td>
+                <td style="padding:4px 8px;">Services</td>
+            </tr>`;
+
+            extMatches.forEach(m => {
+                const n = m.node;
+                const ip = n.id ? n.id.split(':').pop() : '';
+                const name = (n.netbios_names || [])[0] || (n.hostnames || [])[0] || '';
+                const dtype = n.device_label || n.device_type || '-';
+                const vlan = n.vlan || '0';
+                const total = m.conns_out + m.conns_in;
+                const svcList = (n.services_list || []).slice(0, 5).join(', ') || `${n.services || 0} svc`;
+                const flag = _deviceFlags[n.id];
+                const vmBadge = n.is_virtual ? ' <span style="color:#CE93D8; font-size:10px;"><i class="fa-solid fa-cloud"></i></span>' : '';
+                const flagBadge = flag ? ` <span style="color:${flag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff'}; font-size:10px; font-weight:600;">${flag.flag_type}</span>` : '';
+
+                html += `<tr style="border-top:1px solid rgba(255,255,255,0.05); cursor:pointer;" onclick="document.getElementById('graph-search').value='${escapeHtml(ip)}'; searchGraphNode();">
+                    <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(ip)}${vmBadge}${flagBadge}</td>
+                    <td style="padding:4px 8px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(name)}</td>
+                    <td style="padding:4px 8px;">${escapeHtml(dtype)}</td>
+                    <td style="padding:4px 8px; opacity:0.7;">${escapeHtml(vlan)}</td>
+                    <td style="padding:4px 8px; text-align:right;">${m.conns_out.toLocaleString()}</td>
+                    <td style="padding:4px 8px; text-align:right;">${m.conns_in.toLocaleString()}</td>
+                    <td style="padding:4px 8px; text-align:right; font-weight:600;">${total.toLocaleString()}</td>
+                    <td style="padding:4px 8px; font-family:monospace; font-size:11px; opacity:0.7; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(svcList)}</td>
+                </tr>`;
+            });
+            html += '</table>';
+            if (extMatches.length > 50) html += `<p style="opacity:0.5; font-size:12px; margin-top:8px;">Showing all ${extMatches.length} devices</p>`;
+
+            body.innerHTML = html;
+            panel.style.display = 'block';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
         function searchGraphNode() {
             const query = document.getElementById('graph-search').value.trim().toLowerCase();
             const searchInput = document.getElementById('graph-search');
@@ -3650,54 +3725,24 @@
             }
 
             // If no direct node match, check if the query matches an external IP
-            // inside a node's connection data and show that node's details
-            const extMatch = networkGraphData.raw.nodes.find(n => {
-                if (n.group === 'internet') return false;
-                return (n.external_connections_out || []).some(c => c.ip.includes(query)) ||
-                       (n.external_connections_in || []).some(c => c.ip.includes(query));
-            });
-            if (extMatch) {
-                addLog(`External IP "${query}" found in connections of ${extMatch.label}`, 'info');
-                const graphTab = document.getElementById('network-graph-tab');
-                if (!graphTab.classList.contains('active')) {
-                    showTab('network-graph-tab');
-                }
-                if (_activeVlan !== null) {
-                    const nodeVlan = extMatch.vlan || '0';
-                    if (nodeVlan !== _activeVlan) {
-                        switchVlanTab(nodeVlan);
-                    }
-                }
-                // Expand subnet if collapsed
-                const extSubnet = extMatch.subnet || getSubnetFromId(extMatch.id);
-                if (extSubnet && !_expandedSubnets.has(extSubnet)) {
-                    const subnetNodeId = 'subnet:' + extSubnet;
-                    if (networkGraphData && networkGraphData.nodes.get(subnetNodeId)) {
-                        _expandedSubnets.add(extSubnet);
-                        document.getElementById('collapse-subnets-btn').style.display = '';
-                        const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
-                        if (currentData) renderNetworkGraph(currentData);
-                        setTimeout(() => {
-                            if (networkGraph) {
-                                networkGraph.selectNodes([extMatch.id]);
-                                networkGraph.focus(extMatch.id, {
-                                    scale: 1.5,
-                                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
-                                });
-                            }
-                        }, 100);
-                        showNodeDetails(extMatch);
-                        searchInput.style.borderColor = '#43a047';
-                        setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
-                        return;
-                    }
-                }
-                networkGraph.selectNodes([extMatch.id]);
-                networkGraph.focus(extMatch.id, {
-                    scale: 1.5,
-                    animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+            // inside ANY node's connection data — show ALL devices that connected
+            const extMatches = [];
+            networkGraphData.raw.nodes.forEach(n => {
+                if (n.group === 'internet') return;
+                let connsOut = 0, connsIn = 0;
+                (n.external_connections_out || []).forEach(c => {
+                    if (c.ip.includes(query)) connsOut += c.count;
                 });
-                showNodeDetails(extMatch);
+                (n.external_connections_in || []).forEach(c => {
+                    if (c.ip.includes(query)) connsIn += c.count;
+                });
+                if (connsOut > 0 || connsIn > 0) {
+                    extMatches.push({ node: n, conns_out: connsOut, conns_in: connsIn });
+                }
+            });
+            if (extMatches.length > 0) {
+                addLog(`External IP "${query}": ${extMatches.length} internal device${extMatches.length !== 1 ? 's' : ''} found`, 'info');
+                showExternalIpResults(extMatches, query);
                 searchInput.style.borderColor = '#43a047';
                 setTimeout(() => { searchInput.style.borderColor = ''; }, 2000);
                 return;
@@ -3714,7 +3759,7 @@
                 <div style="text-align:center; padding:20px;">
                     <i class="fa-solid fa-magnifying-glass" style="font-size:32px; opacity:0.3; margin-bottom:12px;"></i>
                     <p style="font-size:14px; margin-bottom:8px;">No device matching <strong>"${escapeHtml(query)}"</strong> was found in the network map.</p>
-                    <p style="font-size:12px; opacity:0.6;">Try searching by IP address, hostname, domain, NetBIOS name, MAC address, or vendor name. Use <strong>*</strong> for wildcard subnet search (e.g. <strong>10.0.1.*</strong>).</p>
+                    <p style="font-size:12px; opacity:0.6;">Try searching by IP address, hostname, domain, NetBIOS name, MAC address, or vendor name. Use <strong>*</strong> for wildcard subnet search (e.g. <strong>10.0.1.*</strong>). Search an external IP to see all internal devices that connected to it.</p>
                 </div>
             `;
             panel.style.display = 'block';
