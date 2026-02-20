@@ -3225,22 +3225,34 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # Per-device background profiling
     # ------------------------------------------------------------------
 
+    def _profilable_nodes(self) -> list:
+        """Return the set of nodes eligible for profiling.
+
+        Prefers internal (RFC1918) nodes, but falls back to all nodes
+        when the dataset contains only external IPs (e.g. Splunk data
+        with public addresses).
+        """
+        internal = [n for n in self.nodes.values() if n.is_internal]
+        if internal:
+            return internal
+        return list(self.nodes.values())
+
     def get_unprofiled_ips(self) -> List[str]:
-        """Return list of internal IPs that have not been profiled yet."""
+        """Return list of IPs that have not been profiled yet."""
         return [
-            n.ip for n in self.nodes.values()
-            if n.is_internal and not n.device_type
+            n.ip for n in self._profilable_nodes()
+            if not n.device_type
         ]
 
     def get_profiling_stats(self) -> Dict:
         """Return profiling progress counts."""
-        internal = [n for n in self.nodes.values() if n.is_internal]
-        profiled = sum(1 for n in internal if n.device_type)
-        host_ided = sum(1 for n in internal if n.host_id)
+        candidates = self._profilable_nodes()
+        profiled = sum(1 for n in candidates if n.device_type)
+        host_ided = sum(1 for n in candidates if n.host_id)
         return {
-            'total': len(internal),
+            'total': len(candidates),
             'profiled': profiled,
-            'unprofiled': len(internal) - profiled,
+            'unprofiled': len(candidates) - profiled,
             'host_identified': host_ided,
         }
 

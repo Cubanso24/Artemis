@@ -205,7 +205,7 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
         already_profiled = stats['profiled']
 
         if total == 0:
-            send('error', 'No internal devices found. Build a network map first.', 0)
+            send('error', 'No devices found. Build a network map first.', 0)
             return
 
         unprofiled_ips = nm.get_unprofiled_ips()
