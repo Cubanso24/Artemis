@@ -5360,7 +5360,13 @@
                         const ing = await ingestResp.json();
                         const statusEl = document.getElementById('hunt-status-text');
                         if (statusEl && ing.running) {
-                            statusEl.textContent = `LIVE INGESTION — CYCLE ${ing.cycle || 0}`;
+                            // Extract cycle from extra field, or parse from message as fallback
+                            let cycle = ing.cycle || 0;
+                            if (!cycle && ing.message) {
+                                const m = ing.message.match(/Cycle\s+(\d+)/i);
+                                if (m) cycle = parseInt(m[1], 10);
+                            }
+                            statusEl.textContent = `LIVE INGESTION — CYCLE ${cycle}`;
                             statusEl.style.color = '#3fb950';
                         }
                         const logEl = document.getElementById('hunt-log-line');

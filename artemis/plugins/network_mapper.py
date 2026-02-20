@@ -4300,7 +4300,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         summary = {
             '_key': cache_key,
-            'total_nodes': internal_count,
+            'total_nodes': internal_count + external_count,
             'sensors': sorted(self.sensors),
             'vlans': vlans,
             'internal_nodes': internal_count,
@@ -4393,16 +4393,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         # Separate internal and external nodes
         internal_nodes = [n for n in filtered if n.is_internal]
-        external_ips = {n.ip for n in filtered if not n.is_internal}
+        external_nodes = [n for n in filtered if not n.is_internal]
+        external_ips = {n.ip for n in external_nodes}
 
-        # Compute VLAN distribution from ALL internal nodes (not just top-N)
+        # When there are no internal nodes (e.g. all public IPs from Splunk),
+        # fall back to showing external nodes directly instead of an empty graph.
+        if not internal_nodes and external_nodes:
+            graphable_nodes = external_nodes
+            external_ips = set()  # don't collapse into Internet cloud
+        else:
+            graphable_nodes = internal_nodes
+
+        # Compute VLAN distribution from ALL graphable nodes (not just top-N)
         all_vlan_counts: Dict[str, int] = {}
-        for n in internal_nodes:
+        for n in graphable_nodes:
             all_vlan_counts[n.vlan] = all_vlan_counts.get(n.vlan, 0) + 1
 
-        # Take top N internal nodes by connection count
+        # Take top N nodes by connection count
         top = sorted(
-            internal_nodes, key=lambda n: n.total_connections, reverse=True
+            graphable_nodes, key=lambda n: n.total_connections, reverse=True
         )[:max_nodes]
 
         # Deduplicate by IP: the same device seen by different sensors or
@@ -4525,7 +4534,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'vlan': node.vlan,
                 'vlans': sorted(_ip_vlans.get(node.ip, {node.vlan})),
                 'subnet': subnet,
-                'group': 'internal',
+                'group': 'internal' if node.is_internal else 'external',
                 'size': min(node.total_connections / 10, 50),
                 'roles': list(node.roles),
                 'services': len(node.services),
