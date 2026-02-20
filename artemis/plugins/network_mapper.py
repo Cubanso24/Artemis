@@ -1904,9 +1904,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
         Profile network devices by querying Splunk zeek logs.
 
         For time ranges > 1 h the work is split into 1-hour windows so
-        that results appear incrementally and no single Splunk search
-        job becomes too large.  Results are merged across windows
-        before enrichment and classification.
+        that data appears incrementally.  Results are merged across
+        windows before enrichment and classification.
 
         Args:
             splunk_connector: SplunkConnector instance

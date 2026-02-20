@@ -275,8 +275,8 @@ class DataPipeline:
         Collect data from Splunk and merge into *store*.
 
         For time ranges > 1 hour, the query is broken into 1-hour
-        windows so results appear incrementally and the Splunk search
-        head isn't overwhelmed.  Each window's per-type queries run in parallel,
+        windows so data appears incrementally.  Each window's per-type
+        queries run in parallel,
         then results are merged into *store* before the next window so
         that per-window memory is freed immediately (important when
         *store* is a SqliteEventStore).
@@ -315,7 +315,7 @@ class DataPipeline:
             store.update(window)
             return
 
-        # Long range — split into 1h windows for faster incremental results
+        # Long range — split into 1h windows for incremental results
         windows = self._generate_time_windows(
             time_range, window_hours=1,
             earliest_time=earliest_time, latest_time=latest_time,
