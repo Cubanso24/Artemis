@@ -3598,6 +3598,7 @@
         }
 
         async function startContinuousIngest() {
+            _stopRequested = false;
             const btn = document.getElementById('continuous-toggle-btn');
             const interval = parseInt(document.getElementById('continuous-interval').value);
             const lookback = parseInt(document.getElementById('continuous-lookback').value);
@@ -3636,7 +3637,10 @@
             }
         }
 
+        let _stopRequested = false;
+
         async function stopContinuousIngest() {
+            _stopRequested = true;
             const btn = document.getElementById('continuous-toggle-btn');
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Stopping...';
@@ -3686,6 +3690,7 @@
 
             if (data.stage === 'complete') {
                 // Graceful stop
+                _stopRequested = false;
                 setContinuousRunning(false);
                 document.getElementById('continuous-msg').textContent = data.message || 'Ingestion stopped';
                 addLog(`Live ingestion stopped: ${data.message}`, 'info');
@@ -3697,12 +3702,18 @@
                 }, 5000);
 
             } else if (data.stage === 'error') {
+                _stopRequested = false;
                 setContinuousRunning(false);
                 document.getElementById('continuous-msg').textContent = data.message || 'Error';
                 addLog(`Live ingestion error: ${data.message}`, 'error');
                 setTimeout(() => {
                     document.getElementById('continuous-detail').style.display = 'none';
                 }, 5000);
+
+            } else if (_stopRequested) {
+                // Stop was requested — ignore stale 'running' updates
+                // that were already in flight from the poll loop.
+                return;
 
             } else {
                 // Running — update status display
@@ -3731,10 +3742,11 @@
         }
 
         async function checkContinuousStatus() {
+            if (_stopRequested) return;  // user just hit stop, don't re-show
             try {
                 const resp = await fetch('/api/network-graph/continuous/status');
                 const status = await resp.json();
-                if (status.running) {
+                if (status.running && !_stopRequested) {
                     setContinuousRunning(true);
                     document.getElementById('continuous-cycle').textContent = `Cycle: ${status.cycle || '—'}`;
                     document.getElementById('continuous-nodes').textContent = `Nodes: ${status.total_nodes || '—'}`;

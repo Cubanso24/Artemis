@@ -712,6 +712,28 @@ class HuntManager:
             f'Stopping continuous ingestion {job_id} (pid {pid})'
         )
 
+        # Immediately remove from poll loop tracking so
+        # _poll_progress stops broadcasting stale WS updates
+        # that would flip the frontend back to "running".
+        self._monitored_hunts.pop(job_id, None)
+        self.db.clear_progress(job_id)
+        if job_id in self.active_hunts:
+            self.active_hunts[job_id]['status'] = 'stopped'
+        self._continuous_id = None
+        self._continuous_pid = None
+
+        # Broadcast an explicit 'complete' so the frontend
+        # flips to stopped even if an earlier 'running' msg
+        # was already in flight.
+        if self._broadcast_fn:
+            await self._broadcast_fn({
+                'type': 'continuous_progress',
+                'stage': 'complete',
+                'message': 'Ingestion stopped by user',
+                'progress': 100,
+                'hunt_id': job_id,
+            })
+
         # Send SIGTERM — the process catches it and stops gracefully
         try:
             import signal as _sig
@@ -741,14 +763,6 @@ class HuntManager:
                 if not _pid_alive(pid):
                     break
 
-        # Clean up all tracking state AND the progress DB entry
-        # so reconnect_running_jobs() doesn't resurrect this job
-        self.db.clear_progress(job_id)
-        self._monitored_hunts.pop(job_id, None)
-        if job_id in self.active_hunts:
-            self.active_hunts[job_id]['status'] = 'stopped'
-        self._continuous_id = None
-        self._continuous_pid = None
         return {'status': 'stopped', 'job_id': job_id}
 
     def get_continuous_status(self) -> dict:
