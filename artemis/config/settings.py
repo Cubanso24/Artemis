@@ -52,6 +52,12 @@ class ArtemisConfig:
     cache_enabled: bool = True
     cache_ttl_seconds: int = 300
 
+    # LLM layer
+    llm_enabled: bool = True  # Set False to disable LLM entirely
+    llm_api_key: str = ""  # Defaults to ANTHROPIC_API_KEY env var
+    llm_coordinator_model: str = "claude-sonnet-4-5-20250929"
+    llm_agent_model: str = "claude-haiku-4-5-20251001"
+
     @classmethod
     def from_file(cls, filepath: str) -> 'ArtemisConfig':
         """Load configuration from JSON file."""
@@ -87,7 +93,11 @@ class ArtemisConfig:
             "historical_state_limit": self.historical_state_limit,
             "anomaly_detection_enabled": self.anomaly_detection_enabled,
             "cache_enabled": self.cache_enabled,
-            "cache_ttl_seconds": self.cache_ttl_seconds
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+            "llm_enabled": self.llm_enabled,
+            "llm_api_key": self.llm_api_key,
+            "llm_coordinator_model": self.llm_coordinator_model,
+            "llm_agent_model": self.llm_agent_model,
         }
 
     def save(self, filepath: str):

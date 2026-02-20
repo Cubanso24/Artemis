@@ -25,6 +25,9 @@ from artemis.meta_learner.context_assessment import ContextAssessor
 from artemis.meta_learner.agent_selector import AgentSelector
 from artemis.meta_learner.confidence_aggregator import ConfidenceAggregator
 from artemis.meta_learner.adaptive_learner import AdaptiveLearner, FeedbackType
+from artemis.llm.client import LLMClient
+from artemis.llm.coordinator_llm import CoordinatorLLM
+from artemis.llm.agent_llm import AgentLLM
 from artemis.utils.logging_config import ArtemisLogger
 
 
@@ -47,7 +50,11 @@ class MetaLearnerCoordinator:
         self,
         deployment_mode: str = DeploymentMode.ADAPTIVE,
         enable_parallel_execution: bool = True,
-        max_workers: int = 4
+        max_workers: int = 4,
+        llm_api_key: Optional[str] = None,
+        llm_coordinator_model: str = "claude-sonnet-4-5-20250929",
+        llm_agent_model: str = "claude-haiku-4-5-20251001",
+        llm_enabled: bool = True,
     ):
         """
         Initialize Meta-Learner Coordinator.
@@ -56,6 +63,10 @@ class MetaLearnerCoordinator:
             deployment_mode: Agent deployment strategy
             enable_parallel_execution: Whether to run agents in parallel
             max_workers: Maximum parallel agent executions
+            llm_api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
+            llm_coordinator_model: Model for coordinator tier (Sonnet)
+            llm_agent_model: Model for agent tier (Haiku)
+            llm_enabled: Set False to disable all LLM features
         """
         self.logger = ArtemisLogger.setup_logger("artemis.meta_learner.coordinator")
 
@@ -70,11 +81,23 @@ class MetaLearnerCoordinator:
         self.confidence_aggregator = ConfidenceAggregator()
         self.adaptive_learner = AdaptiveLearner()
 
+        # Initialize LLM layer (gracefully degrades if unavailable)
+        self.llm_client: Optional[LLMClient] = None
+        self.coordinator_llm: Optional[CoordinatorLLM] = None
+        self.agent_llms: Dict[str, AgentLLM] = {}
+        if llm_enabled:
+            self._initialize_llm(
+                llm_api_key, llm_coordinator_model, llm_agent_model
+            )
+
         # Initialize all hunting agents
         self.agents: Dict[str, BaseAgent] = self._initialize_agents()
 
         # Baseline agents (always running)
         self.baseline_agents = ["c2_hunter", "reconnaissance_hunter"]
+
+        # Per-hunt state (set during hunt())
+        self._current_directives: Dict[str, Dict] = {}
 
         # Statistics
         self.stats = {
@@ -85,7 +108,38 @@ class MetaLearnerCoordinator:
             "start_time": datetime.utcnow()
         }
 
-        self.logger.info("Meta-Learner Coordinator initialized")
+        llm_status = (
+            "enabled" if self.coordinator_llm and self.coordinator_llm.available
+            else "disabled"
+        )
+        self.logger.info(
+            f"Meta-Learner Coordinator initialized (LLM: {llm_status})"
+        )
+
+    def _initialize_llm(
+        self,
+        api_key: Optional[str],
+        coordinator_model: str,
+        agent_model: str,
+    ):
+        """Initialize the two-tier LLM layer."""
+        self.llm_client = LLMClient(
+            api_key=api_key,
+            coordinator_model=coordinator_model,
+            agent_model=agent_model,
+        )
+        self.coordinator_llm = CoordinatorLLM(self.llm_client)
+
+        # Create one specialist AgentLLM per hunting agent
+        agent_names = [
+            "reconnaissance_hunter",
+            "lateral_movement_hunter",
+            "collection_exfiltration_hunter",
+            "c2_hunter",
+            "impact_hunter",
+        ]
+        for name in agent_names:
+            self.agent_llms[name] = AgentLLM(self.llm_client, name)
 
     def _initialize_agents(self) -> Dict[str, BaseAgent]:
         """Initialize all specialized hunting agents."""
@@ -134,20 +188,37 @@ class MetaLearnerCoordinator:
         else:
             context = self._gather_context(context_data or {})
 
-        # Stage 2: Threat Hypothesis Generation
-        hypotheses = self._generate_hypotheses(initial_signals or [], context)
+        # Stage 2: Threat Hypothesis Generation (LLM-enhanced)
+        hypotheses = self._generate_hypotheses(
+            initial_signals or [], context, data
+        )
 
         # Stage 3: Agent Selection
         selected_agents = self._select_agents(hypotheses, context)
 
+        # Stage 3.5: Generate agent directives (LLM)
+        self._current_directives = self._generate_directives(
+            hypotheses, selected_agents, context
+        )
+
         # Stage 4: Resource Allocation & Agent Execution
         agent_outputs = self._execute_agents(selected_agents, data, context)
 
-        # Stage 4.5: Deduplicate findings across agents
+        # Stage 4.5: LLM enrichment of agent outputs
+        agent_outputs = self._enrich_with_llm(
+            agent_outputs, data, context
+        )
+
+        # Stage 4.6: Deduplicate findings across agents
         agent_outputs = self._deduplicate_findings(agent_outputs)
 
         # Stage 5: Confidence Aggregation & Decision Making
         assessment = self._aggregate_results(agent_outputs, context)
+
+        # Stage 5.5: LLM synthesis — unified threat narrative
+        assessment = self._synthesize_with_llm(
+            assessment, agent_outputs, context
+        )
 
         # Stage 6: Update Statistics
         self._update_statistics(assessment, selected_agents)
@@ -168,21 +239,33 @@ class MetaLearnerCoordinator:
     def _generate_hypotheses(
         self,
         initial_signals: List[Dict[str, Any]],
-        context: NetworkState
+        context: NetworkState,
+        hunting_data: Optional[Dict[str, Any]] = None,
     ) -> List[ThreatHypothesis]:
-        """Stage 2: Generate threat hypotheses."""
+        """Stage 2: Generate threat hypotheses (LLM-enhanced with fallback)."""
         self.logger.info("Stage 2: Generating threat hypotheses")
 
-        # Generate hypotheses from initial signals
-        hypotheses = self.context_assessor.generate_hypotheses(initial_signals, context)
-
-        # Check for anomalies
+        # Check for anomalies first (feeds into both paths)
         anomalies = self.context_assessor.detect_anomalies(context)
         if anomalies:
             self.logger.warning(f"Detected {len(anomalies)} anomalies")
-            # Convert anomalies to signals
             for anomaly in anomalies:
                 initial_signals.append(anomaly)
+
+        # Try LLM-based hypothesis generation
+        hypotheses = None
+        if self.coordinator_llm and self.coordinator_llm.available and hunting_data:
+            self.logger.info("Using LLM for hypothesis generation")
+            hypotheses = self.coordinator_llm.generate_hypotheses(
+                context, initial_signals, hunting_data
+            )
+
+        # Fallback to rule-based generation
+        if hypotheses is None:
+            self.logger.info("Using rule-based hypothesis generation")
+            hypotheses = self.context_assessor.generate_hypotheses(
+                initial_signals, context
+            )
 
         self.logger.info(f"Generated {len(hypotheses)} threat hypotheses")
         return hypotheses
@@ -417,6 +500,80 @@ class MetaLearnerCoordinator:
             correlation = self.confidence_aggregator.calculate_correlation_score(agent_outputs)
             assessment["correlation_score"] = correlation
             self.logger.info(f"Agent correlation score: {correlation:.2f}")
+
+        return assessment
+
+    # ------------------------------------------------------------------
+    # LLM integration stages
+    # ------------------------------------------------------------------
+
+    def _generate_directives(
+        self,
+        hypotheses: List[ThreatHypothesis],
+        selected_agents: List[Tuple[str, float]],
+        context: NetworkState,
+    ) -> Dict[str, Dict]:
+        """Stage 3.5: Generate LLM directives for each selected agent."""
+        if not (self.coordinator_llm and self.coordinator_llm.available):
+            return {}
+
+        self.logger.info("Stage 3.5: Generating agent directives (LLM)")
+        agent_names = [name for name, _ in selected_agents]
+        directives = self.coordinator_llm.generate_directives(
+            hypotheses, agent_names, context
+        )
+        return directives or {}
+
+    def _enrich_with_llm(
+        self,
+        agent_outputs: List[AgentOutput],
+        hunting_data: Dict[str, Any],
+        context: NetworkState,
+    ) -> List[AgentOutput]:
+        """Stage 4.5: Enrich agent outputs using specialist LLMs."""
+        if not self.agent_llms:
+            return agent_outputs
+
+        self.logger.info("Stage 4.5: LLM enrichment of agent outputs")
+
+        enriched = []
+        for output in agent_outputs:
+            agent_llm = self.agent_llms.get(output.agent_name)
+            if agent_llm and agent_llm.available and output.findings:
+                directive = self._current_directives.get(output.agent_name)
+                output = agent_llm.enrich_output(
+                    output, directive, hunting_data, context
+                )
+            enriched.append(output)
+
+        return enriched
+
+    def _synthesize_with_llm(
+        self,
+        assessment: Dict[str, Any],
+        agent_outputs: List[AgentOutput],
+        context: NetworkState,
+    ) -> Dict[str, Any]:
+        """Stage 5.5: LLM synthesis — unified threat narrative."""
+        if not (self.coordinator_llm and self.coordinator_llm.available):
+            return assessment
+
+        self.logger.info("Stage 5.5: LLM synthesis")
+        synthesis = self.coordinator_llm.synthesize_results(
+            agent_outputs, context
+        )
+
+        if synthesis:
+            assessment["llm_synthesis"] = synthesis
+            # Merge LLM recommendations into the assessment
+            llm_recs = [
+                r.get("action", "")
+                for r in synthesis.get("recommended_actions", [])
+                if r.get("action")
+            ]
+            if llm_recs:
+                existing = assessment.get("recommendations", [])
+                assessment["recommendations"] = existing + llm_recs
 
         return assessment
 
