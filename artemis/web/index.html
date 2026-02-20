@@ -1402,8 +1402,7 @@
                     <button class="btn btn-secondary" onclick="exportGraphImage()">Export as PNG</button>
                     <button class="btn btn-secondary" onclick="downloadGraphJSON()">Download JSON</button>
                     <button class="btn" onclick="startGroupSelect()" id="group-select-btn" title="Select devices to create a LAN group"><i class="fa-solid fa-object-group"></i> Group</button>
-                    <button class="btn" onclick="profileDevices()" id="profile-btn">Profile Devices</button>
-                    <button class="btn" onclick="toggleBgProfile()" id="bg-profile-btn" title="Start background profiling — profiles devices one at a time using multiple workers"><i class="fa-solid fa-rotate"></i> Auto Profile</button>
+                    <button class="btn" onclick="toggleBgProfile()" id="bg-profile-btn" title="Profile devices one at a time"><i class="fa-solid fa-rotate"></i> Profile Devices</button>
                     <select id="profile-time-range" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary);">
                         <option value="-1h">Last 1h</option>
                         <option value="-4h">Last 4h</option>
@@ -1414,40 +1413,23 @@
                     </select>
                 </div>
 
-                <!-- Inline profile progress bar -->
-                <div id="profile-progress" style="display:none; margin-top:8px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 14px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                        <span id="profile-progress-label" style="font-size:13px; font-weight:600;">Profiling devices...</span>
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span id="profile-progress-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
-                            <button id="profile-cancel-btn" onclick="cancelRunningProfile()"
-                                    style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;"
-                                    title="Cancel profiling">Cancel</button>
-                        </div>
-                    </div>
-                    <div class="progress-bar">
-                        <div id="profile-progress-fill" class="progress-fill" style="transition:width .3s;"></div>
-                    </div>
-                    <p id="profile-progress-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Initializing...</p>
-                </div>
-
-                <!-- Background profiling progress bar -->
+                <!-- Profiling progress bar -->
                 <div id="bg-profile-progress" style="display:none; margin-top:8px; background:var(--bg-primary); border:1px solid rgba(33,150,243,0.3); border-radius:6px; padding:10px 14px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                         <span id="bg-profile-label" style="font-size:13px; font-weight:600;">
-                            <i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Background Profiling...
+                            <i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Profiling Devices...
                         </span>
                         <div style="display:flex; align-items:center; gap:10px;">
                             <span id="bg-profile-counts" style="font-size:13px; font-weight:600; color:#42A5F5; font-variant-numeric:tabular-nums;">0 / 0</span>
                             <button id="bg-profile-stop-btn" onclick="stopBgProfile()"
                                     style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;"
-                                    title="Stop background profiling">Stop</button>
+                                    title="Stop profiling">Stop</button>
                         </div>
                     </div>
                     <div class="progress-bar">
                         <div id="bg-profile-fill" class="progress-fill" style="transition:width .3s; background:linear-gradient(90deg, #1E88E5, #42A5F5);"></div>
                     </div>
-                    <p id="bg-profile-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Starting workers...</p>
+                    <p id="bg-profile-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Starting profiler...</p>
                 </div>
 
                 <!-- Group selection toolbar (shown when creating a group) -->
@@ -1663,7 +1645,6 @@
             loadNetworkMaps();
             initializeTheme();
             checkActiveHunts();
-            checkProfileStatus();
             checkBgProfileStatus();
 
             // Restore tracked hunts from localStorage
@@ -1926,11 +1907,7 @@
 
                 if (data.type === 'server_log') {
                     addLog(data.message, data.log_type);
-                } else if (data.type === 'profile_progress') {
-                    // Route to profile progress handler
-                    handleProfileProgress(data);
                 } else if (data.type === 'bg_profile_progress') {
-                    // Route to background profile handler
                     handleBgProfileProgress(data);
                 } else {
                     // Hunt progress — route to per-hunt panel
@@ -3833,147 +3810,7 @@
             }
         }
 
-        async function profileDevices() {
-            const btn = document.getElementById('profile-btn');
-            const timeRange = document.getElementById('profile-time-range').value;
-
-            btn.disabled = true;
-            btn.textContent = 'Profiling...';
-            showProfileProgress('Submitting profile request...', 5);
-            addLog(`Starting device profiling (${timeRange})...`, 'info');
-
-            try {
-                const response = await fetch('/api/network-graph/profile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ time_range: timeRange })
-                });
-
-                const data = await response.json();
-
-                if (data.error) {
-                    hideProfileProgress();
-                    document.getElementById('profile-status').style.display = 'block';
-                    document.getElementById('profile-status').innerHTML =
-                        `<span style="color:#f44336;">Error: ${data.error}</span>`;
-                    addLog(`Device profiling failed: ${data.error}`, 'error');
-                    btn.disabled = false;
-                    btn.textContent = 'Profile Devices';
-                    return;
-                }
-
-                // Profile is now running in the background — progress comes via WebSocket
-                addLog(`Profile ${data.profile_id} started in background`, 'info');
-
-            } catch (error) {
-                hideProfileProgress();
-                addLog(`Device profiling error: ${error.message}`, 'error');
-                btn.disabled = false;
-                btn.textContent = 'Profile Devices';
-            }
-        }
-
-        function showProfileProgress(message, pct) {
-            const pp = document.getElementById('profile-progress');
-            pp.style.display = 'block';
-            document.getElementById('profile-progress-fill').style.width = `${pct}%`;
-            document.getElementById('profile-progress-pct').textContent = `${pct}%`;
-            document.getElementById('profile-progress-msg').textContent = message;
-        }
-
-        function hideProfileProgress() {
-            document.getElementById('profile-progress').style.display = 'none';
-            document.getElementById('profile-progress-fill').style.width = '0%';
-        }
-
-        function handleProfileProgress(data) {
-            const btn = document.getElementById('profile-btn');
-            const statusDiv = document.getElementById('profile-status');
-
-            if (data.stage === 'complete') {
-                // Show completion in progress bar briefly
-                showProfileProgress(data.message, 100);
-                document.getElementById('profile-progress-label').textContent = 'Profiling Complete!';
-                document.getElementById('profile-progress-fill').style.background = '#43a047';
-                document.getElementById('profile-cancel-btn').style.display = 'none';
-
-                // Show result summary in status div
-                const result = data.result || {};
-                const types = result.device_types || {};
-                const typeList = Object.entries(types)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([type, count]) => `<strong>${type}</strong>: ${count}`)
-                    .join(' | ');
-                statusDiv.style.display = 'block';
-                statusDiv.innerHTML = `
-                    Profiled <strong>${result.classified || 0}</strong> / ${result.total_internal || 0} internal devices.
-                    ${result.unclassified || 0} unclassified.<br>
-                    <span style="font-size:13px; opacity:0.8;">${typeList}</span>
-                `;
-
-                addLog(`Device profiling complete: ${result.classified || 0} devices classified`, 'info');
-                btn.disabled = false;
-                btn.textContent = 'Profile Devices';
-
-                // Hide progress bar after a moment, refresh graph + summary
-                setTimeout(() => {
-                    hideProfileProgress();
-                    document.getElementById('profile-progress-fill').style.background = '';
-                    loadNetworkGraph();
-                    loadNetworkSummary();
-                }, 2500);
-
-            } else if (data.stage === 'cancelled') {
-                showProfileProgress(data.message, 0);
-                document.getElementById('profile-progress-label').textContent = 'Profiling Cancelled';
-                document.getElementById('profile-progress-fill').style.background = '#FF9800';
-                document.getElementById('profile-progress-fill').style.width = '100%';
-                document.getElementById('profile-cancel-btn').style.display = 'none';
-                addLog('Device profiling cancelled', 'warning');
-                btn.disabled = false;
-                btn.textContent = 'Profile Devices';
-                setTimeout(() => {
-                    hideProfileProgress();
-                    document.getElementById('profile-progress-fill').style.background = '';
-                }, 3000);
-
-            } else if (data.stage === 'error') {
-                showProfileProgress(data.message, 0);
-                document.getElementById('profile-progress-label').textContent = 'Profiling Failed';
-                document.getElementById('profile-progress-fill').style.background = '#e53935';
-                document.getElementById('profile-cancel-btn').style.display = 'none';
-                addLog(`Device profiling failed: ${data.message}`, 'error');
-                btn.disabled = false;
-                btn.textContent = 'Profile Devices';
-                setTimeout(() => {
-                    hideProfileProgress();
-                    document.getElementById('profile-progress-fill').style.background = '';
-                }, 5000);
-
-            } else {
-                // In progress
-                showProfileProgress(data.message, data.progress);
-                document.getElementById('profile-progress-label').textContent = 'Profiling Devices...';
-                document.getElementById('profile-cancel-btn').style.display = '';
-                btn.disabled = true;
-                btn.textContent = 'Profiling...';
-            }
-        }
-
-        async function checkProfileStatus() {
-            try {
-                const resp = await fetch('/api/network-graph/profile/status');
-                const status = await resp.json();
-                if (status.running) {
-                    showProfileProgress(status.message || 'Running...', status.progress || 0);
-                    document.getElementById('profile-btn').disabled = true;
-                    document.getElementById('profile-btn').textContent = 'Profiling...';
-                    addLog(`Reconnected to running profile: ${status.profile_id}`, 'info');
-                }
-            } catch(e) {}
-        }
-
-        // -- Background profiling functions ------------------------------------
+        // -- Profiling functions --------------------------------------------------
         let bgProfileRunning = false;
 
         async function toggleBgProfile() {
@@ -3995,28 +3832,28 @@
                 const response = await fetch('/api/network-graph/profile/background/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ time_range: timeRange, num_workers: 16 })
+                    body: JSON.stringify({ time_range: timeRange, num_workers: 1 })
                 });
 
                 const data = await response.json();
                 if (data.error) {
                     btn.disabled = false;
-                    btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
-                    addLog(`Background profiling error: ${data.error}`, 'error');
+                    btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
+                    addLog(`Profiling error: ${data.error}`, 'error');
                     return;
                 }
 
                 bgProfileRunning = true;
-                btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Auto Profile';
+                btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Profiling';
                 btn.disabled = false;
                 btn.style.background = '#e53935';
-                showBgProfileProgress('Starting workers...', 0, 0, 0);
-                addLog(`Background profiling started (${data.num_workers} workers)`, 'info');
+                showBgProfileProgress('Starting profiler...', 0, 0, 0);
+                addLog(`Profiling started (${data.num_workers} workers)`, 'info');
 
             } catch (error) {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
-                addLog(`Background profiling error: ${error.message}`, 'error');
+                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
+                addLog(`Profiling error: ${error.message}`, 'error');
             }
         }
 
@@ -4027,14 +3864,14 @@
 
             try {
                 await fetch('/api/network-graph/profile/background/stop', { method: 'POST' });
-                addLog('Background profiling stopped', 'info');
+                addLog('Profiling stopped', 'info');
             } catch (e) {
-                addLog('Failed to stop background profiling', 'error');
+                addLog('Failed to stop profiling', 'error');
             }
 
             bgProfileRunning = false;
             btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
+            btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
             btn.style.background = '';
             setTimeout(() => {
                 hideBgProfileProgress();
@@ -4066,13 +3903,13 @@
                     result.profiled || 0, result.total || 0
                 );
                 document.getElementById('bg-profile-label').innerHTML =
-                    '<i class="fa-solid fa-check" style="color:#43a047; margin-right:6px;"></i>Background Profiling Complete';
+                    '<i class="fa-solid fa-check" style="color:#43a047; margin-right:6px;"></i>Profiling Complete';
                 document.getElementById('bg-profile-fill').style.background = '#43a047';
                 document.getElementById('bg-profile-stop-btn').style.display = 'none';
-                addLog(`Background profiling complete: ${result.newly_profiled || 0} new, ${result.failed || 0} failed`, 'info');
+                addLog(`Profiling complete: ${result.newly_profiled || 0} new, ${result.failed || 0} failed`, 'info');
 
                 bgProfileRunning = false;
-                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
+                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
                 btn.style.background = '';
                 btn.disabled = false;
 
@@ -4080,7 +3917,7 @@
                     hideBgProfileProgress();
                     document.getElementById('bg-profile-fill').style.background = '';
                     document.getElementById('bg-profile-label').innerHTML =
-                        '<i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Background Profiling...';
+                        '<i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Profiling Devices...';
                     document.getElementById('bg-profile-stop-btn').style.display = '';
                     loadNetworkGraph();
                     loadNetworkSummary();
@@ -4088,27 +3925,27 @@
 
             } else if (data.stage === 'cancelled') {
                 bgProfileRunning = false;
-                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
+                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
                 btn.style.background = '';
                 btn.disabled = false;
-                addLog('Background profiling cancelled', 'warning');
+                addLog('Profiling cancelled', 'warning');
                 setTimeout(() => hideBgProfileProgress(), 2000);
 
             } else if (data.stage === 'error') {
                 showBgProfileProgress(data.message, 0, 0, 0);
                 document.getElementById('bg-profile-label').innerHTML =
-                    '<i class="fa-solid fa-exclamation-triangle" style="color:#e53935; margin-right:6px;"></i>Background Profiling Failed';
+                    '<i class="fa-solid fa-exclamation-triangle" style="color:#e53935; margin-right:6px;"></i>Profiling Failed';
                 document.getElementById('bg-profile-stop-btn').style.display = 'none';
-                addLog(`Background profiling failed: ${data.message}`, 'error');
+                addLog(`Profiling failed: ${data.message}`, 'error');
 
                 bgProfileRunning = false;
-                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Auto Profile';
+                btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Profile Devices';
                 btn.style.background = '';
                 btn.disabled = false;
                 setTimeout(() => {
                     hideBgProfileProgress();
                     document.getElementById('bg-profile-label').innerHTML =
-                        '<i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Background Profiling...';
+                        '<i class="fa-solid fa-rotate fa-spin" style="color:#42A5F5; margin-right:6px;"></i>Profiling Devices...';
                     document.getElementById('bg-profile-stop-btn').style.display = '';
                 }, 5000);
 
@@ -4154,7 +3991,7 @@
                 if (status.running) {
                     bgProfileRunning = true;
                     const btn = document.getElementById('bg-profile-btn');
-                    btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Auto Profile';
+                    btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Profiling';
                     btn.style.background = '#e53935';
                     showBgProfileProgress(
                         status.message || 'Running...',
@@ -4162,7 +3999,7 @@
                         status.profiled || 0,
                         status.total || 0
                     );
-                    addLog(`Reconnected to background profiling: ${status.profile_id}`, 'info');
+                    addLog(`Reconnected to profiling: ${status.profile_id}`, 'info');
                 }
             } catch(e) {}
         }

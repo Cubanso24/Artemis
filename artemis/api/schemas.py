@@ -47,7 +47,7 @@ class ProfileRequest(BaseModel):
 class BackgroundProfileRequest(BaseModel):
     """Request for background per-device profiling."""
     time_range: str = "-24h"
-    num_workers: int = 16
+    num_workers: int = 1
 
 
 class LanGroupCreate(BaseModel):
