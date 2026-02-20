@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from artemis.managers import hunt_manager, plugin_manager
+from artemis.managers import plugin_manager
 from artemis.ws import active_connections
 
 logger = logging.getLogger("artemis.api.routes_core")
@@ -23,27 +23,15 @@ async def get_status():
     """Get server status."""
     return {
         'status': 'running',
-        'active_hunts': len([
-            h for h in hunt_manager.active_hunts.values()
-            if h['status'] == 'running'
-        ]),
         'plugins': plugin_manager.list_plugins(),
     }
 
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket for real-time hunt updates."""
+    """WebSocket for real-time progress updates."""
     await websocket.accept()
     active_connections.append(websocket)
-
-    # Send current state of any running hunts so reconnecting clients resume
-    try:
-        for hunt_id, state in hunt_manager.active_hunts.items():
-            if state.get('status') == 'running' and state.get('last_progress'):
-                await websocket.send_json(state['last_progress'])
-    except Exception as e:
-        logger.warning(f"Failed to send hunt state on WS reconnect: {e}")
 
     try:
         while True:

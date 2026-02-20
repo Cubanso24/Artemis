@@ -3,14 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Artemis Threat Hunting Platform</title>
+    <title>Artemis Network Mapping Platform</title>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css" />
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
         :root {
             --bg-primary: #0f1117;
@@ -264,73 +261,6 @@
             border-radius: 3px;
         }
 
-        .collection-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-top: 15px;
-        }
-
-        .collection-stat {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px;
-            text-align: center;
-        }
-
-        .collection-stat .stat-label {
-            font-size: 11px;
-            text-transform: uppercase;
-            opacity: 0.7;
-            margin-bottom: 4px;
-        }
-
-        .collection-stat .stat-value {
-            font-size: 1.4em;
-            font-weight: 700;
-            color: var(--accent-primary);
-        }
-
-        .collection-stat .stat-value.done {
-            color: var(--success);
-        }
-
-        .query-tracker {
-            margin-top: 15px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 8px;
-        }
-
-        .query-chip {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 12px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            font-size: 13px;
-        }
-
-        .query-chip.done {
-            border-color: var(--success);
-        }
-
-        .query-chip .q-name {
-            opacity: 0.8;
-        }
-
-        .query-chip .q-count {
-            font-weight: 700;
-            color: var(--accent-primary);
-        }
-
-        .query-chip.done .q-count {
-            color: var(--success);
-        }
-
         .btn-danger {
             background: var(--danger);
         }
@@ -370,62 +300,6 @@
         .map-item .map-actions {
             display: flex;
             gap: 8px;
-        }
-
-        .hunt-list {
-            list-style: none;
-        }
-
-        .hunt-item {
-            background: var(--bg-primary);
-            padding: 12px 16px;
-            margin-bottom: 8px;
-            border-radius: 4px;
-            border-left: 3px solid var(--accent-primary);
-            cursor: pointer;
-            transition: background 0.15s;
-        }
-
-        .hunt-item:hover {
-            background: var(--bg-tertiary);
-        }
-
-        .hunt-item .hunt-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-        }
-
-        .hunt-item .hunt-id {
-            font-weight: 600;
-            color: var(--accent-primary);
-            font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
-            font-size: 13px;
-        }
-
-        .hunt-item .hunt-status {
-            padding: 2px 10px;
-            border-radius: 3px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }
-
-        .status-completed {
-            background: rgba(63,185,80,0.15);
-            color: var(--success);
-        }
-
-        .status-running {
-            background: rgba(210,153,34,0.15);
-            color: var(--warning);
-        }
-
-        .status-failed {
-            background: rgba(248,81,73,0.15);
-            color: var(--danger);
         }
 
         .finding-item {
@@ -834,15 +708,6 @@
             border-color: var(--success);
         }
 
-        /* Template selector */
-        .template-controls {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 16px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-
         /* Keyboard shortcuts overlay */
         .shortcuts-overlay {
             position: fixed;
@@ -1022,34 +887,6 @@
             margin-top: 8px;
         }
 
-        /* Flatpickr overrides to match Artemis dark theme */
-        .flatpickr-calendar.dark {
-            background: var(--bg-secondary);
-            border-color: var(--border-color);
-            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-        }
-        .flatpickr-calendar.dark .flatpickr-month,
-        .flatpickr-calendar.dark .flatpickr-weekdays,
-        .flatpickr-calendar.dark .flatpickr-weekday {
-            background: var(--bg-secondary);
-            color: var(--text-secondary);
-        }
-        .flatpickr-calendar.dark .flatpickr-day {
-            color: var(--text-primary);
-        }
-        .flatpickr-calendar.dark .flatpickr-day.selected {
-            background: var(--accent-primary);
-            border-color: var(--accent-primary);
-        }
-        .flatpickr-calendar.dark .flatpickr-day:hover {
-            background: var(--bg-tertiary);
-        }
-        .flatpickr-calendar.dark .numInputWrapper span {
-            border-color: var(--border-color);
-        }
-        .flatpickr-calendar.dark .flatpickr-time input {
-            color: var(--text-primary);
-        }
 
     </style>
 </head>
@@ -1065,24 +902,16 @@
             <h2>Keyboard Shortcuts</h2>
             <ul class="shortcut-list">
                 <li class="shortcut-item">
-                    <span>Go to Dashboard</span>
-                    <span class="shortcut-key">D</span>
-                </li>
-                <li class="shortcut-item">
-                    <span>New Hunt</span>
-                    <span class="shortcut-key">N</span>
-                </li>
-                <li class="shortcut-item">
-                    <span>Hunt History</span>
-                    <span class="shortcut-key">H</span>
-                </li>
-                <li class="shortcut-item">
                     <span>Network Graph</span>
                     <span class="shortcut-key">G</span>
                 </li>
                 <li class="shortcut-item">
                     <span>Network Maps</span>
                     <span class="shortcut-key">M</span>
+                </li>
+                <li class="shortcut-item">
+                    <span>Sigma Rules</span>
+                    <span class="shortcut-key">S</span>
                 </li>
                 <li class="shortcut-item">
                     <span>Plugins</span>
@@ -1111,23 +940,11 @@
 
     <div class="container">
         <header>
-            <h1><i class="fa-solid fa-crosshairs" style="margin-right:8px; opacity:0.7;"></i>ARTEMIS</h1>
-            <span style="font-size:12px; color:var(--text-secondary); opacity:0.6;">Threat Hunting Platform</span>
+            <h1><i class="fa-solid fa-diagram-project" style="margin-right:8px; opacity:0.7;"></i>ARTEMIS</h1>
+            <span style="font-size:12px; color:var(--text-secondary); opacity:0.6;">Network Mapping Platform</span>
         </header>
 
         <div class="stats">
-            <div class="stat-card">
-                <h3 id="stat-hunts">0</h3>
-                <p>Total Hunts</p>
-            </div>
-            <div class="stat-card">
-                <h3 id="stat-findings">0</h3>
-                <p>Total Findings</p>
-            </div>
-            <div class="stat-card">
-                <h3 id="stat-active">0</h3>
-                <p>Active Hunts</p>
-            </div>
             <div class="stat-card">
                 <h3 id="stat-plugins">0</h3>
                 <p>Plugins Enabled</p>
@@ -1135,211 +952,23 @@
         </div>
 
         <div class="tabs">
-            <button class="tab active" onclick="showTab('dashboard')">Dashboard</button>
-            <button class="tab" onclick="showTab('new-hunt')">New Hunt</button>
-            <button class="tab" onclick="showTab('history')">Hunt History</button>
-            <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
-            <button class="tab" onclick="showTab('network-graph-tab')">Network Graph</button>
+            <button class="tab active" onclick="showTab('network-graph-tab')">Network Graph</button>
             <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
+            <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
             <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
-            <button class="tab" onclick="showTab('timeline-tab')">Timeline</button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
 
-        <!-- Dashboard Tab -->
-        <div id="dashboard" class="tab-content active">
-            <div class="card">
-                <h2>Quick Actions</h2>
-                <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <button class="btn" onclick="quickHunt('-1h')"><i class="fa-solid fa-clock"></i> Last Hour</button>
-                    <button class="btn" onclick="quickHunt('-24h')"><i class="fa-solid fa-clock-rotate-left"></i> Last 24h</button>
-                    <button class="btn" onclick="quickHunt('-7d')"><i class="fa-solid fa-calendar-week"></i> Last 7d</button>
-                </div>
-            </div>
 
-            <div class="card">
-                <h2>Recent Hunts</h2>
-                <ul id="recent-hunts" class="hunt-list">
-                    <li>Loading...</li>
-                </ul>
-            </div>
-        </div>
 
-        <!-- New Hunt Tab -->
-        <div id="new-hunt" class="tab-content">
-            <div class="card">
-                <h2>Configure New Threat Hunt</h2>
-
-                <!-- Hunt Templates -->
-                <div class="template-controls">
-                    <select id="hunt-template" onchange="loadHuntTemplate()">
-                        <option value="">-- Load Hunt Template --</option>
-                    </select>
-                    <button type="button" class="btn btn-secondary" onclick="saveHuntTemplate()">Save as Template</button>
-                    <button type="button" class="btn btn-secondary" onclick="deleteHuntTemplate()">Delete Template</button>
-                </div>
-
-                <form id="hunt-form">
-                    <div class="form-group">
-                        <label for="time-range">Time Range</label>
-                        <select id="time-range" onchange="toggleCustomTimeRange()">
-                            <option value="-1h">Last Hour</option>
-                            <option value="-4h">Last 4 Hours</option>
-                            <option value="-12h">Last 12 Hours</option>
-                            <option value="-24h">Last 24 Hours</option>
-                            <option value="-7d">Last 7 Days</option>
-                            <option value="-30d">Last 30 Days</option>
-                            <option value="custom">Custom Date/Time Range</option>
-                        </select>
-                    </div>
-
-                    <div id="custom-time-range" style="display:none;">
-                        <div class="form-group" style="display:flex; gap:12px;">
-                            <div style="flex:1;">
-                                <label for="earliest-time">Start Date/Time</label>
-                                <input type="text" id="earliest-time" placeholder="Click to pick start..." readonly style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px; cursor:pointer;">
-                            </div>
-                            <div style="flex:1;">
-                                <label for="latest-time">End Date/Time</label>
-                                <input type="text" id="latest-time" placeholder="Click to pick end..." readonly style="width:100%; padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px; cursor:pointer;">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="hunt-mode">Hunt Mode</label>
-                        <select id="hunt-mode">
-                            <option value="PARALLEL">Parallel (Fast - all agents at once)</option>
-                            <option value="ADAPTIVE">Adaptive (Smart - progressive deployment)</option>
-                            <option value="SEQUENTIAL">Sequential (Thorough - one by one)</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="storage-mode">Log Storage</label>
-                        <select id="storage-mode">
-                            <option value="ram">RAM (faster, uses more memory)</option>
-                            <option value="sqlite">SQLite (slower, low memory usage)</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="target-hosts">Target Hosts (optional)</label>
-                        <input type="text" id="target-hosts" placeholder="e.g., sensor01, 10.0.1.5, fw-edge  (comma-separated, blank = all hosts)">
-                        <small style="color:var(--text-secondary); font-size:11px; margin-top:4px; display:block;">
-                            Filter to specific sensors or hosts. Useful for newly installed sensors to update the network map.
-                        </small>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="description">Description (optional)</label>
-                        <textarea id="description" rows="3" placeholder="e.g., Investigating suspicious activity on subnet 10.0.1.0/24"></textarea>
-                    </div>
-
-                    <button type="submit" class="btn">Start Hunt</button>
-                </form>
-
-                <!-- Multi-hunt progress tracker -->
-                <div id="active-hunts-container" style="margin-top:16px;"></div>
-
-                <!-- Queue display -->
-                <div id="queue-container" style="display:none; margin-top:12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
-                    <h4 style="margin:0 0 8px 0; font-size:12px; text-transform:uppercase; opacity:0.6;">Queued Hunts</h4>
-                    <div id="queue-list"></div>
-                </div>
-            </div>
-
-            <!-- Continuous Hunting Card -->
-            <div class="card" style="margin-top:16px;">
-                <h2>Continuous Hunting</h2>
-                <p style="color:var(--text-secondary); font-size:13px; margin-bottom:16px;">
-                    Automatically run hunts on a recurring schedule. Each cycle collects data for the lookback window and runs all hunting agents.
-                </p>
-
-                <div id="continuous-config">
-                    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
-                        <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
-                            <label for="cont-interval">Interval (minutes)</label>
-                            <input type="number" id="cont-interval" value="15" min="5" max="1440" style="width:100%;">
-                        </div>
-                        <div class="form-group" style="flex:1; min-width:140px; margin-bottom:0;">
-                            <label for="cont-lookback">Lookback (minutes)</label>
-                            <input type="number" id="cont-lookback" value="20" min="5" max="1440" style="width:100%;">
-                        </div>
-                        <div class="form-group" style="flex:1; min-width:160px; margin-bottom:0;">
-                            <label for="cont-mode">Mode</label>
-                            <select id="cont-mode" style="width:100%;">
-                                <option value="PARALLEL">Parallel</option>
-                                <option value="ADAPTIVE">Adaptive</option>
-                                <option value="SEQUENTIAL">Sequential</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-group" style="margin-bottom:12px;">
-                        <label for="cont-target-hosts">Target Hosts (optional)</label>
-                        <input type="text" id="cont-target-hosts" placeholder="e.g., sensor01, 10.0.1.5  (comma-separated, blank = all hosts)">
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <button class="btn" id="cont-start-btn" onclick="startContinuousHunting()">
-                            <i class="fa-solid fa-play"></i> Start Continuous Hunting
-                        </button>
-                        <button class="btn btn-danger" id="cont-stop-btn" onclick="stopContinuousHunting()" style="display:none;">
-                            <i class="fa-solid fa-stop"></i> Stop
-                        </button>
-                    </div>
-                </div>
-
-                <div id="continuous-status" style="display:none; margin-top:14px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:14px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <span style="font-weight:600; font-size:13px;">
-                            <i class="fa-solid fa-rotate" style="color:var(--success); animation: spin 2s linear infinite;"></i>
-                            Continuous Hunting Active
-                        </span>
-                        <span id="cont-cycle-count" style="font-size:12px; color:var(--text-secondary);"></span>
-                    </div>
-                    <div id="cont-status-details" style="font-size:12px; color:var(--text-secondary); line-height:1.8;"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- History Tab -->
-        <div id="history" class="tab-content">
-            <div class="card">
-                <h2>Hunt History</h2>
-
-                <!-- Search Bar -->
-                <input type="text" class="search-bar" id="history-search"
-                       placeholder="Search hunts by ID, description, or findings..."
-                       oninput="filterHunts()">
-
-                <!-- Filter Buttons -->
-                <div class="filter-buttons">
-                    <button class="filter-btn active" data-filter="all" onclick="filterBySeverity(this, 'all')">All</button>
-                    <button class="filter-btn" data-filter="critical" onclick="filterBySeverity(this, 'critical')">Critical</button>
-                    <button class="filter-btn" data-filter="high" onclick="filterBySeverity(this, 'high')">High</button>
-                    <button class="filter-btn" data-filter="medium" onclick="filterBySeverity(this, 'medium')">Medium</button>
-                    <button class="filter-btn" data-filter="low" onclick="filterBySeverity(this, 'low')">Low</button>
-                    <button class="filter-btn" data-filter="clean" onclick="filterBySeverity(this, 'clean')">Clean (0 findings)</button>
-                </div>
-
-                <ul id="hunt-history" class="hunt-list">
-                    <li>Loading...</li>
-                </ul>
-            </div>
-
-            <div id="hunt-details" class="card" style="display:none;">
-                <h2>Hunt Details</h2>
-                <div id="hunt-details-content"></div>
-            </div>
-        </div>
 
         <!-- Sigma Rules Tab -->
         <div id="sigma-tab" class="tab-content">
             <div class="card">
                 <h2>Sigma Detection Rules</h2>
                 <p style="margin-bottom:15px; opacity:0.8;">
-                    Sigma rules are automatically matched against collected hunt data. Place <code>.yml</code> rule files in the <code>sigma_rules/</code> directory.
+                    Sigma rules are automatically matched against collected data. Place <code>.yml</code> rule files in the <code>sigma_rules/</code> directory.
                 </p>
 
                 <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
@@ -1487,7 +1116,7 @@
             <div class="card">
                 <h2>Network Map Management</h2>
                 <p style="margin-bottom:15px; opacity:0.8;">
-                    Each hunt adds data to the current network map. Save snapshots before resetting, or load old maps to review.
+                    Each profiling run adds data to the current network map. Save snapshots before resetting, or load old maps to review.
                 </p>
 
                 <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
@@ -1518,7 +1147,7 @@
             <div class="card">
                 <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
                 <p style="color:var(--text-secondary); margin-bottom:12px;">
-                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs from hunt findings.
+                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs discovered during profiling.
                 </p>
 
                 <!-- Background worker status -->
@@ -1582,29 +1211,6 @@
             </div>
         </div>
 
-        <!-- Timeline Tab -->
-        <div id="timeline-tab" class="tab-content">
-            <div class="card">
-                <h2><i class="fa-solid fa-timeline"></i> Findings Timeline</h2>
-                <p style="color:var(--text-secondary); margin-bottom:12px;">
-                    Chronological view of findings across all hunts. Click a finding to view details.
-                </p>
-                <div style="display:flex; gap:8px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
-                    <label style="font-size:12px; color:var(--text-secondary);">Filter:</label>
-                    <select id="tl-severity-filter" onchange="renderTimeline()" style="padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                        <option value="all">All Severities</option>
-                        <option value="critical">Critical Only</option>
-                        <option value="high">High+</option>
-                        <option value="medium">Medium+</option>
-                    </select>
-                    <button class="btn btn-secondary" onclick="loadTimeline()" style="padding:6px 12px; font-size:12px;">
-                        <i class="fa-solid fa-arrows-rotate"></i> Refresh
-                    </button>
-                </div>
-            </div>
-            <div id="timeline-container" style="margin-top:16px;"></div>
-        </div>
-
         <div id="logs" class="tab-content">
             <div class="card">
                 <h2>Live System Logs</h2>
@@ -1616,13 +1222,8 @@
     <script>
         // WebSocket connection
         let ws = null;
-        let trackedHunts = {};  // hunt_id -> { status, progress, ... }
         let networkGraph = null;
         let networkGraphData = null;  // Store current graph data for search
-        let allHunts = [];  // Store all hunts for filtering
-
-        // Backward compat shim: some code still references currentHuntId
-        let currentHuntId = null;
 
         // LAN group selection mode state
         let _groupSelectMode = false;
@@ -1639,38 +1240,20 @@
         document.addEventListener('DOMContentLoaded', () => {
             connectWebSocket();
             loadStats();
-            loadRecentHunts();
             loadPlugins();
-            loadHuntTemplates();
             loadNetworkMaps();
             initializeTheme();
-            checkActiveHunts();
             checkBgProfileStatus();
 
-            // Restore tracked hunts from localStorage
-            try {
-                const saved = JSON.parse(localStorage.getItem('trackedHunts') || '{}');
-                for (const [hid, info] of Object.entries(saved)) {
-                    if (info.status === 'running' || info.status === 'queued') {
-                        trackedHunts[hid] = info;
-                    }
-                }
-            } catch(e) {}
-
-            // Setup form handler
-            document.getElementById('hunt-form').addEventListener('submit', startHunt);
+            // Show network graph tab by default
+            showTab('network-graph-tab');
 
             // Refresh data every 10 seconds
             setInterval(loadStats, 10000);
-            setInterval(loadRecentHunts, 10000);
 
             // Setup keyboard shortcuts
             document.addEventListener('keydown', handleKeyboardShortcut);
         });
-
-        function saveTrackedHunts() {
-            localStorage.setItem('trackedHunts', JSON.stringify(trackedHunts));
-        }
 
         // Theme management
         function initializeTheme() {
@@ -1701,14 +1284,8 @@
             }
 
             switch(e.key.toLowerCase()) {
-                case 'd':
-                    showTabByName('dashboard');
-                    break;
-                case 'n':
-                    showTabByName('new-hunt');
-                    break;
-                case 'h':
-                    showTabByName('history');
+                case 'g':
+                    showTabByName('network-graph-tab');
                     break;
                 case 's':
                     showTabByName('sigma-tab');
@@ -1768,77 +1345,6 @@
             });
         }
 
-        // Hunt templates
-        function loadHuntTemplates() {
-            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
-            const select = document.getElementById('hunt-template');
-            select.innerHTML = '<option value="">-- Load Hunt Template --</option>';
-
-            Object.keys(templates).forEach(name => {
-                const option = document.createElement('option');
-                option.value = name;
-                option.textContent = name;
-                select.appendChild(option);
-            });
-        }
-
-        function saveHuntTemplate() {
-            const name = prompt('Enter template name:');
-            if (!name) return;
-
-            const template = {
-                timeRange: document.getElementById('time-range').value,
-                mode: document.getElementById('hunt-mode').value,
-                description: document.getElementById('description').value,
-                earliestTime: document.getElementById('earliest-time').value,
-                latestTime: document.getElementById('latest-time').value,
-            };
-
-            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
-            templates[name] = template;
-            localStorage.setItem('huntTemplates', JSON.stringify(templates));
-
-            loadHuntTemplates();
-            addLog(`Saved template: ${name}`, 'info');
-        }
-
-        function loadHuntTemplate() {
-            const select = document.getElementById('hunt-template');
-            const name = select.value;
-            if (!name) return;
-
-            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
-            const template = templates[name];
-
-            if (template) {
-                document.getElementById('time-range').value = template.timeRange;
-                document.getElementById('hunt-mode').value = template.mode;
-                document.getElementById('description').value = template.description;
-                if (template.earliestTime && fpEarliest) fpEarliest.setDate(template.earliestTime, true);
-                if (template.latestTime && fpLatest) fpLatest.setDate(template.latestTime, true);
-                toggleCustomTimeRange();
-                addLog(`Loaded template: ${name}`, 'info');
-            }
-        }
-
-        function deleteHuntTemplate() {
-            const select = document.getElementById('hunt-template');
-            const name = select.value;
-            if (!name) {
-                alert('Please select a template to delete');
-                return;
-            }
-
-            if (!confirm(`Delete template "${name}"?`)) return;
-
-            const templates = JSON.parse(localStorage.getItem('huntTemplates') || '{}');
-            delete templates[name];
-            localStorage.setItem('huntTemplates', JSON.stringify(templates));
-
-            loadHuntTemplates();
-            addLog(`Deleted template: ${name}`, 'info');
-        }
-
         // Copy to clipboard
         function copyToClipboard(text, button) {
             navigator.clipboard.writeText(text).then(() => {
@@ -1857,44 +1363,6 @@
             });
         }
 
-        // Search and filter hunts
-        function filterHunts() {
-            const searchTerm = document.getElementById('history-search').value.toLowerCase();
-            const huntItems = document.querySelectorAll('#hunt-history .hunt-item');
-
-            huntItems.forEach(item => {
-                const text = item.textContent.toLowerCase();
-                if (text.includes(searchTerm)) {
-                    item.style.display = '';
-                } else {
-                    item.style.display = 'none';
-                }
-            });
-        }
-
-        function filterBySeverity(button, severity) {
-            // Update active button
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            button.classList.add('active');
-
-            const huntItems = document.querySelectorAll('#hunt-history .hunt-item');
-
-            huntItems.forEach(item => {
-                if (severity === 'all') {
-                    item.style.display = '';
-                } else if (severity === 'clean') {
-                    const findingsText = item.querySelector('div').textContent;
-                    const findings = parseInt(findingsText.match(/(\d+) findings/)?.[1] || '0');
-                    item.style.display = findings === 0 ? '' : 'none';
-                } else {
-                    // Filter by severity would require hunt data - simplified for now
-                    item.style.display = '';
-                }
-            });
-        }
-
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
 
@@ -1909,12 +1377,6 @@
                     addLog(data.message, data.log_type);
                 } else if (data.type === 'bg_profile_progress') {
                     handleBgProfileProgress(data);
-                } else {
-                    // Hunt progress — route to per-hunt panel
-                    handleProgress(data);
-                    if (data.stage === 'init' || data.stage === 'complete' || data.stage === 'error') {
-                        refreshQueueDisplay();
-                    }
                 }
             };
 
@@ -1924,238 +1386,14 @@
             };
         }
 
-        async function checkActiveHunts() {
-            try {
-                const response = await fetch('/api/hunts/active');
-                const active = await response.json();
-
-                for (const hunt of active) {
-                    trackedHunts[hunt.hunt_id] = {
-                        status: hunt.status,
-                        progress: hunt.progress || 0,
-                    };
-                    ensureHuntPanel(hunt.hunt_id);
-                    if (hunt.status === 'running' && hunt.last_progress) {
-                        handleProgress({ ...hunt.last_progress, hunt_id: hunt.hunt_id });
-                    } else if (hunt.status === 'queued') {
-                        handleProgress({
-                            hunt_id: hunt.hunt_id,
-                            stage: 'queued',
-                            message: `Queued — position ${hunt.queue_position || '?'}`,
-                            progress: 0,
-                        });
-                    }
-                    addLog(`Reconnected to ${hunt.status} hunt: ${hunt.hunt_id}`, 'info');
-                }
-                saveTrackedHunts();
-                refreshQueueDisplay();
-            } catch (error) {
-                console.error('Error checking active hunts:', error);
-            }
-        }
-
         async function loadStats() {
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
-
-                document.getElementById('stat-active').textContent = data.active_hunts;
                 document.getElementById('stat-plugins').textContent =
                     data.plugins.filter(p => p.enabled).length;
-
-                // Load hunt count
-                const hunts = await fetch('/api/hunts?limit=1000');
-                const huntsData = await hunts.json();
-                document.getElementById('stat-hunts').textContent = huntsData.length;
-
-                const totalFindings = huntsData.reduce((sum, h) => sum + (h.total_findings || 0), 0);
-                document.getElementById('stat-findings').textContent = totalFindings;
-
             } catch (error) {
                 console.error('Error loading stats:', error);
-            }
-        }
-
-        async function loadRecentHunts() {
-            try {
-                const response = await fetch('/api/hunts?limit=50');
-                const hunts = await response.json();
-                allHunts = hunts;
-
-                // Dashboard: show last 5
-                const recentList = document.getElementById('recent-hunts');
-                recentList.innerHTML = '';
-                if (hunts.length === 0) {
-                    recentList.innerHTML = '<li>No hunts yet. Start your first hunt!</li>';
-                } else {
-                    hunts.slice(0, 5).forEach(hunt => {
-                        recentList.appendChild(createHuntItem(hunt, false));
-                    });
-                }
-
-                // History tab: show all with delete buttons
-                const historyList = document.getElementById('hunt-history');
-                historyList.innerHTML = '';
-                if (hunts.length === 0) {
-                    historyList.innerHTML = '<li>No hunts yet.</li>';
-                } else {
-                    hunts.forEach(hunt => {
-                        historyList.appendChild(createHuntItem(hunt, true));
-                    });
-                }
-
-            } catch (error) {
-                console.error('Error loading hunts:', error);
-            }
-        }
-
-        function createHuntItem(hunt, showDelete) {
-            const li = document.createElement('li');
-            li.className = 'hunt-item';
-            li.setAttribute('data-hunt-id', hunt.hunt_id);
-
-            li.innerHTML = `
-                <div class="hunt-header">
-                    <span class="hunt-id" style="cursor:pointer;" onclick="viewHuntDetails('${hunt.hunt_id}')">${hunt.hunt_id}</span>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <span class="hunt-status status-${hunt.status}">${hunt.status}</span>
-                        ${showDelete && hunt.status !== 'running' ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteHunt('${hunt.hunt_id}')">Delete</button>` : ''}
-                    </div>
-                </div>
-                <div style="cursor:pointer;" onclick="viewHuntDetails('${hunt.hunt_id}')">
-                    <strong>${hunt.total_findings || 0}</strong> findings |
-                    Confidence: <strong>${(hunt.overall_confidence || 0).toFixed(2)}</strong> |
-                    ${hunt.time_range} |
-                    ${new Date(hunt.start_time).toLocaleString()}
-                </div>
-                ${hunt.description ? `<div style="margin-top:5px;opacity:0.8;">${hunt.description}</div>` : ''}
-            `;
-
-            return li;
-        }
-
-        async function deleteHunt(huntId) {
-            if (!confirm(`Delete hunt "${huntId}" and all its findings? This cannot be undone.`)) return;
-
-            try {
-                const response = await fetch(`/api/hunts/${huntId}`, { method: 'DELETE' });
-                const result = await response.json();
-
-                if (result.error) {
-                    alert(result.error);
-                    return;
-                }
-
-                addLog(`Deleted hunt: ${huntId}`, 'info');
-                loadRecentHunts();
-                loadStats();
-
-                // Hide details panel if we deleted the currently viewed hunt
-                document.getElementById('hunt-details').style.display = 'none';
-
-            } catch (error) {
-                console.error('Error deleting hunt:', error);
-                addLog(`Error deleting hunt: ${error.message}`, 'error');
-            }
-        }
-
-        async function viewHuntDetails(huntId) {
-            try {
-                const response = await fetch(`/api/hunts/${huntId}`);
-                const hunt = await response.json();
-
-                const detailsDiv = document.getElementById('hunt-details');
-                const contentDiv = document.getElementById('hunt-details-content');
-
-                let html = `
-                    <h3>${hunt.hunt_id}
-                        <button class="copy-btn" onclick="copyToClipboard('${hunt.hunt_id}', this)">📋 Copy ID</button>
-                        <span style="margin-left:10px; display:inline-flex; gap:4px;">
-                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'html')"><i class="fa-solid fa-file-code"></i> HTML</button>
-                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'csv')"><i class="fa-solid fa-file-csv"></i> CSV</button>
-                            <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="exportHunt('${hunt.hunt_id}', 'json')"><i class="fa-solid fa-file-arrow-down"></i> JSON</button>
-                        </span>
-                    </h3>
-                    <p><strong>Time Range:</strong> ${hunt.time_range}</p>
-                    <p><strong>Mode:</strong> ${hunt.mode}</p>
-                    <p><strong>Status:</strong> ${hunt.status}</p>
-                    <p><strong>Total Findings:</strong> ${hunt.total_findings || 0}</p>
-                    <p><strong>Overall Confidence:</strong> ${(hunt.overall_confidence || 0).toFixed(2)}</p>
-                    ${hunt.description ? `<p><strong>Description:</strong> ${hunt.description}</p>` : ''}
-                    <div style="margin:16px 0; display:flex; gap:8px; align-items:center;">
-                        <button class="btn" style="padding:6px 14px; font-size:12px;" onclick="enrichHunt('${hunt.hunt_id}')">
-                            <i class="fa-solid fa-shield-halved"></i> Enrich All IPs
-                        </button>
-                        <span id="enrich-status-${hunt.hunt_id}" style="font-size:12px; color:var(--text-secondary);"></span>
-                    </div>
-                    <hr style="margin:20px 0;">
-                    <h3>Findings</h3>
-                `;
-
-                // Fetch enrichments for this hunt
-                let huntEnrichments = {};
-                try {
-                    const enrichResp = await fetch(`/api/hunts/${hunt.hunt_id}/enrichments`);
-                    const enrichData = await enrichResp.json();
-                    huntEnrichments = enrichData.results || {};
-                } catch (e) { /* enrichments unavailable, that's fine */ }
-
-                if (hunt.findings && hunt.findings.length > 0) {
-                    // Check for sigma findings
-                    const sigmaFindings = hunt.findings.filter(f => f.agent_name === 'sigma_engine');
-                    const agentFindings = hunt.findings.filter(f => f.agent_name !== 'sigma_engine');
-
-                    if (sigmaFindings.length > 0) {
-                        html += `<div style="background:var(--bg-tertiary); padding:12px 16px; border-radius:5px; margin-bottom:15px; border-left:4px solid #ffc107;">
-                            <strong>${sigmaFindings.length} Sigma rule match${sigmaFindings.length > 1 ? 'es' : ''}</strong> detected.
-                            <button class="btn btn-secondary" style="margin-left:10px; padding:4px 12px; font-size:12px;"
-                                onclick="showTab('sigma-tab'); loadSigmaResults();">View Full Sigma Results</button>
-                        </div>`;
-                    }
-
-                    hunt.findings.forEach(finding => {
-                        // Extract IPs from affected assets with enrichment badges
-                        const assetsWithCopy = finding.affected_assets && finding.affected_assets.length > 0
-                            ? finding.affected_assets.map(asset => {
-                                const ipMatch = asset.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-                                let badge = '';
-                                if (ipMatch && huntEnrichments[ipMatch[0]]) {
-                                    const e = huntEnrichments[ipMatch[0]];
-                                    const vColors = { malicious: '#f85149', suspicious: '#d29922', low_risk: '#58a6ff', clean: '#3fb950', internal: '#8b949e' };
-                                    const vc = vColors[e.verdict] || '#8b949e';
-                                    badge = ` <span style="background:${vc}22; color:${vc}; padding:1px 8px; border-radius:10px; font-size:10px; font-weight:600; border:1px solid ${vc}44; cursor:pointer;" onclick="event.stopPropagation(); lookupFromBadge('${ipMatch[0]}')">${e.verdict.toUpperCase()}</span>`;
-                                }
-                                return `${asset}${badge} <button class="copy-btn" onclick="copyToClipboard('${asset}', this)">📋</button>`;
-                              }).join(' ')
-                            : '';
-
-                        html += `
-                            <div class="finding-item severity-${finding.severity || 'low'}">
-                                <h4>${finding.title || 'Untitled Finding'}</h4>
-                                <p>${finding.description || ''}</p>
-                                <p><strong>Agent:</strong> ${finding.agent_name || 'unknown'}</p>
-                                ${assetsWithCopy ? `<p><strong>Affected:</strong> ${assetsWithCopy}</p>` : ''}
-                                ${finding.mitre_tactics && finding.mitre_tactics.length > 0 ?
-                                    `<p><strong>MITRE Tactics:</strong> ${finding.mitre_tactics.join(', ')}</p>` : ''}
-                                ${finding.mitre_techniques && finding.mitre_techniques.length > 0 ?
-                                    `<p><strong>MITRE Techniques:</strong> ${finding.mitre_techniques.join(', ')}</p>` : ''}
-                                <span class="confidence">Confidence: ${(finding.confidence || 0).toFixed(2)}</span>
-                            </div>
-                        `;
-                    });
-                } else {
-                    html += '<p>No findings - network appears clean!</p>';
-                }
-
-                contentDiv.innerHTML = html;
-                detailsDiv.style.display = 'block';
-
-                // Switch to history tab
-                showTab('history');
-
-            } catch (error) {
-                console.error('Error loading hunt details:', error);
-                addLog(`Error loading hunt details: ${error.message}`, 'error');
             }
         }
 
@@ -2412,7 +1650,7 @@
             const container = document.getElementById('network-graph');
 
             if (!graphData.nodes || graphData.nodes.length === 0) {
-                container.innerHTML = '<p style="text-align:center; padding:50px;">No network nodes yet. Run a hunt with the Network Mapper plugin enabled.</p>';
+                container.innerHTML = '<p style="text-align:center; padding:50px;">No network nodes yet. Run a profile with the Network Mapper plugin enabled.</p>';
                 return;
             }
 
@@ -2997,7 +2235,7 @@
             }
 
             if (intSorted.length === 0 && extSorted.length === 0) {
-                html += '<p style="opacity:0.5; font-size:13px;">No connection details available. Run a hunt to collect data.</p>';
+                html += '<p style="opacity:0.5; font-size:13px;">No connection details available. Run a profile to collect data.</p>';
             }
 
             body.innerHTML = html;
@@ -3239,7 +2477,7 @@
                     <span style="color:#FF9800;"><strong>${data.multi_ip_count}</strong> devices with multiple IPs</span>
                 </div>`;
 
-                // Show multi-IP devices first (most interesting for threat hunting)
+                // Show multi-IP devices first (most interesting for network mapping)
                 if (data.multi_ip_devices && data.multi_ip_devices.length > 0) {
                     html += `<details id="multi-ip-details" open style="margin-bottom:10px; background:var(--bg-tertiary); border-radius:5px; border-left:3px solid #FF9800;">
                         <summary style="cursor:pointer; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
@@ -4004,349 +3242,6 @@
             } catch(e) {}
         }
 
-        // -- Flatpickr calendar pickers for custom date/time range ----------
-        let fpEarliest, fpLatest;
-        document.addEventListener('DOMContentLoaded', function() {
-            const fpOpts = {
-                enableTime: true,
-                time_24hr: true,
-                dateFormat: 'Y-m-d H:i',
-                altInput: true,
-                altFormat: 'M j, Y  H:i',
-                theme: 'dark',
-                allowInput: false,
-                disableMobile: true,
-            };
-            fpEarliest = flatpickr('#earliest-time', { ...fpOpts, defaultHour: 0, defaultMinute: 0 });
-            fpLatest   = flatpickr('#latest-time',   { ...fpOpts, defaultHour: 23, defaultMinute: 59 });
-        });
-
-        function toggleCustomTimeRange() {
-            const sel = document.getElementById('time-range').value;
-            document.getElementById('custom-time-range').style.display =
-                sel === 'custom' ? 'block' : 'none';
-        }
-
-        async function startHunt(e) {
-            e.preventDefault();
-
-            const timeRange = document.getElementById('time-range').value;
-            const mode = document.getElementById('hunt-mode').value;
-            const description = document.getElementById('description').value;
-            const storageMode = document.getElementById('storage-mode').value;
-            const targetHostsRaw = document.getElementById('target-hosts').value.trim();
-
-            const body = { time_range: timeRange, mode, description, storage_mode: storageMode };
-
-            if (targetHostsRaw) {
-                body.target_hosts = targetHostsRaw.split(',').map(h => h.trim()).filter(Boolean);
-            }
-
-            if (timeRange === 'custom') {
-                const earliest = document.getElementById('earliest-time').value;
-                const latest = document.getElementById('latest-time').value;
-                if (!earliest || !latest) {
-                    alert('Please select both a start and end date/time.');
-                    return;
-                }
-                if (new Date(earliest.replace(' ', 'T')) >= new Date(latest.replace(' ', 'T'))) {
-                    alert('End date/time must be after start date/time.');
-                    return;
-                }
-                // Flatpickr stores "YYYY-MM-DD HH:mm" — convert to ISO 8601
-                body.earliest_time = earliest.replace(' ', 'T') + ':00';
-                body.latest_time = latest.replace(' ', 'T') + ':00';
-                body.time_range = '-24h'; // fallback; ignored when absolute times are set
-            }
-
-            try {
-                const response = await fetch('/api/hunt', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-
-                const data = await response.json();
-                const huntId = data.hunt_id;
-                const isQueued = data.status === 'queued';
-
-                trackedHunts[huntId] = {
-                    status: isQueued ? 'queued' : 'running',
-                    progress: 0,
-                };
-                saveTrackedHunts();
-                ensureHuntPanel(huntId);
-
-                if (isQueued) {
-                    addLog(`Hunt ${huntId} queued (position ${data.queue_position})`, 'info');
-                    handleProgress({
-                        hunt_id: huntId,
-                        stage: 'queued',
-                        message: `Queued — position ${data.queue_position}`,
-                        progress: 0,
-                    });
-                    refreshQueueDisplay();
-                } else {
-                    addLog(`Started hunt: ${huntId}`, 'info');
-                }
-
-            } catch (error) {
-                console.error('Error starting hunt:', error);
-                addLog(`Error starting hunt: ${error.message}`, 'error');
-            }
-        }
-
-        function quickHunt(timeRange) {
-            document.getElementById('time-range').value = timeRange;
-            toggleCustomTimeRange();
-            showTab('new-hunt');
-            setTimeout(() => document.getElementById('hunt-form').dispatchEvent(new Event('submit')), 100);
-        }
-
-        // --- Continuous Hunting ---
-
-        let continuousPollTimer = null;
-
-        async function startContinuousHunting() {
-            const interval = parseInt(document.getElementById('cont-interval').value) || 15;
-            const lookback = parseInt(document.getElementById('cont-lookback').value) || 20;
-            const mode = document.getElementById('cont-mode').value;
-            const hostsRaw = document.getElementById('cont-target-hosts').value.trim();
-
-            const body = { interval_minutes: interval, lookback_minutes: lookback, mode };
-            if (hostsRaw) {
-                body.target_hosts = hostsRaw.split(',').map(h => h.trim()).filter(Boolean);
-            }
-
-            try {
-                const resp = await fetch('/api/hunt/continuous/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                const data = await resp.json();
-                if (resp.ok) {
-                    addLog(`Continuous hunting started: every ${interval}m, lookback ${lookback}m`, 'info');
-                    updateContinuousUI(true);
-                    startContinuousPolling();
-                } else {
-                    addLog(`Failed to start continuous hunting: ${data.error || 'Unknown error'}`, 'error');
-                }
-            } catch (err) {
-                addLog(`Error starting continuous hunting: ${err.message}`, 'error');
-            }
-        }
-
-        async function stopContinuousHunting() {
-            try {
-                const resp = await fetch('/api/hunt/continuous/stop', { method: 'POST' });
-                const data = await resp.json();
-                if (resp.ok) {
-                    addLog('Continuous hunting stop requested (will finish current cycle)', 'info');
-                    document.getElementById('cont-stop-btn').textContent = 'Stopping...';
-                    document.getElementById('cont-stop-btn').disabled = true;
-                } else {
-                    addLog(`Failed to stop: ${data.error || 'Unknown error'}`, 'error');
-                }
-            } catch (err) {
-                addLog(`Error stopping continuous hunting: ${err.message}`, 'error');
-            }
-        }
-
-        function startContinuousPolling() {
-            if (continuousPollTimer) clearInterval(continuousPollTimer);
-            continuousPollTimer = setInterval(pollContinuousStatus, 5000);
-            pollContinuousStatus();
-        }
-
-        async function pollContinuousStatus() {
-            try {
-                const resp = await fetch('/api/hunt/continuous/status');
-                const data = await resp.json();
-
-                if (data.running) {
-                    updateContinuousUI(true);
-                    // Ensure polling continues after page reload
-                    if (!continuousPollTimer) {
-                        continuousPollTimer = setInterval(pollContinuousStatus, 5000);
-                    }
-                    const statusEl = document.getElementById('cont-status-details');
-                    const cycleEl = document.getElementById('cont-cycle-count');
-                    cycleEl.textContent = `${data.cycles} cycle${data.cycles !== 1 ? 's' : ''} completed`;
-
-                    let details = `Interval: ${data.interval_minutes}m &bull; Lookback: ${data.lookback_minutes}m &bull; Mode: ${data.mode}`;
-                    if (data.started_at) {
-                        details += `<br>Started: ${new Date(data.started_at).toLocaleString()}`;
-                    }
-                    if (data.last_cycle) {
-                        details += `<br>Last cycle: ${new Date(data.last_cycle).toLocaleString()}`;
-                    }
-                    if (data.last_hunt_id) {
-                        details += ` &bull; ${data.last_hunt_id}`;
-                    }
-                    if (data.target_hosts && data.target_hosts.length) {
-                        details += `<br>Target hosts: ${data.target_hosts.join(', ')}`;
-                    }
-                    if (data.stopping) {
-                        details += '<br><em style="color:var(--warning);">Stopping after current cycle...</em>';
-                    }
-                    statusEl.innerHTML = details;
-                } else {
-                    updateContinuousUI(false);
-                    if (continuousPollTimer) {
-                        clearInterval(continuousPollTimer);
-                        continuousPollTimer = null;
-                    }
-                }
-            } catch (err) {
-                // Ignore transient fetch errors
-            }
-        }
-
-        function updateContinuousUI(running) {
-            document.getElementById('cont-start-btn').style.display = running ? 'none' : '';
-            document.getElementById('cont-stop-btn').style.display = running ? '' : 'none';
-            document.getElementById('cont-stop-btn').disabled = false;
-            document.getElementById('cont-stop-btn').innerHTML = '<i class="fa-solid fa-stop"></i> Stop';
-            document.getElementById('continuous-status').style.display = running ? 'block' : 'none';
-            // Disable/enable config inputs while running
-            ['cont-interval', 'cont-lookback', 'cont-mode', 'cont-target-hosts'].forEach(id => {
-                document.getElementById(id).disabled = running;
-            });
-        }
-
-        // Poll on page load to restore UI if continuous hunting is already running
-        pollContinuousStatus();
-
-        // All query type labels
-        const QUERY_LABELS = {
-            'network_connections': 'Network Connections',
-            'dns_queries': 'DNS Queries',
-            'authentication_logs': 'Auth Logs',
-            'process_logs': 'Process Logs',
-            'powershell_logs': 'PowerShell',
-            'file_operations': 'File Ops',
-            'scheduled_tasks': 'Scheduled Tasks',
-            'registry_changes': 'Registry Changes',
-        };
-
-        /**
-         * Ensure a progress panel exists for a given hunt.
-         * Each panel is a self-contained progress card keyed by hunt_id.
-         */
-        function ensureHuntPanel(huntId) {
-            const container = document.getElementById('active-hunts-container');
-            if (document.getElementById('hp-' + huntId)) return;
-
-            const panel = document.createElement('div');
-            panel.id = 'hp-' + huntId;
-            panel.className = 'progress-container active';
-            panel.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <h3 class="hp-title" style="font-size:13px; font-weight:600; margin:0;">Hunt in Progress</h3>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="hp-id" style="font-size:11px; opacity:0.5; font-family:monospace;">${huntId}</span>
-                        <span class="hp-pct" style="font-size:13px; font-weight:600; color:var(--accent-primary); font-variant-numeric:tabular-nums;">0%</span>
-                        <button class="hp-cancel-btn" onclick="cancelRunningHunt('${huntId}')"
-                                style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;"
-                                title="Cancel this hunt">Cancel</button>
-                    </div>
-                </div>
-                <div class="progress-bar">
-                    <div class="hp-fill progress-fill"></div>
-                </div>
-                <p class="hp-msg" style="font-size:13px; color:var(--text-secondary); margin-top:8px;">Initializing...</p>
-
-                <div class="hp-coll-detail" style="display:none;">
-                    <div class="collection-stats">
-                        <div class="collection-stat">
-                            <div class="stat-label">Total Events</div>
-                            <div class="stat-value hp-coll-total">0</div>
-                        </div>
-                        <div class="collection-stat">
-                            <div class="stat-label">Queries Done</div>
-                            <div class="stat-value hp-coll-queries">0 / 9</div>
-                        </div>
-                        <div class="collection-stat">
-                            <div class="stat-label">Window</div>
-                            <div class="stat-value hp-coll-window">-</div>
-                        </div>
-                        <div class="collection-stat">
-                            <div class="stat-label">Elapsed</div>
-                            <div class="stat-value hp-coll-elapsed">0s</div>
-                        </div>
-                    </div>
-                    <div class="query-tracker hp-query-tracker"></div>
-                </div>
-            `;
-            container.appendChild(panel);
-        }
-
-        /**
-         * Remove a hunt panel from the DOM.
-         */
-        function removeHuntPanel(huntId) {
-            const el = document.getElementById('hp-' + huntId);
-            if (el) el.remove();
-        }
-
-        /**
-         * Refresh the queue display from the current tracked hunts.
-         */
-        async function refreshQueueDisplay() {
-            try {
-                const resp = await fetch('/api/hunt/queue');
-                const data = await resp.json();
-                const qc = document.getElementById('queue-container');
-                const ql = document.getElementById('queue-list');
-                if (data.queue.length === 0) {
-                    qc.style.display = 'none';
-                    return;
-                }
-                qc.style.display = 'block';
-                ql.innerHTML = data.queue.map(q => `
-                    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:13px;">
-                        <div>
-                            <span style="font-family:monospace; opacity:0.7;">#${q.position}</span>
-                            <span style="margin-left:8px;">${escapeHtml(q.hunt_id)}</span>
-                            ${q.description ? '<span style="margin-left:8px; opacity:0.5;">' + escapeHtml(q.description) + '</span>' : ''}
-                        </div>
-                        <button onclick="cancelQueuedHunt('${q.hunt_id}')" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 10px; border-radius:4px; cursor:pointer; font-size:12px;">Cancel</button>
-                    </div>
-                `).join('');
-            } catch(e) {
-                console.error('Error refreshing queue:', e);
-            }
-        }
-
-        async function cancelQueuedHunt(huntId) {
-            try {
-                await fetch('/api/hunt/queue/' + huntId, { method: 'DELETE' });
-                delete trackedHunts[huntId];
-                removeHuntPanel(huntId);
-                saveTrackedHunts();
-                refreshQueueDisplay();
-                addLog(`Cancelled queued hunt: ${huntId}`, 'info');
-            } catch(e) {
-                addLog(`Error cancelling: ${e.message}`, 'error');
-            }
-        }
-
-        async function cancelRunningHunt(huntId) {
-            if (!confirm('Cancel this hunt? The subprocess will be terminated.')) return;
-            try {
-                const resp = await fetch('/api/hunts/' + huntId + '/cancel', { method: 'POST' });
-                const result = await resp.json();
-                if (result.status === 'cancelled') {
-                    addLog(`Cancelled hunt: ${huntId}`, 'warning');
-                } else {
-                    addLog(`Cancel failed: ${result.message || 'unknown error'}`, 'error');
-                }
-            } catch(e) {
-                addLog(`Error cancelling hunt: ${e.message}`, 'error');
-            }
-        }
-
         async function cancelRunningProfile() {
             if (!confirm('Cancel device profiling? The subprocess will be terminated.')) return;
             try {
@@ -4359,154 +3254,6 @@
                 }
             } catch(e) {
                 addLog(`Error cancelling profile: ${e.message}`, 'error');
-            }
-        }
-
-        function handleProgress(data) {
-            if (!data.stage) return;
-            const huntId = data.hunt_id;
-
-            // Ensure a panel exists for this hunt
-            if (huntId) ensureHuntPanel(huntId);
-
-            const panel = huntId ? document.getElementById('hp-' + huntId) : null;
-            if (!panel) return;
-
-            const fill = panel.querySelector('.hp-fill');
-            const pct = panel.querySelector('.hp-pct');
-            const msg = panel.querySelector('.hp-msg');
-            const title = panel.querySelector('.hp-title');
-            const collDetail = panel.querySelector('.hp-coll-detail');
-
-            fill.style.width = `${data.progress}%`;
-            pct.textContent = `${data.progress}%`;
-            msg.textContent = data.message;
-
-            addLog(`[${huntId}] ${data.message}`, data.stage === 'error' ? 'error' : 'info');
-
-            // Update tracked state
-            if (trackedHunts[huntId]) {
-                trackedHunts[huntId].progress = data.progress;
-                if (data.stage !== 'queued') trackedHunts[huntId].status = 'running';
-            }
-
-            // Queued state
-            if (data.stage === 'queued') {
-                title.textContent = 'Queued';
-                fill.style.background = 'var(--text-secondary)';
-                pct.textContent = '';
-                return;
-            }
-
-            // Restore accent color if it was queued before
-            fill.style.background = '';
-
-            // Show detailed collection stats
-            if (data.stage === 'collect' && data.collection) {
-                collDetail.style.display = 'block';
-                title.textContent = 'Collecting Data from Splunk...';
-
-                const c = data.collection;
-                panel.querySelector('.hp-coll-total').textContent = (c.total_events || 0).toLocaleString();
-                panel.querySelector('.hp-coll-queries').textContent = `${c.queries_done || 0} / ${c.queries_total || 9}`;
-
-                if (c.total_windows && c.total_windows > 1) {
-                    panel.querySelector('.hp-coll-window').textContent = `${c.window || 0} / ${c.total_windows}`;
-                } else {
-                    panel.querySelector('.hp-coll-window').textContent = '1 / 1';
-                }
-
-                if (c.elapsed_seconds) {
-                    const mins = Math.floor(c.elapsed_seconds / 60);
-                    const secs = Math.floor(c.elapsed_seconds % 60);
-                    panel.querySelector('.hp-coll-elapsed').textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-                }
-
-                if (c.queries_done >= (c.queries_total || 9)) {
-                    panel.querySelector('.hp-coll-total').classList.add('done');
-                    panel.querySelector('.hp-coll-queries').classList.add('done');
-                }
-
-                if (c.events_by_type) {
-                    const tracker = panel.querySelector('.hp-query-tracker');
-                    tracker.innerHTML = '';
-                    for (const [key, label] of Object.entries(QUERY_LABELS)) {
-                        const count = c.events_by_type[key];
-                        const isDone = count !== undefined;
-                        const chip = document.createElement('div');
-                        chip.className = `query-chip${isDone ? ' done' : ''}`;
-                        chip.innerHTML = `
-                            <span class="q-name">${label}</span>
-                            <span class="q-count">${isDone ? count.toLocaleString() : '...'}</span>
-                        `;
-                        tracker.appendChild(chip);
-                    }
-                }
-            } else if (data.stage === 'analyze' || data.stage === 'hunt') {
-                title.textContent = data.stage === 'analyze' ? 'Analyzing Collected Data...' : 'Running Hunting Agents...';
-            } else if (data.stage === 'finalize') {
-                title.textContent = 'Finalizing Results...';
-            }
-
-            // Error handling
-            if (data.stage === 'error') {
-                title.textContent = 'Hunt Failed';
-                fill.style.background = '#e53935';
-                if (data.error_detail) {
-                    data.error_detail.split('\n').forEach(line => {
-                        if (line.trim()) addLog(line, 'error');
-                    });
-                }
-            }
-
-            // Hide cancel button on terminal states
-            if (['complete', 'error', 'cancelled'].includes(data.stage)) {
-                const cancelBtn = panel.querySelector('.hp-cancel-btn');
-                if (cancelBtn) cancelBtn.style.display = 'none';
-            }
-
-            // Terminal states — remove panel after a delay
-            if (data.stage === 'complete') {
-                title.textContent = 'Hunt Complete!';
-                fill.style.background = '#43a047';
-                delete trackedHunts[huntId];
-                saveTrackedHunts();
-                setTimeout(() => {
-                    removeHuntPanel(huntId);
-                    loadRecentHunts();
-                    loadStats();
-                    refreshQueueDisplay();
-                    viewHuntDetails(huntId);
-                    // Refresh network graph if the tab is visible
-                    if (document.getElementById('network-graph-tab').classList.contains('active')) {
-                        loadNetworkGraph();
-                    } else {
-                        // Mark stale so it reloads on next tab switch
-                        _fullGraphData = null;
-                    }
-                }, 2500);
-            } else if (data.stage === 'cancelled') {
-                title.textContent = 'Hunt Cancelled';
-                fill.style.background = '#FF9800';
-                fill.style.width = '100%';
-                pct.textContent = '';
-                delete trackedHunts[huntId];
-                saveTrackedHunts();
-                setTimeout(() => {
-                    removeHuntPanel(huntId);
-                    loadRecentHunts();
-                    loadStats();
-                    refreshQueueDisplay();
-                }, 3000);
-            } else if (data.stage === 'error') {
-                delete trackedHunts[huntId];
-                saveTrackedHunts();
-                setTimeout(() => {
-                    removeHuntPanel(huntId);
-                    loadRecentHunts();
-                    loadStats();
-                    refreshQueueDisplay();
-                }, 5000);
             }
         }
 
@@ -4609,8 +3356,6 @@
                 loadSigmaRules();
             } else if (tabName === 'threat-intel-tab') {
                 loadThreatIntelStatus();
-            } else if (tabName === 'timeline-tab') {
-                loadTimeline();
             }
         }
 
@@ -4627,7 +3372,7 @@
                 list.innerHTML = '';
 
                 if (maps.length === 0) {
-                    list.innerHTML = '<li style="padding:15px;opacity:0.7;">No network maps saved yet. Run a hunt with the Network Mapper plugin enabled.</li>';
+                    list.innerHTML = '<li style="padding:15px;opacity:0.7;">No network maps saved yet. Run a profile with the Network Mapper plugin enabled.</li>';
                     return;
                 }
 
@@ -4861,7 +3606,7 @@
 
                 if (data.error) {
                     meta.textContent = '';
-                    list.innerHTML = `<p style="text-align:center; padding:20px; opacity:0.6;">${escapeHtml(data.error)}. Enable it in the Plugins tab, then run a hunt.</p>`;
+                    list.innerHTML = `<p style="text-align:center; padding:20px; opacity:0.6;">${escapeHtml(data.error)}. Enable it in the Plugins tab, then run a profile.</p>`;
                     return;
                 }
 
@@ -4876,7 +3621,7 @@
                 if (matches.length === 0) {
                     meta.textContent = data.timestamp
                         ? `Last scan: ${new Date(data.timestamp).toLocaleString()} | ${data.rules_checked || 0}/${data.total_rules || 0} rules checked | No matches`
-                        : 'No scan results yet. Run a hunt with the Sigma Engine plugin enabled.';
+                        : 'No scan results yet. Run a profile with the Sigma Engine plugin enabled.';
                     list.innerHTML = '<p style="text-align:center; padding:20px; opacity:0.6;">No Sigma rule matches found in the latest scan.</p>';
                     return;
                 }
@@ -5459,163 +4204,8 @@
         }
 
         // ========================================
-        // Timeline Functions
-        // ========================================
-
-        let _timelineData = [];
-
-        async function loadTimeline() {
-            try {
-                const resp = await fetch('/api/timeline/all?limit=300');
-                const data = await resp.json();
-                _timelineData = data.events || [];
-                renderTimeline();
-            } catch (e) {
-                console.error('Error loading timeline:', e);
-                document.getElementById('timeline-container').innerHTML =
-                    `<div class="card"><p style="color:var(--danger);">Error loading timeline: ${e.message}</p></div>`;
-            }
-        }
-
-        function renderTimeline() {
-            const container = document.getElementById('timeline-container');
-            const filter = document.getElementById('tl-severity-filter').value;
-
-            const severityRank = { critical: 4, high: 3, medium: 2, low: 1 };
-            const filterRank = { all: 0, critical: 4, high: 3, medium: 2 };
-            const minRank = filterRank[filter] || 0;
-
-            const events = _timelineData.filter(e => {
-                const rank = severityRank[(e.severity || 'low').toLowerCase()] || 1;
-                return rank >= minRank;
-            });
-
-            if (events.length === 0) {
-                container.innerHTML = '<div class="card"><p style="color:var(--text-secondary);">No findings to display. Run a hunt first.</p></div>';
-                return;
-            }
-
-            const sevColors = {
-                critical: '#f85149', high: '#d29922',
-                medium: '#58a6ff', low: '#8b949e',
-            };
-
-            // Group by date
-            const grouped = {};
-            events.forEach(e => {
-                const ts = e.timestamp ? new Date(e.timestamp) : new Date();
-                const dateKey = ts.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-                if (!grouped[dateKey]) grouped[dateKey] = [];
-                grouped[dateKey].push(e);
-            });
-
-            let html = '<div style="position:relative; padding-left:40px;">';
-
-            // Vertical line
-            html += '<div style="position:absolute; left:18px; top:0; bottom:0; width:2px; background:var(--border-color);"></div>';
-
-            for (const [date, dayEvents] of Object.entries(grouped)) {
-                // Date header
-                html += `<div style="position:relative; margin-bottom:8px; margin-top:20px;">
-                    <div style="position:absolute; left:-32px; top:4px; width:12px; height:12px; background:var(--accent-primary); border-radius:50%; border:2px solid var(--bg-primary);"></div>
-                    <div style="font-weight:700; font-size:14px; color:var(--accent-primary);">${date}</div>
-                </div>`;
-
-                dayEvents.forEach(e => {
-                    const sev = (e.severity || 'low').toLowerCase();
-                    const color = sevColors[sev] || sevColors.low;
-                    const time = e.timestamp ? new Date(e.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
-                    const assets = (e.affected_assets || []).join(', ');
-                    const techniques = (e.mitre_techniques || []).join(', ');
-
-                    html += `<div style="position:relative; margin-bottom:8px; margin-left:4px;">
-                        <div style="position:absolute; left:-30px; top:10px; width:8px; height:8px; background:${color}; border-radius:50;"></div>
-                        <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-left:3px solid ${color}; border-radius:0 6px 6px 0; padding:10px 14px; cursor:pointer;" onclick="this.querySelector('.tl-detail').style.display = this.querySelector('.tl-detail').style.display === 'none' ? 'block' : 'none';">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <span style="font-weight:600; font-size:13px;">${escapeHtml(e.title || 'Untitled')}</span>
-                                    <span style="background:${color}22; color:${color}; padding:2px 8px; border-radius:10px; font-size:11px; margin-left:8px; font-weight:600;">${sev.toUpperCase()}</span>
-                                </div>
-                                <span style="font-size:11px; color:var(--text-secondary);">${time}</span>
-                            </div>
-                            <div class="tl-detail" style="display:none; margin-top:8px; font-size:13px; color:var(--text-secondary);">
-                                <p>${escapeHtml(e.description || '')}</p>
-                                <div style="margin-top:6px; display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">
-                                    <span><strong>Agent:</strong> ${e.agent || ''}</span>
-                                    <span><strong>Confidence:</strong> ${(e.confidence || 0).toFixed(2)}</span>
-                                    ${assets ? `<span><strong>Assets:</strong> ${escapeHtml(assets)}</span>` : ''}
-                                    ${techniques ? `<span><strong>MITRE:</strong> ${escapeHtml(techniques)}</span>` : ''}
-                                    ${e.hunt_id ? `<span><strong>Hunt:</strong> <a href="#" onclick="event.stopPropagation(); viewHuntDetails('${e.hunt_id}'); return false;" style="color:var(--accent-primary);">${e.hunt_id}</a></span>` : ''}
-                                </div>
-                            </div>
-                        </div>
-                    </div>`;
-                });
-            }
-
-            html += '</div>';
-
-            // Summary bar
-            const critCount = events.filter(e => (e.severity || '').toLowerCase() === 'critical').length;
-            const highCount = events.filter(e => (e.severity || '').toLowerCase() === 'high').length;
-            const medCount = events.filter(e => (e.severity || '').toLowerCase() === 'medium').length;
-            const lowCount = events.filter(e => (e.severity || '').toLowerCase() === 'low').length;
-
-            const summary = `<div class="card" style="margin-bottom:12px;">
-                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
-                    <span style="font-weight:600;">${events.length} findings</span>
-                    ${critCount ? `<span style="color:#f85149;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${critCount} Critical</span>` : ''}
-                    ${highCount ? `<span style="color:#d29922;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${highCount} High</span>` : ''}
-                    ${medCount ? `<span style="color:#58a6ff;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${medCount} Medium</span>` : ''}
-                    ${lowCount ? `<span style="color:#8b949e;"><i class="fa-solid fa-circle" style="font-size:8px;"></i> ${lowCount} Low</span>` : ''}
-                </div>
-            </div>`;
-
-            container.innerHTML = summary + html;
-        }
-
-        // ========================================
         // Background Enrichment Functions
         // ========================================
-
-        async function enrichHunt(huntId) {
-            const statusEl = document.getElementById(`enrich-status-${huntId}`);
-            if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing IPs for enrichment...';
-
-            try {
-                const resp = await fetch(`/api/threat-intel/enrich-hunt/${huntId}`, { method: 'POST' });
-                const data = await resp.json();
-                const msg = `Queued ${data.queued} new IPs (${data.already_enriched} already enriched, ${data.external_ips} external of ${data.total_ips} total). Queue: ${data.queue_size}`;
-                if (statusEl) statusEl.textContent = msg;
-                addLog(`Hunt enrichment: ${msg}`, 'info');
-            } catch (e) {
-                if (statusEl) statusEl.textContent = 'Error: ' + e.message;
-                addLog('Enrichment error: ' + e.message, 'error');
-            }
-        }
-
-        async function enrichAllHunts() {
-            const statusEl = document.getElementById('enrich-all-status');
-            if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Queuing IPs from all hunts...';
-
-            try {
-                const huntsResp = await fetch('/api/hunts?limit=100');
-                const hunts = await huntsResp.json();
-
-                let totalQueued = 0;
-                for (const hunt of hunts) {
-                    const resp = await fetch(`/api/threat-intel/enrich-hunt/${hunt.hunt_id}`, { method: 'POST' });
-                    const data = await resp.json();
-                    totalQueued += data.queued || 0;
-                }
-
-                if (statusEl) statusEl.textContent = `Queued ${totalQueued} new IPs across ${hunts.length} hunts`;
-                addLog(`Enriched all hunts: ${totalQueued} IPs queued`, 'info');
-                loadEnrichmentWorkerStatus();
-            } catch (e) {
-                if (statusEl) statusEl.textContent = 'Error: ' + e.message;
-            }
-        }
 
         async function loadEnrichmentWorkerStatus() {
             try {
@@ -5630,10 +4220,6 @@
                         <span><i class="fa-solid fa-circle" style="color:${runColor}; font-size:8px;"></i> Worker: <strong>${status.running ? 'Running' : 'Stopped'}</strong></span>
                         <span>Queue: <strong>${status.queue_size}</strong> IPs pending</span>
                         <span>Enriched: <strong>${status.total_enriched}</strong> IPs total</span>
-                        <button class="btn btn-secondary" style="padding:4px 12px; font-size:11px; margin-left:auto;" onclick="enrichAllHunts()">
-                            <i class="fa-solid fa-bolt"></i> Enrich All Hunts
-                        </button>
-                        <span id="enrich-all-status" style="font-size:11px; color:var(--text-secondary);"></span>
                     </div>
                 `;
             } catch (e) {
@@ -5646,14 +4232,6 @@
             document.getElementById('ti-type').value = 'ip';
             showTab('threat-intel-tab');
             lookupThreatIntel();
-        }
-
-        // ========================================
-        // Export Functions
-        // ========================================
-
-        function exportHunt(huntId, format) {
-            window.open(`/api/hunts/${huntId}/export/${format}`, '_blank');
         }
 
         function addLog(message, type = 'info') {

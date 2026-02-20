@@ -5,9 +5,8 @@ Artemis Server — thin entry-point.
 All business logic now lives in dedicated modules:
 
     artemis/managers/   – DatabaseManager, HuntManager, PluginManager
-    artemis/api/        – FastAPI routers (core, hunts, plugins)
+    artemis/api/        – FastAPI routers (core, plugins)
     artemis/ws.py       – WebSocket handler + log broadcasting
-    artemis/models.py   – Pydantic request models
 
 This file only wires them together, registers lifecycle hooks, and
 launches uvicorn.
@@ -27,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger("artemis.server")
 
 # ── app ───────────────────────────────────────────────────────────────
-app = FastAPI(title="Artemis Threat Hunting Platform", version="1.0.0")
+app = FastAPI(title="Artemis Network Mapping Platform", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,11 +38,9 @@ app.add_middleware(
 
 # ── routers ───────────────────────────────────────────────────────────
 from artemis.api.routes_core import router as core_router        # noqa: E402
-from artemis.api.routes_hunts import router as hunts_router      # noqa: E402
 from artemis.api.routes_plugins import router as plugins_router  # noqa: E402
 
 app.include_router(core_router)
-app.include_router(hunts_router)
 app.include_router(plugins_router)
 
 # ── managers & plugins (singletons) ──────────────────────────────────
@@ -70,8 +67,8 @@ async def on_startup():
     """Runs once when uvicorn (re)starts the application."""
     install_log_handler()
 
-    # Reconnect to any hunts that survived the previous server process
-    hunt_manager.reconnect_running_hunts()
+    # Reconnect to any profiling jobs that survived the previous server process
+    hunt_manager.reconnect_running_jobs()
 
     # Start background threat intel enrichment worker
     from artemis.integrations.threat_intel import threat_intel_manager  # noqa: E402
@@ -84,24 +81,15 @@ async def on_startup():
 async def on_shutdown():
     """Runs when uvicorn is shutting down (e.g. reload, ctrl-c).
 
-    We intentionally do NOT wait for running hunts — they are non-daemon
+    We intentionally do NOT wait for running jobs — they are non-daemon
     processes that write directly to SQLite, so they keep going on their
     own.  On the next startup we'll reconnect to them.
     """
-    # Stop continuous hunting if active
-    try:
-        if (hunt_manager._continuous_task
-                and not hunt_manager._continuous_task.done()):
-            hunt_manager._continuous_stop = True
-            hunt_manager._continuous_task.cancel()
-    except Exception:
-        pass
-
     # Cancel the progress-polling task (it will restart on next startup)
     if hunt_manager._poll_task and not hunt_manager._poll_task.done():
         hunt_manager._poll_task.cancel()
 
-    logger.info("Artemis server shutting down (hunts continue in background)")
+    logger.info("Artemis server shutting down")
 
 
 # ── main ──────────────────────────────────────────────────────────────
@@ -122,7 +110,7 @@ if __name__ == "__main__":
     lan_ip = get_lan_ip()
 
     print("=" * 80)
-    print("  ARTEMIS THREAT HUNTING PLATFORM")
+    print("  ARTEMIS NETWORK MAPPING PLATFORM")
     print("=" * 80)
     print("\nStarting server on all network interfaces...")
     print("\nAccess Artemis from:")

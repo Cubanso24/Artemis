@@ -1,4 +1,4 @@
-"""Database manager for Artemis hunt results and progress tracking."""
+"""Database manager for Artemis network mapping and progress tracking."""
 
 import json
 import sqlite3
@@ -10,7 +10,7 @@ logger = logging.getLogger("artemis.db")
 
 
 class DatabaseManager:
-    """Manages hunt results database."""
+    """Manages Artemis database for network mapping, profiling, and enrichment."""
 
     def __init__(self, db_path: str = "artemis.db"):
         self.db_path = db_path
@@ -22,56 +22,6 @@ class DatabaseManager:
         cursor = conn.cursor()
 
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS hunts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hunt_id TEXT UNIQUE,
-                start_time TIMESTAMP,
-                end_time TIMESTAMP,
-                time_range TEXT,
-                mode TEXT,
-                status TEXT,
-                total_findings INTEGER,
-                overall_confidence REAL,
-                description TEXT
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS findings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hunt_id TEXT,
-                agent_name TEXT,
-                title TEXT,
-                description TEXT,
-                severity TEXT,
-                confidence REAL,
-                mitre_tactics TEXT,
-                mitre_techniques TEXT,
-                affected_assets TEXT,
-                fingerprint TEXT,
-                timestamp TIMESTAMP,
-                FOREIGN KEY (hunt_id) REFERENCES hunts(hunt_id)
-            )
-        """)
-
-        # Migrate older databases that lack the fingerprint column
-        try:
-            cursor.execute("ALTER TABLE findings ADD COLUMN fingerprint TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
-        # Migrate older databases that lack the indicators column
-        try:
-            cursor.execute("ALTER TABLE findings ADD COLUMN indicators TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_findings_fingerprint
-            ON findings(fingerprint)
-        """)
-
-        cursor.execute("""
             CREATE TABLE IF NOT EXISTS plugin_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 plugin_name TEXT,
@@ -81,9 +31,8 @@ class DatabaseManager:
             )
         """)
 
-        # Hunt progress table — written by subprocess, polled by web server.
-        # Replaces the old multiprocessing.Queue approach so hunts survive
-        # server restarts.
+        # Job progress table — written by subprocess, polled by web server.
+        # Subprocesses survive server restarts; progress is stored in SQLite.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS hunt_progress (
                 hunt_id TEXT PRIMARY KEY,
@@ -93,16 +42,6 @@ class DatabaseManager:
                 progress INTEGER DEFAULT 0,
                 data TEXT,
                 updated_at TIMESTAMP
-            )
-        """)
-
-        # Queued hunts — survives server restarts.
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS hunt_queue (
-                position INTEGER PRIMARY KEY,
-                hunt_id TEXT UNIQUE,
-                params TEXT,
-                queued_at TIMESTAMP
             )
         """)
 
@@ -314,43 +253,12 @@ class DatabaseManager:
             conn.close()
 
     # ------------------------------------------------------------------
-    # Queue persistence
-    # ------------------------------------------------------------------
-
-    def save_queue(self, queue: list):
-        """Persist the full queue (list of param dicts) to the database."""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            conn.execute("DELETE FROM hunt_queue")
-            for idx, params in enumerate(queue):
-                conn.execute(
-                    "INSERT INTO hunt_queue (position, hunt_id, params, queued_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (idx, params['hunt_id'], json.dumps(params),
-                     datetime.now().isoformat()),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-    def load_queue(self) -> list:
-        """Load persisted queue entries (ordered by position)."""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            rows = conn.execute(
-                "SELECT params FROM hunt_queue ORDER BY position"
-            ).fetchall()
-            return [json.loads(r[0]) for r in rows]
-        finally:
-            conn.close()
-
-    # ------------------------------------------------------------------
-    # Hunt progress (written by subprocess, polled by server)
+    # Job progress (written by subprocess, polled by server)
     # ------------------------------------------------------------------
 
     def write_progress(self, hunt_id: str, pid: int, stage: str,
                        message: str, progress: int, data: dict = None):
-        """Write hunt progress from the subprocess."""
+        """Write job progress from the subprocess."""
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("""
@@ -367,7 +275,7 @@ class DatabaseManager:
             conn.close()
 
     def read_progress(self, hunt_id: str) -> dict | None:
-        """Read current progress for a hunt."""
+        """Read current progress for a job."""
         conn = sqlite3.connect(self.db_path)
         try:
             row = conn.execute(
@@ -386,7 +294,7 @@ class DatabaseManager:
             conn.close()
 
     def get_all_running_progress(self) -> List[dict]:
-        """Get progress rows for all hunts that haven't reached a terminal state."""
+        """Get progress rows for all jobs that haven't reached a terminal state."""
         conn = sqlite3.connect(self.db_path)
         try:
             rows = conn.execute(
@@ -403,213 +311,13 @@ class DatabaseManager:
             conn.close()
 
     def clear_progress(self, hunt_id: str):
-        """Remove progress row after hunt completes."""
+        """Remove progress row after job completes."""
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("DELETE FROM hunt_progress WHERE hunt_id = ?", (hunt_id,))
             conn.commit()
         finally:
             conn.close()
-
-    # ------------------------------------------------------------------
-    # Finding fingerprint
-    # ------------------------------------------------------------------
-
-    def _compute_finding_fingerprint(self, agent_name: str, finding: Dict) -> str:
-        import hashlib
-        title = finding.get('title') or finding.get('activity_type') or 'Unknown'
-        indicators = sorted(finding.get('indicators', []))
-        assets = sorted(finding.get('affected_assets', []))
-        techniques = sorted(finding.get('mitre_techniques', []))
-        parts = [
-            title,
-            "|".join(indicators),
-            "|".join(assets),
-            "|".join(techniques),
-        ]
-        raw = "::".join(parts)
-        return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-    # ------------------------------------------------------------------
-    # Hunt CRUD
-    # ------------------------------------------------------------------
-
-    def save_hunt(self, hunt_id: str, hunt_data: Dict):
-        """Save hunt results to database, deduplicating findings by fingerprint."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute("""
-                INSERT OR REPLACE INTO hunts
-                (hunt_id, start_time, end_time, time_range, mode, status,
-                 total_findings, overall_confidence, description)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                hunt_id,
-                hunt_data.get('start_time'),
-                hunt_data.get('end_time'),
-                hunt_data.get('time_range'),
-                hunt_data.get('mode'),
-                hunt_data.get('status'),
-                hunt_data.get('total_findings', 0),
-                hunt_data.get('overall_confidence', 0.0),
-                hunt_data.get('description')
-            ))
-
-            cursor.execute("""
-                SELECT fingerprint FROM findings
-                WHERE fingerprint IS NOT NULL
-                  AND timestamp >= datetime('now', '-24 hours')
-            """)
-            recent_fingerprints = {row[0] for row in cursor.fetchall()}
-
-            inserted = 0
-            skipped = 0
-            for agent_name, agent_result in hunt_data.get('agent_results', {}).items():
-                agent_severity = agent_result.get('severity', 'low')
-                agent_confidence = agent_result.get('confidence', 0.0)
-                agent_tactics = agent_result.get('mitre_tactics', [])
-
-                for finding in agent_result.get('findings', []):
-                    fp = (finding.get('fingerprint')
-                          or self._compute_finding_fingerprint(agent_name, finding))
-
-                    if fp in recent_fingerprints:
-                        skipped += 1
-                        continue
-
-                    title = (finding.get('title')
-                             or finding.get('activity_type')
-                             or 'Unknown')
-                    cursor.execute("""
-                        INSERT INTO findings
-                        (hunt_id, agent_name, title, description, severity,
-                         confidence, mitre_tactics, mitre_techniques,
-                         affected_assets, indicators, fingerprint, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        hunt_id,
-                        agent_name,
-                        title,
-                        finding.get('description', ''),
-                        finding.get('severity') or agent_severity,
-                        finding.get('confidence') or agent_confidence,
-                        json.dumps(finding.get('mitre_tactics') or agent_tactics),
-                        json.dumps(finding.get('mitre_techniques', [])),
-                        json.dumps(finding.get('affected_assets', [])),
-                        json.dumps(finding.get('indicators', [])),
-                        fp,
-                        datetime.now()
-                    ))
-                    recent_fingerprints.add(fp)
-                    inserted += 1
-
-            if skipped > 0:
-                logger.info(
-                    f"Finding dedup: inserted {inserted}, skipped {skipped} duplicates"
-                )
-
-            conn.commit()
-        finally:
-            conn.close()
-
-    def get_recent_hunts(self, limit: int = 50) -> List[Dict]:
-        """Get recent hunt records."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT hunt_id, start_time, end_time, time_range, mode, status,
-                   total_findings, overall_confidence, description
-            FROM hunts
-            ORDER BY start_time DESC
-            LIMIT ?
-        """, (limit,))
-
-        hunts = []
-        for row in cursor.fetchall():
-            hunts.append({
-                'hunt_id': row[0],
-                'start_time': row[1],
-                'end_time': row[2],
-                'time_range': row[3],
-                'mode': row[4],
-                'status': row[5],
-                'total_findings': row[6],
-                'overall_confidence': row[7],
-                'description': row[8]
-            })
-
-        conn.close()
-        return hunts
-
-    def delete_hunt(self, hunt_id: str) -> bool:
-        """Delete a hunt and its findings from the database."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("DELETE FROM findings WHERE hunt_id = ?", (hunt_id,))
-            cursor.execute("DELETE FROM hunts WHERE hunt_id = ?", (hunt_id,))
-            conn.commit()
-            deleted = cursor.rowcount > 0
-            return deleted
-        finally:
-            conn.close()
-
-    def get_hunt_details(self, hunt_id: str) -> Dict | None:
-        """Get detailed hunt results including findings."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT hunt_id, start_time, end_time, time_range, mode, status,
-                   total_findings, overall_confidence, description
-            FROM hunts
-            WHERE hunt_id = ?
-        """, (hunt_id,))
-
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            return None
-
-        hunt = {
-            'hunt_id': row[0],
-            'start_time': row[1],
-            'end_time': row[2],
-            'time_range': row[3],
-            'mode': row[4],
-            'status': row[5],
-            'total_findings': row[6],
-            'overall_confidence': row[7],
-            'description': row[8],
-            'findings': []
-        }
-
-        cursor.execute("""
-            SELECT agent_name, title, description, severity, confidence,
-                   mitre_tactics, mitre_techniques, affected_assets, timestamp
-            FROM findings
-            WHERE hunt_id = ?
-            ORDER BY confidence DESC
-        """, (hunt_id,))
-
-        for row in cursor.fetchall():
-            hunt['findings'].append({
-                'agent_name': row[0],
-                'title': row[1],
-                'description': row[2],
-                'severity': row[3],
-                'confidence': row[4],
-                'mitre_tactics': json.loads(row[5]) if row[5] else [],
-                'mitre_techniques': json.loads(row[6]) if row[6] else [],
-                'affected_assets': json.loads(row[7]) if row[7] else [],
-                'timestamp': row[8]
-            })
-
-        conn.close()
-        return hunt
 
     # ------------------------------------------------------------------
     # Enrichment
@@ -726,23 +434,3 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def extract_ips_from_hunt(self, hunt_id: str) -> List[str]:
-        """Extract all unique IPs from a hunt's findings (indicators and affected_assets)."""
-        import re
-        conn = sqlite3.connect(self.db_path)
-        try:
-            rows = conn.execute(
-                "SELECT affected_assets, indicators FROM findings WHERE hunt_id = ?",
-                (hunt_id,),
-            ).fetchall()
-            ips = set()
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            for row in rows:
-                assets = json.loads(row[0]) if row[0] else []
-                indicators = json.loads(row[1]) if row[1] else []
-                for value in assets + indicators:
-                    for match in ip_pattern.findall(str(value)):
-                        ips.add(match)
-            return list(ips)
-        finally:
-            conn.close()

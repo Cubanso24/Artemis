@@ -1,18 +1,14 @@
-"""Plugin, network-graph, and Sigma rule routes."""
+"""Plugin, network-graph, profiling, and Sigma rule routes."""
 
-import csv
-import io
 import json
 import logging
 import shutil
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, JSONResponse
-from starlette.responses import Response
+from fastapi.responses import JSONResponse
 
 from artemis.api.schemas import (
     PluginConfig, ProfileRequest, BackgroundProfileRequest,
@@ -492,12 +488,6 @@ def threat_intel_batch(req: ThreatIntelBatchRequest):
     return {"results": results, "count": len(results)}
 
 
-@router.post("/api/threat-intel/enrich-hunt/{hunt_id}")
-def enrich_hunt(hunt_id: str):
-    """Queue all IPs from a hunt for background enrichment."""
-    return threat_intel_manager.enrich_hunt(hunt_id)
-
-
 @router.get("/api/threat-intel/worker-status")
 async def enrichment_worker_status():
     """Get background enrichment worker status."""
@@ -520,146 +510,3 @@ async def get_ip_enrichment(ip: str):
     return result
 
 
-@router.get("/api/hunts/{hunt_id}/enrichments")
-async def get_hunt_enrichments(hunt_id: str):
-    """Get enrichment results for all IPs in a hunt."""
-    ips = db_manager.extract_ips_from_hunt(hunt_id)
-    enrichments = db_manager.get_enrichments_bulk(ips)
-    return {
-        "hunt_id": hunt_id,
-        "total_ips": len(ips),
-        "enriched": len(enrichments),
-        "results": enrichments,
-    }
-
-
-# --- Export / Reporting ---------------------------------------------------
-
-@router.get("/api/hunts/{hunt_id}/export/{fmt}")
-async def export_hunt(hunt_id: str, fmt: str):
-    """Export hunt results in various formats: json, csv, html."""
-    hunt = db_manager.get_hunt_details(hunt_id)
-    if not hunt:
-        return JSONResponse(status_code=404, content={"error": "Hunt not found"})
-
-    if fmt == "json":
-        return JSONResponse(
-            content=hunt,
-            headers={
-                "Content-Disposition":
-                    f'attachment; filename="artemis_{hunt_id}.json"'
-            },
-        )
-
-    elif fmt == "csv":
-        import csv
-        import io
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "Title", "Severity", "Confidence", "Agent",
-            "MITRE Tactics", "MITRE Techniques",
-            "Affected Assets", "Description", "Timestamp",
-        ])
-        for f in hunt.get("findings", []):
-            writer.writerow([
-                f.get("title", ""),
-                f.get("severity", ""),
-                f.get("confidence", ""),
-                f.get("agent_name", ""),
-                "; ".join(f.get("mitre_tactics", [])),
-                "; ".join(f.get("mitre_techniques", [])),
-                "; ".join(f.get("affected_assets", [])),
-                f.get("description", ""),
-                f.get("timestamp", ""),
-            ])
-        return Response(
-            content=output.getvalue(),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition":
-                    f'attachment; filename="artemis_{hunt_id}.csv"'
-            },
-        )
-
-    elif fmt == "html":
-        from artemis.utils.report_generator import generate_html_report
-        html = generate_html_report(hunt)
-        return HTMLResponse(
-            content=html,
-            headers={
-                "Content-Disposition":
-                    f'attachment; filename="artemis_report_{hunt_id}.html"'
-            },
-        )
-
-    return JSONResponse(status_code=400,
-                        content={"error": "Format must be json, csv, or html"})
-
-
-# --- Timeline data --------------------------------------------------------
-
-@router.get("/api/hunts/{hunt_id}/timeline")
-async def get_hunt_timeline(hunt_id: str):
-    """Get findings formatted for timeline visualization."""
-    hunt = db_manager.get_hunt_details(hunt_id)
-    if not hunt:
-        return JSONResponse(status_code=404, content={"error": "Hunt not found"})
-
-    events = []
-    for f in hunt.get("findings", []):
-        events.append({
-            "title": f.get("title", "Untitled"),
-            "description": f.get("description", ""),
-            "severity": f.get("severity", "low"),
-            "confidence": f.get("confidence", 0),
-            "agent": f.get("agent_name", ""),
-            "timestamp": f.get("timestamp", ""),
-            "mitre_tactics": f.get("mitre_tactics", []),
-            "mitre_techniques": f.get("mitre_techniques", []),
-            "affected_assets": f.get("affected_assets", []),
-        })
-
-    # Sort by timestamp
-    events.sort(key=lambda e: e.get("timestamp") or "")
-
-    return {
-        "hunt_id": hunt_id,
-        "hunt_start": hunt.get("start_time"),
-        "hunt_end": hunt.get("end_time"),
-        "events": events,
-    }
-
-
-@router.get("/api/timeline/all")
-async def get_all_timelines(limit: int = 200):
-    """Get recent findings across all hunts for a global timeline."""
-    conn = sqlite3.connect(db_manager.db_path)
-    try:
-        rows = conn.execute("""
-            SELECT f.hunt_id, f.agent_name, f.title, f.description,
-                   f.severity, f.confidence, f.mitre_tactics,
-                   f.mitre_techniques, f.affected_assets, f.timestamp
-            FROM findings f
-            ORDER BY f.timestamp DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
-
-        events = []
-        for r in rows:
-            events.append({
-                "hunt_id": r[0],
-                "agent": r[1],
-                "title": r[2],
-                "description": r[3],
-                "severity": r[4],
-                "confidence": r[5],
-                "mitre_tactics": json.loads(r[6]) if r[6] else [],
-                "mitre_techniques": json.loads(r[7]) if r[7] else [],
-                "affected_assets": json.loads(r[8]) if r[8] else [],
-                "timestamp": r[9],
-            })
-
-        return {"events": events, "total": len(events)}
-    finally:
-        conn.close()
