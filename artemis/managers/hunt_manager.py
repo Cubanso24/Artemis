@@ -519,6 +519,9 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
 
                     # ---- Run hunting agents with network map context ----
                     try:
+                        log.info(f'Cycle {cycle}: running {len(coordinator.agents)} '
+                                 f'hunting agents (LLM backend: '
+                                 f'{getattr(coordinator.llm_client, "backend", "none")})')
                         context = NetworkState.from_data_with_map(
                             hunting_data, nm.nodes)
                         assessment = coordinator.hunt(
@@ -559,6 +562,9 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     except Exception as ae:
                         log.error(f'Agent analysis error: {ae}')
                         log.error(traceback.format_exc())
+                        send('running',
+                             f'Cycle {cycle}: agent error: {ae}', 50,
+                             {'cycle': cycle, 'agent_error': str(ae)})
 
                     msg = (f'Cycle {cycle} done: {len(conns)} conns, '
                            f'{len(dns)} DNS, {len(ntlm)} NTLM → '
@@ -694,29 +700,50 @@ class HuntManager:
 
         if not _pid_alive(self._continuous_pid):
             job_id = self._continuous_id
+            self.db.clear_progress(job_id)
             self._continuous_id = None
             self._continuous_pid = None
             self._monitored_hunts.pop(job_id, None)
             return {'status': 'already_stopped', 'job_id': job_id}
 
         job_id = self._continuous_id
+        pid = self._continuous_pid
         logger.info(
-            f'Stopping continuous ingestion {job_id} (pid {self._continuous_pid})'
+            f'Stopping continuous ingestion {job_id} (pid {pid})'
         )
 
         # Send SIGTERM — the process catches it and stops gracefully
         try:
             import signal as _sig
-            os.kill(self._continuous_pid, _sig.SIGTERM)
+            os.kill(pid, _sig.SIGTERM)
         except OSError:
             pass
 
-        # Wait up to 10 seconds
+        # Wait up to 10 seconds for graceful shutdown
         for _ in range(20):
             await asyncio.sleep(0.5)
-            if not _pid_alive(self._continuous_pid):
+            if not _pid_alive(pid):
                 break
 
+        # If still alive, force-kill with SIGKILL
+        if _pid_alive(pid):
+            logger.warning(
+                f'Process {pid} did not respond to SIGTERM, sending SIGKILL'
+            )
+            try:
+                import signal as _sig
+                os.kill(pid, _sig.SIGKILL)
+            except OSError:
+                pass
+            # Wait briefly for SIGKILL to take effect
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                if not _pid_alive(pid):
+                    break
+
+        # Clean up all tracking state AND the progress DB entry
+        # so reconnect_running_jobs() doesn't resurrect this job
+        self.db.clear_progress(job_id)
         self._monitored_hunts.pop(job_id, None)
         if job_id in self.active_hunts:
             self.active_hunts[job_id]['status'] = 'stopped'

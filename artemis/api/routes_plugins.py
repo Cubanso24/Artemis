@@ -419,6 +419,13 @@ async def dismiss_finding(finding_id: str):
     return {'status': 'dismissed', 'finding_id': finding_id}
 
 
+@router.post("/api/findings/reset")
+async def reset_findings():
+    """Delete all findings and LLM syntheses so fresh hunts start clean."""
+    count = db_manager.clear_findings()
+    return {'status': 'cleared', 'deleted': count}
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")

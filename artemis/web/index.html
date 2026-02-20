@@ -1191,6 +1191,7 @@
                         <option value="impact_hunter">Impact</option>
                     </select>
                     <button class="btn btn-secondary" onclick="loadFindings()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                    <button class="btn" onclick="resetFindings()" style="background:var(--severity-high); margin-left:auto;"><i class="fa-solid fa-trash-can"></i> Clear All Findings</button>
                 </div>
 
                 <!-- Summary cards -->
@@ -3867,6 +3868,18 @@
                 loadFindings();
             } catch(e) {
                 addLog(`Failed to dismiss finding: ${e.message}`, 'error');
+            }
+        }
+
+        async function resetFindings() {
+            if (!confirm('Delete ALL findings and LLM syntheses? This cannot be undone.')) return;
+            try {
+                const resp = await fetch('/api/findings/reset', { method: 'POST' });
+                const data = await resp.json();
+                addLog(`Cleared ${data.deleted} findings`, 'info');
+                loadFindings();
+            } catch(e) {
+                addLog(`Failed to reset findings: ${e.message}`, 'error');
             }
         }
 

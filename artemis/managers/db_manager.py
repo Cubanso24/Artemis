@@ -271,6 +271,20 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def clear_findings(self) -> int:
+        """Delete all findings and LLM syntheses. Returns count deleted."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM agent_findings"
+            ).fetchone()[0]
+            conn.execute("DELETE FROM agent_findings")
+            conn.execute("DELETE FROM llm_syntheses")
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
     # LLM synthesis reports
     # ------------------------------------------------------------------
