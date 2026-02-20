@@ -1387,6 +1387,45 @@
                     <i class="fa-solid fa-floppy-disk"></i> Save Keys
                 </button>
             </div>
+
+            <!-- LLM Backend Configuration -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-brain"></i> LLM Backend Configuration</h3>
+                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
+                    Choose which AI backend powers threat synthesis during continuous ingestion.
+                    Changes take effect on the next ingestion cycle.
+                </p>
+                <div id="llm-backend-status" style="margin-bottom:12px;"></div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Backend</label>
+                        <select id="llm-backend-select" onchange="toggleLLMFields()"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="auto">Auto (try Anthropic, fall back to Ollama)</option>
+                            <option value="ollama">Ollama (local)</option>
+                            <option value="anthropic">Anthropic (cloud)</option>
+                        </select>
+                    </div>
+                    <div id="llm-ollama-url-group">
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Ollama URL</label>
+                        <input type="text" id="llm-ollama-url" placeholder="http://localhost:11434"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div id="llm-ollama-model-group">
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Ollama Model</label>
+                        <input type="text" id="llm-ollama-model" placeholder="llama3.1"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div id="llm-anthropic-key-group">
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Anthropic API Key</label>
+                        <input type="password" id="llm-anthropic-key" placeholder="sk-ant-..."
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                </div>
+                <button class="btn" onclick="saveLLMSettings()" style="margin-top:12px;">
+                    <i class="fa-solid fa-floppy-disk"></i> Save LLM Settings
+                </button>
+            </div>
         </div>
 
         <div id="logs" class="tab-content">
@@ -4126,6 +4165,7 @@
                 loadSigmaRules();
             } else if (tabName === 'threat-intel-tab') {
                 loadThreatIntelStatus();
+                loadLLMSettings();
             } else if (tabName === 'findings-tab') {
                 loadFindings();
             } else if (tabName === 'llm-intel-tab') {
@@ -4808,6 +4848,62 @@
                 document.getElementById('ti-key-greynoise').value = '';
             } catch (e) {
                 addLog('Error saving threat intel config: ' + e.message, 'error');
+            }
+        }
+
+        // ========================================
+        // LLM Backend Settings
+        // ========================================
+
+        function toggleLLMFields() {
+            const backend = document.getElementById('llm-backend-select').value;
+            const showOllama = backend === 'auto' || backend === 'ollama';
+            const showAnthropic = backend === 'auto' || backend === 'anthropic';
+            document.getElementById('llm-ollama-url-group').style.display = showOllama ? '' : 'none';
+            document.getElementById('llm-ollama-model-group').style.display = showOllama ? '' : 'none';
+            document.getElementById('llm-anthropic-key-group').style.display = showAnthropic ? '' : 'none';
+        }
+
+        async function loadLLMSettings() {
+            try {
+                const resp = await fetch('/api/llm/settings');
+                const cfg = await resp.json();
+                document.getElementById('llm-backend-select').value = cfg.backend || 'auto';
+                document.getElementById('llm-ollama-url').value = cfg.ollama_url || '';
+                document.getElementById('llm-ollama-model').value = cfg.ollama_model || '';
+                const statusDiv = document.getElementById('llm-backend-status');
+                const badge = cfg.backend === 'ollama' ? '<span style="color:#3fb950;">Ollama</span>'
+                    : cfg.backend === 'anthropic' ? '<span style="color:#58a6ff;">Anthropic</span>'
+                    : '<span style="color:var(--text-secondary);">Auto</span>';
+                const keyNote = cfg.has_anthropic_key ? ' (Anthropic key configured)' : '';
+                statusDiv.innerHTML = `<span style="font-size:12px;">Active backend: ${badge}${keyNote}</span>`;
+                toggleLLMFields();
+            } catch (e) {
+                console.error('Error loading LLM settings:', e);
+            }
+        }
+
+        async function saveLLMSettings() {
+            const settings = {
+                backend: document.getElementById('llm-backend-select').value,
+                ollama_url: document.getElementById('llm-ollama-url').value.trim() || null,
+                ollama_model: document.getElementById('llm-ollama-model').value.trim() || null,
+            };
+            const anthropicKey = document.getElementById('llm-anthropic-key').value.trim();
+            if (anthropicKey) settings.anthropic_api_key = anthropicKey;
+
+            try {
+                const resp = await fetch('/api/llm/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+                const result = await resp.json();
+                addLog(`LLM backend saved: ${result.backend}. Takes effect on next ingestion cycle.`, 'info');
+                document.getElementById('llm-anthropic-key').value = '';
+                loadLLMSettings();
+            } catch (e) {
+                addLog('Error saving LLM settings: ' + e.message, 'error');
             }
         }
 

@@ -427,14 +427,34 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
-        # Initialize hunting agent coordinator
-        # LLM backend: set LLM_BACKEND env var to "ollama" or "anthropic"
-        # For Ollama: also set OLLAMA_URL and OLLAMA_MODEL if non-default
+        # Initialize hunting agent coordinator.
+        # Read LLM settings: GUI config file > environment variables > auto.
+        _llm_cfg = {}
+        _llm_cfg_path = os.path.join('config', 'llm_settings.json')
+        if os.path.exists(_llm_cfg_path):
+            try:
+                import json as _json
+                with open(_llm_cfg_path) as _f:
+                    _llm_cfg = _json.load(_f)
+                log.info(f'Loaded LLM config from {_llm_cfg_path}: '
+                         f'backend={_llm_cfg.get("backend", "auto")}')
+            except Exception as _e:
+                log.warning(f'Could not read LLM config: {_e}')
+
+        _llm_backend = _llm_cfg.get('backend') or os.environ.get('LLM_BACKEND', 'auto')
+        # Push config values into env so LLMClient picks them up
+        if _llm_cfg.get('ollama_url'):
+            os.environ['OLLAMA_URL'] = _llm_cfg['ollama_url']
+        if _llm_cfg.get('ollama_model'):
+            os.environ['OLLAMA_MODEL'] = _llm_cfg['ollama_model']
+        if _llm_cfg.get('anthropic_api_key'):
+            os.environ['ANTHROPIC_API_KEY'] = _llm_cfg['anthropic_api_key']
+
         coordinator = MetaLearnerCoordinator(
             deployment_mode='adaptive',
             enable_parallel_execution=True,
             max_workers=4,
-            llm_backend=os.environ.get('LLM_BACKEND', 'auto'),
+            llm_backend=_llm_backend,
         )
         log.info(f'Initialized {len(coordinator.agents)} hunting agents')
 

@@ -255,8 +255,20 @@ class NetworkMapperPlugin(ArtemisPlugin):
         self._stats_cache_ttl = 30  # seconds
 
     def initialize(self):
-        """Initialize network mapper."""
+        """Initialize network mapper.
+
+        Safe to call more than once — clears in-memory state before
+        reloading from disk, which is how ``reload_from_disk()`` keeps
+        the API process in sync with the hunt subprocess.
+        """
         self.output_dir.mkdir(exist_ok=True)
+        # Clear previous in-memory state so a reload starts fresh.
+        self.nodes.clear()
+        self.sensors.clear()
+        self.mac_history.clear()
+        self._dirty_nodes.clear()
+        self._stats_cache = None
+        self._stats_cache_time = None
         logger.info(f"Network Mapper initialized. Output: {self.output_dir}")
         self.enabled = True
         self._load_existing_map()

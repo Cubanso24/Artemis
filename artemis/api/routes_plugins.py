@@ -14,7 +14,7 @@ from artemis.api.schemas import (
     PluginConfig, ProfileRequest, BackgroundProfileRequest,
     LanGroupCreate, LanGroupUpdate,
     DeviceFlagRequest, ThreatIntelConfigRequest, ThreatIntelLookupRequest,
-    ThreatIntelBatchRequest,
+    ThreatIntelBatchRequest, LLMSettingsRequest,
 )
 from artemis.managers import db_manager, hunt_manager, plugin_manager
 from artemis.integrations.threat_intel import threat_intel_manager
@@ -591,6 +591,50 @@ async def configure_threat_intel(req: ThreatIntelConfigRequest):
         settings["greynoise_key"] = req.greynoise_key
     threat_intel_manager.configure(settings)
     return {"status": "configured", "sources": threat_intel_manager.get_config_status()}
+
+
+# --- LLM Backend Settings -------------------------------------------------
+
+_LLM_CONFIG_PATH = Path("config/llm_settings.json")
+
+
+def _read_llm_settings() -> dict:
+    """Read persisted LLM backend settings."""
+    if _LLM_CONFIG_PATH.exists():
+        try:
+            return json.loads(_LLM_CONFIG_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+@router.get("/api/llm/settings")
+async def get_llm_settings():
+    """Return current LLM backend settings (keys are masked)."""
+    cfg = _read_llm_settings()
+    return {
+        "backend": cfg.get("backend", "auto"),
+        "ollama_url": cfg.get("ollama_url", "http://localhost:11434"),
+        "ollama_model": cfg.get("ollama_model", "llama3.1"),
+        "has_anthropic_key": bool(cfg.get("anthropic_api_key")),
+    }
+
+
+@router.post("/api/llm/settings")
+async def save_llm_settings(req: LLMSettingsRequest):
+    """Persist LLM backend settings to disk."""
+    cfg = _read_llm_settings()
+    cfg["backend"] = req.backend
+    if req.ollama_url is not None:
+        cfg["ollama_url"] = req.ollama_url
+    if req.ollama_model is not None:
+        cfg["ollama_model"] = req.ollama_model
+    if req.anthropic_api_key is not None:
+        cfg["anthropic_api_key"] = req.anthropic_api_key
+
+    _LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LLM_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    return {"status": "saved", "backend": cfg["backend"]}
 
 
 @router.post("/api/threat-intel/lookup")

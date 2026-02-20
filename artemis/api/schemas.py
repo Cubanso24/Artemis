@@ -92,3 +92,11 @@ class ThreatIntelBatchRequest(BaseModel):
     """Batch enrichment request."""
     indicators: list
     indicator_type: str = "ip"
+
+
+class LLMSettingsRequest(BaseModel):
+    """Configure LLM backend settings."""
+    backend: str = "auto"           # "auto", "ollama", "anthropic"
+    ollama_url: Optional[str] = None
+    ollama_model: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
