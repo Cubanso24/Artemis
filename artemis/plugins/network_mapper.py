@@ -525,46 +525,43 @@ class NetworkMapperPlugin(ArtemisPlugin):
         Process network data and update map.
 
         Expected kwargs:
-            network_connections: List of connection records
-            dns_queries: List of DNS query records
-            ntlm_logs: List of NTLM authentication records (optional)
+            network_connections: Iterable of connection records
+            dns_queries: Iterable of DNS query records
+            ntlm_logs: Iterable of NTLM authentication records (optional)
+
+        Accepts both lists and iterators so callers can stream from
+        SqliteEventStore without materialising the full dataset.
         """
         connections = kwargs.get('network_connections', [])
         dns_queries = kwargs.get('dns_queries', [])
         ntlm_logs = kwargs.get('ntlm_logs', [])
 
-        logger.info(
-            f"Processing {len(connections)} connections, "
-            f"{len(dns_queries)} DNS queries, and "
-            f"{len(ntlm_logs)} NTLM events"
-        )
+        # Process connections — stream-friendly (no len() on the iterable)
+        conn_count = 0
+        for conn in connections:
+            self._process_connection(conn)
+            conn_count += 1
+            if conn_count % 500_000 == 0:
+                logger.info(f"  Processed {conn_count} connections so far...")
 
-        # Process connections in batches to allow periodic progress logging
-        batch_size = 500_000
-        for i in range(0, len(connections), batch_size):
-            batch = connections[i:i + batch_size]
-            for conn in batch:
-                self._process_connection(conn)
-            if i + batch_size < len(connections):
-                logger.info(
-                    f"  Processed {i + batch_size}/{len(connections)} connections"
-                )
-
-        # Process DNS queries
-        for i in range(0, len(dns_queries), batch_size):
-            batch = dns_queries[i:i + batch_size]
-            for dns in batch:
-                self._process_dns(dns)
-            if i + batch_size < len(dns_queries):
-                logger.info(
-                    f"  Processed {i + batch_size}/{len(dns_queries)} DNS queries"
-                )
+        # Process DNS queries — stream-friendly
+        dns_count = 0
+        for dns in dns_queries:
+            self._process_dns(dns)
+            dns_count += 1
+            if dns_count % 500_000 == 0:
+                logger.info(f"  Processed {dns_count} DNS queries so far...")
 
         # Process NTLM logs for NetBIOS name enrichment
-        if ntlm_logs:
-            for ntlm in ntlm_logs:
-                self._process_ntlm(ntlm)
-            logger.info(f"  Processed {len(ntlm_logs)} NTLM events for NetBIOS enrichment")
+        ntlm_count = 0
+        for ntlm in ntlm_logs:
+            self._process_ntlm(ntlm)
+            ntlm_count += 1
+
+        logger.info(
+            f"Processing complete: {conn_count} connections, "
+            f"{dns_count} DNS queries, {ntlm_count} NTLM events"
+        )
 
         logger.info(f"  Connections and DNS done. Inferring roles for {len(self._dirty_nodes)} nodes...")
 

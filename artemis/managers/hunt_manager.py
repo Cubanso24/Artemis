@@ -505,17 +505,72 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     hunting_data = pipeline.collect_hunting_data(
                         time_range=time_range)
 
-                conns = hunting_data.get('network_connections', [])
-                dns = hunting_data.get('dns_queries', [])
-                ntlm = hunting_data.get('ntlm_logs', [])
+                # ---------------------------------------------------------
+                # Decide whether to stream or materialise events.
+                # SqliteEventStore (backfill) can hold tens of millions
+                # of events — materialising them all into Python lists
+                # at once would exhaust RAM.  Instead, stream them into
+                # the network mapper and pass only event *counts* and a
+                # manageable sample to the coordinator / agents.
+                # ---------------------------------------------------------
+                _is_sqlite = hasattr(hunting_data, 'iter_events')
 
-                if conns or dns or ntlm:
-                    result = nm.execute(
-                        network_connections=conns,
-                        dns_queries=dns,
-                        ntlm_logs=ntlm,
-                    )
+                if _is_sqlite:
+                    conn_count = hunting_data.count('network_connections')
+                    dns_count = hunting_data.count('dns_queries')
+                    ntlm_count = hunting_data.count('ntlm_logs')
+                    has_data = (conn_count + dns_count + ntlm_count) > 0
+                else:
+                    conns = hunting_data.get('network_connections', [])
+                    dns = hunting_data.get('dns_queries', [])
+                    ntlm = hunting_data.get('ntlm_logs', [])
+                    conn_count, dns_count, ntlm_count = len(conns), len(dns), len(ntlm)
+                    has_data = bool(conns or dns or ntlm)
+
+                if has_data:
+                    # -- Feed network mapper (streaming if SQLite) --
+                    if _is_sqlite:
+                        log.info(f'Cycle {cycle}: streaming {conn_count} conns, '
+                                 f'{dns_count} DNS, {ntlm_count} NTLM into network mapper')
+                        result = nm.execute(
+                            network_connections=hunting_data.iter_events('network_connections'),
+                            dns_queries=hunting_data.iter_events('dns_queries'),
+                            ntlm_logs=hunting_data.iter_events('ntlm_logs'),
+                        )
+                    else:
+                        result = nm.execute(
+                            network_connections=conns,
+                            dns_queries=dns,
+                            ntlm_logs=ntlm,
+                        )
                     nm.save_map()
+
+                    # Build a lightweight data dict for the coordinator
+                    # and agents.  With millions of events the agents
+                    # cannot usefully inspect every row — they operate on
+                    # patterns.  We provide counts and a sample so the
+                    # LLM hypothesis generation and rule-based agents can
+                    # still function.
+                    _SAMPLE = 50_000
+                    if _is_sqlite:
+                        agent_data = {
+                            'network_connections': list(
+                                hunting_data.iter_events('network_connections', limit=_SAMPLE)
+                            ) if conn_count else [],
+                            'dns_queries': list(
+                                hunting_data.iter_events('dns_queries', limit=_SAMPLE)
+                            ) if dns_count else [],
+                            'ntlm_logs': list(
+                                hunting_data.iter_events('ntlm_logs', limit=_SAMPLE)
+                            ) if ntlm_count else [],
+                            'ids_alerts': list(
+                                hunting_data.iter_events('ids_alerts', limit=_SAMPLE)
+                            ) if hunting_data.count('ids_alerts') else [],
+                            # Preserve counts so summaries are accurate
+                            '_counts': hunting_data.counts_by_type(),
+                        }
+                    else:
+                        agent_data = hunting_data
 
                     # ---- Run hunting agents with network map context ----
                     try:
@@ -530,9 +585,9 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                                   'internal_nodes': result['internal_nodes'],
                                   'stage_detail': 'llm_analysis'})
                         context = NetworkState.from_data_with_map(
-                            hunting_data, nm.nodes)
+                            agent_data, nm.nodes)
                         assessment = coordinator.hunt(
-                            data=hunting_data, network_state=context)
+                            data=agent_data, network_state=context)
 
                         agent_outputs = assessment.get('agent_outputs', [])
                         for ao in agent_outputs:
@@ -573,17 +628,25 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                              f'Cycle {cycle}: agent error: {ae}', 50,
                              {'cycle': cycle, 'agent_error': str(ae)})
 
-                    msg = (f'Cycle {cycle} done: {len(conns)} conns, '
-                           f'{len(dns)} DNS, {len(ntlm)} NTLM → '
+                    msg = (f'Cycle {cycle} done: {conn_count} conns, '
+                           f'{dns_count} DNS, {ntlm_count} NTLM → '
                            f'{result["total_nodes"]} nodes'
                            f'{f", {findings_this_cycle} findings" if findings_this_cycle else ""}')
                     log.info(msg)
                     send('running', msg, 50,
-                         {'cycle': cycle, 'new_conns': len(conns),
-                          'new_dns': len(dns), 'new_ntlm': len(ntlm),
+                         {'cycle': cycle, 'new_conns': conn_count,
+                          'new_dns': dns_count, 'new_ntlm': ntlm_count,
                           'total_nodes': result['total_nodes'],
                           'internal_nodes': result['internal_nodes'],
                           'findings': findings_this_cycle})
+
+                    # Free the SQLite store after the cycle to reclaim
+                    # disk space (the next cycle will create a new one).
+                    if _is_sqlite:
+                        try:
+                            hunting_data.close()
+                        except Exception:
+                            pass
                 else:
                     msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
                     log.info(msg)

@@ -84,6 +84,36 @@ class SqliteEventStore:
             return self[key]
         return default
 
+    def iter_events(
+        self, key: str, batch_size: int = 50_000, limit: int = 0,
+    ) -> Iterator[Dict]:
+        """Yield events for *key* one at a time without materializing all rows.
+
+        Uses server-side cursor with batched fetches so memory stays flat
+        regardless of how many events are stored under *key*.
+
+        Args:
+            key: data type to iterate.
+            batch_size: number of rows per ``fetchmany`` call.
+            limit: if > 0 stop after yielding this many events (uses SQL
+                   LIMIT for efficiency).
+        """
+        if limit > 0:
+            cursor = self._conn.execute(
+                "SELECT event_json FROM events WHERE data_type = ? LIMIT ?",
+                (key, limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT event_json FROM events WHERE data_type = ?", (key,)
+            )
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                yield json.loads(row[0])
+
     def keys(self) -> list:
         return list(self._counts.keys())
 

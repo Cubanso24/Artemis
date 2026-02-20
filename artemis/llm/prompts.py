@@ -376,9 +376,16 @@ def format_hunting_data_summary(data: Dict[str, Any]) -> str:
     """
     lines = ["=== HUNTING DATA SUMMARY ==="]
 
+    # When the hunt manager passes a sampled dict it includes the
+    # real event counts under ``_counts`` so the LLM summary is
+    # accurate even though only a sample of events is in memory.
+    _counts = data.get("_counts", {})
+
     conns = data.get("network_connections", [])
     if conns:
-        lines.append(f"\nNetwork Connections: {len(conns)} total")
+        real_count = _counts.get("network_connections", len(conns))
+        sampled = " (sampled)" if real_count > len(conns) else ""
+        lines.append(f"\nNetwork Connections: {real_count} total{sampled}")
 
         # Top destination ports
         port_counts: Dict[int, int] = {}
@@ -412,7 +419,8 @@ def format_hunting_data_summary(data: Dict[str, Any]) -> str:
 
     dns = data.get("dns_queries", [])
     if dns:
-        lines.append(f"\nDNS Queries: {len(dns)} total")
+        real_dns = _counts.get("dns_queries", len(dns))
+        lines.append(f"\nDNS Queries: {real_dns} total")
         domains: Dict[str, int] = {}
         for q in dns:
             d = q.get("domain", "")
@@ -425,7 +433,8 @@ def format_hunting_data_summary(data: Dict[str, Any]) -> str:
 
     ntlm = data.get("ntlm_logs", [])
     if ntlm:
-        lines.append(f"\nNTLM Auth: {len(ntlm)} events")
+        real_ntlm = _counts.get("ntlm_logs", len(ntlm))
+        lines.append(f"\nNTLM Auth: {real_ntlm} events")
         users = set(n.get("username") for n in ntlm if n.get("username"))
         lines.append(f"  Unique users: {len(users)}")
 

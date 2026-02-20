@@ -270,8 +270,12 @@ class NetworkState:
         network_connections = hunting_data.get('network_connections', [])
         dns_queries = hunting_data.get('dns_queries', [])
 
+        # _counts holds real totals when agent_data is a sample
+        _counts = hunting_data.get('_counts', {})
+
         if network_connections:
-            traffic_metrics.connection_count = len(network_connections)
+            traffic_metrics.connection_count = _counts.get(
+                'network_connections', len(network_connections))
             traffic_metrics.total_bytes_in = sum(
                 conn.get('orig_bytes', 0) for conn in network_connections
             )
@@ -297,7 +301,8 @@ class NetworkState:
             traffic_metrics.protocol_distribution = protocols
 
         if dns_queries:
-            traffic_metrics.dns_queries = len(dns_queries)
+            traffic_metrics.dns_queries = _counts.get(
+                'dns_queries', len(dns_queries))
 
         # Alert history from IDS alerts
         alert_history = AlertHistory()
