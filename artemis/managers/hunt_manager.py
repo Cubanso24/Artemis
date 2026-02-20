@@ -380,6 +380,8 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
     from artemis.managers.db_manager import DatabaseManager
     from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
     from artemis.plugins.network_mapper import NetworkMapperPlugin
+    from artemis.meta_learner.coordinator import MetaLearnerCoordinator
+    from artemis.models.network_state import NetworkState
 
     logging.basicConfig(
         level=logging.INFO,
@@ -425,6 +427,14 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
+        # Initialize hunting agent coordinator
+        coordinator = MetaLearnerCoordinator(
+            deployment_mode='adaptive',
+            enable_parallel_execution=True,
+            max_workers=4,
+        )
+        log.info(f'Initialized {len(coordinator.agents)} hunting agents')
+
         cycle = 0
         time_range = f'-{lookback_minutes}m'
 
@@ -437,6 +447,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                  50, {'cycle': cycle, 'interval': interval_minutes,
                       'lookback': lookback_minutes})
 
+            findings_this_cycle = 0
             try:
                 hunting_data = pipeline.collect_hunting_data(
                     time_range=time_range)
@@ -453,15 +464,50 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     )
                     nm.save_map()
 
+                    # ---- Run hunting agents with network map context ----
+                    try:
+                        context = NetworkState.from_data_with_map(
+                            hunting_data, nm.nodes)
+                        assessment = coordinator.hunt(
+                            data=hunting_data, network_state=context)
+
+                        agent_outputs = assessment.get('agent_outputs', [])
+                        for ao in agent_outputs:
+                            ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+                            for f in ao_dict.get('findings', []):
+                                findings_this_cycle += 1
+                                db.save_finding(
+                                    finding_id=f.get('fingerprint', f.get('activity_type', '') + str(cycle)),
+                                    agent_name=ao_dict.get('agent_name', 'unknown'),
+                                    activity_type=f.get('activity_type', ''),
+                                    severity=ao_dict.get('severity', 'medium'),
+                                    confidence=ao_dict.get('confidence', 0.0),
+                                    description=f.get('description', ''),
+                                    indicators=f.get('indicators', []),
+                                    affected_assets=f.get('affected_assets', []),
+                                    mitre_tactics=ao_dict.get('mitre_tactics', []),
+                                    mitre_techniques=f.get('mitre_techniques', []),
+                                    evidence_count=len(f.get('evidence', [])),
+                                    recommended_actions=ao_dict.get('recommended_actions', []),
+                                    source_cycle=cycle,
+                                )
+                        if findings_this_cycle:
+                            log.info(f'Cycle {cycle}: agents produced {findings_this_cycle} findings')
+                    except Exception as ae:
+                        log.error(f'Agent analysis error: {ae}')
+                        log.error(traceback.format_exc())
+
                     msg = (f'Cycle {cycle} done: {len(conns)} conns, '
                            f'{len(dns)} DNS, {len(ntlm)} NTLM → '
-                           f'{result["total_nodes"]} nodes')
+                           f'{result["total_nodes"]} nodes'
+                           f'{f", {findings_this_cycle} findings" if findings_this_cycle else ""}')
                     log.info(msg)
                     send('running', msg, 50,
                          {'cycle': cycle, 'new_conns': len(conns),
                           'new_dns': len(dns), 'new_ntlm': len(ntlm),
                           'total_nodes': result['total_nodes'],
-                          'internal_nodes': result['internal_nodes']})
+                          'internal_nodes': result['internal_nodes'],
+                          'findings': findings_this_cycle})
                 else:
                     msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
                     log.info(msg)

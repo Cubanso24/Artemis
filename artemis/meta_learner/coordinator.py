@@ -112,7 +112,8 @@ class MetaLearnerCoordinator:
         self,
         data: Dict[str, Any],
         initial_signals: Optional[List[Dict[str, Any]]] = None,
-        context_data: Optional[Dict[str, Any]] = None
+        context_data: Optional[Dict[str, Any]] = None,
+        network_state: Optional['NetworkState'] = None,
     ) -> Dict[str, Any]:
         """
         Execute threat hunting across all data sources.
@@ -123,6 +124,10 @@ class MetaLearnerCoordinator:
             data: Input data for agents to analyze
             initial_signals: Optional initial alerts/anomalies
             context_data: Optional network state context data
+            network_state: Optional pre-built NetworkState (overrides
+                context_data when provided).  Use this to pass a state
+                that already contains NetworkMapContext from the profiled
+                network map.
 
         Returns:
             Aggregated threat assessment
@@ -132,7 +137,10 @@ class MetaLearnerCoordinator:
         self.stats["total_hunts"] += 1
 
         # Stage 1: Environmental Context Gathering
-        context = self._gather_context(context_data or {})
+        if network_state is not None:
+            context = network_state
+        else:
+            context = self._gather_context(context_data or {})
 
         # Stage 2: Threat Hypothesis Generation
         hypotheses = self._generate_hypotheses(initial_signals or [], context)

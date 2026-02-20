@@ -956,6 +956,7 @@
 
         <div class="tabs">
             <button class="tab active" onclick="showTab('network-graph-tab')">Network Graph</button>
+            <button class="tab" onclick="showTab('findings-tab')">Findings <span id="findings-badge" style="display:none; background:#f85149; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
             <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
             <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
@@ -1154,6 +1155,47 @@
             </div>
         </div>
 
+        <!-- Agent Findings Tab -->
+        <div id="findings-tab" class="tab-content">
+            <div class="card">
+                <h2>Agent Threat Findings</h2>
+                <p style="margin-bottom:15px; opacity:0.8;">
+                    Findings from the 9 MITRE ATT&CK-mapped hunting agents that run automatically during live ingestion.
+                </p>
+
+                <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap; align-items:center;">
+                    <select id="findings-severity-filter" onchange="loadFindings()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary);">
+                        <option value="">All Severities</option>
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                    </select>
+                    <select id="findings-agent-filter" onchange="loadFindings()" style="padding:8px 12px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary);">
+                        <option value="">All Agents</option>
+                        <option value="c2_hunter">C2 Hunter</option>
+                        <option value="reconnaissance_hunter">Recon Hunter</option>
+                        <option value="lateral_movement_hunter">Lateral Movement</option>
+                        <option value="credential_access_hunter">Credential Access</option>
+                        <option value="defense_evasion_hunter">Defense Evasion</option>
+                        <option value="initial_access_hunter">Initial Access</option>
+                        <option value="execution_persistence_hunter">Execution/Persistence</option>
+                        <option value="collection_exfiltration_hunter">Collection/Exfil</option>
+                        <option value="impact_hunter">Impact</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="loadFindings()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                </div>
+
+                <!-- Summary cards -->
+                <div id="findings-summary" style="display:flex; gap:12px; margin-bottom:15px; flex-wrap:wrap;"></div>
+
+                <!-- Findings list -->
+                <div id="findings-list">
+                    <p style="opacity:0.6;">No findings yet. Start live ingestion to enable agentic hunting.</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Network Maps Tab -->
         <div id="network-maps-tab" class="tab-content">
             <div class="card">
@@ -1291,6 +1333,7 @@
             initializeTheme();
             checkBgProfileStatus();
             checkContinuousStatus();
+            _refreshFindingsBadge();
 
             // Show network graph tab by default
             showTab('network-graph-tab');
@@ -3485,6 +3528,7 @@
                 setContinuousRunning(true);
                 const cycle = result.cycle || '—';
                 const totalNodes = result.total_nodes || '—';
+                const findingsCount = result.findings || 0;
                 document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
                 document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
                 document.getElementById('continuous-msg').textContent = data.message || '';
@@ -3496,6 +3540,11 @@
                     handleContinuousProgress._lastRefresh = now;
                     loadNetworkGraph(true);
                     loadNetworkSummary();
+                }
+
+                // Refresh findings badge when agents produce detections
+                if (findingsCount > 0) {
+                    _refreshFindingsBadge();
                 }
             }
         }
@@ -3515,6 +3564,130 @@
                     addLog(`Reconnected to live ingestion (cycle ${status.cycle || 0})`, 'info');
                 }
             } catch(e) {}
+        }
+
+        // ---- Agent Findings ----
+        async function _refreshFindingsBadge() {
+            try {
+                const resp = await fetch('/api/findings/summary');
+                const summary = await resp.json();
+                updateFindingsBadge(summary.total || 0);
+            } catch(e) {}
+        }
+
+        async function loadFindings() {
+            const severity = document.getElementById('findings-severity-filter').value;
+            const agent = document.getElementById('findings-agent-filter').value;
+            let url = '/api/findings?limit=200';
+            if (severity) url += `&min_severity=${severity}`;
+            if (agent) url += `&agent_name=${agent}`;
+
+            try {
+                const [findingsResp, summaryResp] = await Promise.all([
+                    fetch(url), fetch('/api/findings/summary')
+                ]);
+                const findings = await findingsResp.json();
+                const summary = await summaryResp.json();
+
+                renderFindingsSummary(summary);
+                renderFindingsList(findings);
+                updateFindingsBadge(summary.total || 0);
+            } catch(e) {
+                console.error('Error loading findings:', e);
+            }
+        }
+
+        function updateFindingsBadge(count) {
+            const badge = document.getElementById('findings-badge');
+            if (count > 0) {
+                badge.style.display = 'inline';
+                badge.textContent = count > 99 ? '99+' : count;
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+        function renderFindingsSummary(summary) {
+            const container = document.getElementById('findings-summary');
+            const sev = summary.by_severity || {};
+            const severities = [
+                { key: 'critical', label: 'Critical', color: '#f85149', icon: 'fa-skull-crossbones' },
+                { key: 'high', label: 'High', color: '#f0883e', icon: 'fa-triangle-exclamation' },
+                { key: 'medium', label: 'Medium', color: '#d29922', icon: 'fa-exclamation' },
+                { key: 'low', label: 'Low', color: '#58a6ff', icon: 'fa-info-circle' },
+            ];
+
+            container.innerHTML = severities.map(s => `
+                <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:10px 16px; min-width:100px; text-align:center; ${sev[s.key] ? `border-left:3px solid ${s.color}` : ''}">
+                    <div style="font-size:22px; font-weight:700; color:${s.color};">${sev[s.key] || 0}</div>
+                    <div style="font-size:11px; color:var(--text-secondary);"><i class="fa-solid ${s.icon}" style="margin-right:4px;"></i>${s.label}</div>
+                </div>
+            `).join('') + `
+                <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:10px 16px; min-width:100px; text-align:center;">
+                    <div style="font-size:22px; font-weight:700; color:var(--text-primary);">${summary.total || 0}</div>
+                    <div style="font-size:11px; color:var(--text-secondary);">Total</div>
+                </div>`;
+        }
+
+        function renderFindingsList(findings) {
+            const container = document.getElementById('findings-list');
+            if (!findings || findings.length === 0) {
+                container.innerHTML = '<p style="opacity:0.6; text-align:center; padding:20px;">No findings match the current filters.</p>';
+                return;
+            }
+
+            const sevColors = { critical: '#f85149', high: '#f0883e', medium: '#d29922', low: '#58a6ff' };
+            const sevIcons = { critical: 'fa-skull-crossbones', high: 'fa-triangle-exclamation', medium: 'fa-exclamation', low: 'fa-info-circle' };
+
+            container.innerHTML = findings.map(f => {
+                const color = sevColors[f.severity] || '#58a6ff';
+                const icon = sevIcons[f.severity] || 'fa-info-circle';
+                const techniques = (f.mitre_techniques || []).map(t =>
+                    `<span style="background:var(--bg-primary); padding:1px 6px; border-radius:3px; font-size:11px; margin-right:4px;">${escapeHtml(t)}</span>`
+                ).join('');
+                const indicators = (f.indicators || []).slice(0, 5).map(i =>
+                    `<code style="font-size:11px; background:var(--bg-primary); padding:1px 4px; border-radius:3px; margin-right:4px;">${escapeHtml(i)}</code>`
+                ).join('');
+                const ago = _timeAgo(f.created_at);
+
+                return `<div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-left:3px solid ${color}; border-radius:6px; padding:12px 16px; margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                        <div>
+                            <span style="color:${color}; margin-right:6px;"><i class="fa-solid ${icon}"></i></span>
+                            <strong style="font-size:13px;">${escapeHtml(f.activity_type.replace(/_/g, ' '))}</strong>
+                            <span style="font-size:11px; color:var(--text-secondary); margin-left:8px;">${escapeHtml(f.agent_name.replace(/_/g, ' '))}</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:11px; color:var(--text-secondary);">${ago}</span>
+                            <span style="font-size:11px; font-weight:600; color:${color};">${(f.confidence * 100).toFixed(0)}%</span>
+                            <button onclick="dismissFinding('${escapeHtml(f.finding_id)}')" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 8px; border-radius:3px; cursor:pointer; font-size:11px;" title="Dismiss">Dismiss</button>
+                        </div>
+                    </div>
+                    <p style="font-size:12px; margin:6px 0 4px; color:var(--text-secondary);">${escapeHtml(f.description)}</p>
+                    <div style="margin-top:4px;">${techniques}</div>
+                    ${indicators ? `<div style="margin-top:4px;">${indicators}</div>` : ''}
+                    ${f.affected_assets && f.affected_assets.length ? `<div style="margin-top:4px; font-size:11px; color:var(--text-secondary);">Assets: ${f.affected_assets.slice(0,5).map(a => escapeHtml(a)).join(', ')}</div>` : ''}
+                </div>`;
+            }).join('');
+        }
+
+        function _timeAgo(isoStr) {
+            const diff = Date.now() - new Date(isoStr).getTime();
+            const mins = Math.floor(diff / 60000);
+            if (mins < 1) return 'just now';
+            if (mins < 60) return `${mins}m ago`;
+            const hrs = Math.floor(mins / 60);
+            if (hrs < 24) return `${hrs}h ago`;
+            return `${Math.floor(hrs / 24)}d ago`;
+        }
+
+        async function dismissFinding(findingId) {
+            try {
+                await fetch(`/api/findings/${findingId}/dismiss`, { method: 'POST' });
+                loadFindings();
+            } catch(e) {
+                addLog(`Failed to dismiss finding: ${e.message}`, 'error');
+            }
         }
 
         async function loadPlugins() {
@@ -3616,6 +3789,8 @@
                 loadSigmaRules();
             } else if (tabName === 'threat-intel-tab') {
                 loadThreatIntelStatus();
+            } else if (tabName === 'findings-tab') {
+                loadFindings();
             }
         }
 

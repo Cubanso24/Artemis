@@ -318,6 +318,101 @@ async def continuous_ingestion_status():
     return hunt_manager.get_continuous_status()
 
 
+# --- Network graph query API -----------------------------------------------
+
+@router.get("/api/network-graph/query")
+async def query_network_graph(
+    device_type: Optional[str] = None,
+    role: Optional[str] = None,
+    has_external: Optional[bool] = None,
+    port: Optional[int] = None,
+    os_contains: Optional[str] = None,
+    ip_prefix: Optional[str] = None,
+    hostname_contains: Optional[str] = None,
+    limit: int = 200,
+):
+    """Query the network map with filters.
+
+    Returns matching nodes with their full profile — designed for
+    agentic consumers that need to search the map by criteria.
+    """
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if not plugin:
+        return JSONResponse(status_code=404,
+                            content={'error': 'Network mapper not enabled'})
+
+    results = []
+    for nid, node in plugin.nodes.items():
+        # Apply filters
+        if device_type and (getattr(node, 'device_type', '') or '') != device_type:
+            continue
+        if role and role not in (getattr(node, 'roles', set()) or set()):
+            continue
+        if has_external is not None:
+            ext_out = getattr(node, 'connections_to', {}) or {}
+            has_ext = any(not _is_rfc1918(ip) for ip in ext_out)
+            if has_external != has_ext:
+                continue
+        if port is not None:
+            ports = {p for p, _ in (getattr(node, 'services', set()) or set())}
+            if port not in ports:
+                continue
+        if os_contains:
+            os_info = (getattr(node, 'os_info', '') or '').lower()
+            if os_contains.lower() not in os_info:
+                continue
+        if ip_prefix:
+            if not (getattr(node, 'ip', '') or '').startswith(ip_prefix):
+                continue
+        if hostname_contains:
+            names = getattr(node, 'hostnames', set()) or set()
+            if not any(hostname_contains.lower() in h.lower() for h in names):
+                continue
+
+        results.append(node.to_dict())
+        if len(results) >= limit:
+            break
+
+    return {'count': len(results), 'nodes': results}
+
+
+def _is_rfc1918(ip: str) -> bool:
+    """Quick check for private IPv4 addresses."""
+    return (ip.startswith('10.') or ip.startswith('192.168.') or
+            (ip.startswith('172.') and 16 <= int(ip.split('.')[1]) <= 31))
+
+
+# --- Agent findings --------------------------------------------------------
+
+@router.get("/api/findings")
+async def get_findings(
+    limit: int = 100,
+    agent_name: Optional[str] = None,
+    min_severity: Optional[str] = None,
+    include_dismissed: bool = False,
+):
+    """Get agent threat-hunting findings."""
+    return db_manager.get_findings(
+        limit=limit,
+        agent_name=agent_name,
+        min_severity=min_severity,
+        include_dismissed=include_dismissed,
+    )
+
+
+@router.get("/api/findings/summary")
+async def get_findings_summary():
+    """Get a summary of findings by severity and agent."""
+    return db_manager.get_findings_summary()
+
+
+@router.post("/api/findings/{finding_id}/dismiss")
+async def dismiss_finding(finding_id: str):
+    """Dismiss a finding (mark it as reviewed/not-actionable)."""
+    db_manager.dismiss_finding(finding_id)
+    return {'status': 'dismissed', 'finding_id': finding_id}
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")

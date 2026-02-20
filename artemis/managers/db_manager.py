@@ -98,8 +98,161 @@ class DatabaseManager:
             )
         """)
 
+        # Agent findings — threat detections from hunting agents
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS agent_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id TEXT NOT NULL UNIQUE,
+                agent_name TEXT NOT NULL,
+                activity_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                description TEXT NOT NULL,
+                indicators TEXT DEFAULT '[]',
+                affected_assets TEXT DEFAULT '[]',
+                mitre_tactics TEXT DEFAULT '[]',
+                mitre_techniques TEXT DEFAULT '[]',
+                evidence_count INTEGER DEFAULT 0,
+                recommended_actions TEXT DEFAULT '[]',
+                source_cycle INTEGER DEFAULT 0,
+                dismissed INTEGER DEFAULT 0,
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Agent findings
+    # ------------------------------------------------------------------
+
+    def save_finding(self, finding_id: str, agent_name: str,
+                     activity_type: str, severity: str, confidence: float,
+                     description: str, indicators: list = None,
+                     affected_assets: list = None, mitre_tactics: list = None,
+                     mitre_techniques: list = None, evidence_count: int = 0,
+                     recommended_actions: list = None,
+                     source_cycle: int = 0) -> Dict:
+        """Save an agent finding to the database."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_findings "
+                "(finding_id, agent_name, activity_type, severity, confidence, "
+                "description, indicators, affected_assets, mitre_tactics, "
+                "mitre_techniques, evidence_count, recommended_actions, "
+                "source_cycle, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (finding_id, agent_name, activity_type, severity, confidence,
+                 description,
+                 json.dumps(indicators or []),
+                 json.dumps(affected_assets or []),
+                 json.dumps(mitre_tactics or []),
+                 json.dumps(mitre_techniques or []),
+                 evidence_count,
+                 json.dumps(recommended_actions or []),
+                 source_cycle, now),
+            )
+            conn.commit()
+            return {'finding_id': finding_id, 'agent_name': agent_name,
+                    'activity_type': activity_type, 'created_at': now}
+        finally:
+            conn.close()
+
+    def get_findings(self, limit: int = 100, include_dismissed: bool = False,
+                     agent_name: str = None, min_severity: str = None) -> List[Dict]:
+        """Get agent findings with optional filtering."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            query = "SELECT * FROM agent_findings WHERE 1=1"
+            params = []
+
+            if not include_dismissed:
+                query += " AND dismissed = 0"
+            if agent_name:
+                query += " AND agent_name = ?"
+                params.append(agent_name)
+            if min_severity:
+                severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+                threshold = severity_order.get(min_severity.lower(), 3)
+                allowed = [s for s, v in severity_order.items() if v <= threshold]
+                placeholders = ",".join("?" for _ in allowed)
+                query += f" AND severity IN ({placeholders})"
+                params.extend(allowed)
+
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for r in rows:
+                results.append({
+                    'id': r['id'],
+                    'finding_id': r['finding_id'],
+                    'agent_name': r['agent_name'],
+                    'activity_type': r['activity_type'],
+                    'severity': r['severity'],
+                    'confidence': r['confidence'],
+                    'description': r['description'],
+                    'indicators': json.loads(r['indicators']),
+                    'affected_assets': json.loads(r['affected_assets']),
+                    'mitre_tactics': json.loads(r['mitre_tactics']),
+                    'mitre_techniques': json.loads(r['mitre_techniques']),
+                    'evidence_count': r['evidence_count'],
+                    'recommended_actions': json.loads(r['recommended_actions']),
+                    'source_cycle': r['source_cycle'],
+                    'dismissed': bool(r['dismissed']),
+                    'created_at': r['created_at'],
+                })
+            return results
+        finally:
+            conn.close()
+
+    def dismiss_finding(self, finding_id: str) -> bool:
+        """Mark a finding as dismissed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE agent_findings SET dismissed = 1 WHERE finding_id = ?",
+                (finding_id,),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def get_findings_summary(self) -> Dict:
+        """Get a summary of findings by severity and agent."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            # Count by severity
+            rows = conn.execute(
+                "SELECT severity, COUNT(*) FROM agent_findings "
+                "WHERE dismissed = 0 GROUP BY severity"
+            ).fetchall()
+            by_severity = {r[0]: r[1] for r in rows}
+
+            # Count by agent
+            rows = conn.execute(
+                "SELECT agent_name, COUNT(*) FROM agent_findings "
+                "WHERE dismissed = 0 GROUP BY agent_name"
+            ).fetchall()
+            by_agent = {r[0]: r[1] for r in rows}
+
+            total = conn.execute(
+                "SELECT COUNT(*) FROM agent_findings WHERE dismissed = 0"
+            ).fetchone()[0]
+
+            return {
+                'total': total,
+                'by_severity': by_severity,
+                'by_agent': by_agent,
+            }
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # LAN groups

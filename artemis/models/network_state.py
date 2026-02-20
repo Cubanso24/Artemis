@@ -82,6 +82,132 @@ class AssetContext:
 
 
 @dataclass
+class NetworkMapContext:
+    """Context derived from the profiled network map.
+
+    This bridges the network mapper's deep per-device knowledge into the
+    agent framework so that hunting agents can reason about *what* a
+    device is, not just what traffic it produced.
+    """
+    total_nodes: int = 0
+    internal_nodes: int = 0
+    external_nodes: int = 0
+
+    # Device-type inventory  (e.g. {"server": 12, "workstation": 48, ...})
+    device_type_counts: Dict[str, int] = field(default_factory=dict)
+
+    # Quick-lookup tables keyed by IP
+    ip_to_device_type: Dict[str, str] = field(default_factory=dict)
+    ip_to_roles: Dict[str, List[str]] = field(default_factory=dict)
+    ip_to_services: Dict[str, List[str]] = field(default_factory=dict)
+    ip_to_os: Dict[str, str] = field(default_factory=dict)
+    ip_to_hostnames: Dict[str, List[str]] = field(default_factory=dict)
+
+    # Infrastructure awareness
+    gateways: List[str] = field(default_factory=list)
+    dns_servers: List[str] = field(default_factory=list)
+    domain_controllers: List[str] = field(default_factory=list)
+    ntp_servers: List[str] = field(default_factory=list)
+
+    # Per-device traffic baselines (ip -> {avg_conns, avg_bytes, ...})
+    baselines: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def device_type_for(self, ip: str) -> str:
+        """Return the profiled device type for an IP, or 'unknown'."""
+        return self.ip_to_device_type.get(ip, 'unknown')
+
+    def roles_for(self, ip: str) -> List[str]:
+        """Return the inferred roles for an IP."""
+        return self.ip_to_roles.get(ip, [])
+
+    def is_server(self, ip: str) -> bool:
+        return self.ip_to_device_type.get(ip, '') == 'server'
+
+    def is_workstation(self, ip: str) -> bool:
+        return self.ip_to_device_type.get(ip, '') == 'workstation'
+
+    def is_infrastructure(self, ip: str) -> bool:
+        return ip in self.gateways or ip in self.dns_servers or ip in self.domain_controllers
+
+    @classmethod
+    def from_network_map(cls, nodes: Dict[str, Any]) -> 'NetworkMapContext':
+        """Build context from network mapper's node dictionary.
+
+        Args:
+            nodes: Dict mapping node-id -> node dict (as returned by
+                   NetworkMapperPlugin.get_network_graph() or the raw
+                   ``nodes`` dict on the plugin).
+        """
+        ctx = cls()
+        device_counts: Dict[str, int] = {}
+
+        for node_id, node in nodes.items():
+            # node can be a dict (from to_dict) or the raw NetworkNode
+            if hasattr(node, 'ip'):
+                # Raw NetworkNode object
+                ip = node.ip
+                dtype = getattr(node, 'device_type', 'unknown') or 'unknown'
+                roles = list(getattr(node, 'roles', set()) or set())
+                services = [f"{p}/{pr}" for p, pr in (getattr(node, 'services', set()) or set())]
+                os_info = getattr(node, 'os_info', '') or ''
+                hostnames = list(getattr(node, 'hostnames', set()) or set())
+                is_int = getattr(node, 'is_internal', True)
+                is_gw = bool(getattr(node, 'is_gateway_for', None))
+                total_conns = getattr(node, 'total_connections', 0) or 0
+                bytes_in = getattr(node, 'bytes_received', 0) or 0
+                bytes_out = getattr(node, 'bytes_sent', 0) or 0
+                ntp = getattr(node, 'ntp_server', False)
+            else:
+                # Dict representation
+                ip = node.get('ip', node_id)
+                dtype = node.get('device_type', 'unknown') or 'unknown'
+                roles = node.get('roles', [])
+                services = node.get('services', [])
+                if services and isinstance(services[0], (list, tuple)):
+                    services = [f"{p}/{pr}" for p, pr in services]
+                os_info = node.get('os_info', '') or ''
+                hostnames = node.get('hostnames', [])
+                is_int = node.get('is_internal', True)
+                is_gw = bool(node.get('is_gateway_for'))
+                total_conns = node.get('total_connections', 0) or 0
+                bytes_in = node.get('bytes_received', 0) or 0
+                bytes_out = node.get('bytes_sent', 0) or 0
+                ntp = node.get('ntp_server', False)
+
+            ctx.total_nodes += 1
+            if is_int:
+                ctx.internal_nodes += 1
+            else:
+                ctx.external_nodes += 1
+
+            device_counts[dtype] = device_counts.get(dtype, 0) + 1
+            ctx.ip_to_device_type[ip] = dtype
+            ctx.ip_to_roles[ip] = roles
+            ctx.ip_to_services[ip] = services
+            ctx.ip_to_os[ip] = os_info
+            ctx.ip_to_hostnames[ip] = hostnames
+
+            if is_gw:
+                ctx.gateways.append(ip)
+            if 'dns_server' in roles:
+                ctx.dns_servers.append(ip)
+            if 'domain_controller' in roles or 'dc' in roles:
+                ctx.domain_controllers.append(ip)
+            if ntp:
+                ctx.ntp_servers.append(ip)
+
+            # Store per-device baseline
+            ctx.baselines[ip] = {
+                'total_connections': total_conns,
+                'bytes_in': bytes_in,
+                'bytes_out': bytes_out,
+            }
+
+        ctx.device_type_counts = device_counts
+        return ctx
+
+
+@dataclass
 class NetworkState:
     """
     Complete network state representation for meta-learner context.
@@ -94,8 +220,36 @@ class NetworkState:
     alert_history: AlertHistory = field(default_factory=AlertHistory)
     threat_intel: ThreatIntelligence = field(default_factory=ThreatIntelligence)
     asset_context: AssetContext = field(default_factory=AssetContext)
+    network_map: NetworkMapContext = field(default_factory=NetworkMapContext)
     system_load: float = 0.0  # 0.0 to 1.0
     recent_agent_findings: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_data_with_map(
+        cls,
+        hunting_data: Dict[str, Any],
+        network_nodes: Dict[str, Any],
+    ) -> 'NetworkState':
+        """Create NetworkState enriched with network map context.
+
+        This is the preferred factory when the network mapper has been
+        populated — it gives hunting agents full visibility into the
+        profiled device inventory so they can correlate traffic with
+        device identity.
+        """
+        state = cls.from_data(hunting_data)
+        state.network_map = NetworkMapContext.from_network_map(network_nodes)
+
+        # Enrich AssetContext from the map
+        for ip, dtype in state.network_map.ip_to_device_type.items():
+            if dtype in ('server', 'domain_controller'):
+                state.asset_context.high_value_targets.append(ip)
+        state.asset_context.critical_assets = (
+            state.network_map.gateways
+            + state.network_map.dns_servers
+            + state.network_map.domain_controllers
+        )
+        return state
 
     @classmethod
     def from_data(cls, hunting_data: Dict[str, Any]) -> 'NetworkState':
