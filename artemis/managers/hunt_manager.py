@@ -538,12 +538,91 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     # Build network map incrementally as each 1-hour
                     # window completes, so the map appears in the UI
                     # while backfill is still running.
+                    # Also run hunting agents every 50k events so
+                    # findings and LLM synthesis appear during backfill.
                     _bf_windows_mapped = [0]
+                    _bf_total_events = [0]
+                    _bf_agent_runs = [0]
+                    _AGENT_BATCH = 50_000
+                    _bf_buffer = {
+                        'network_connections': [],
+                        'dns_queries': [],
+                        'ntlm_logs': [],
+                    }
+
+                    def _run_agents_on_buffer():
+                        """Run hunting agents on the accumulated buffer."""
+                        nonlocal findings_this_cycle
+                        buf_size = sum(len(v) for v in _bf_buffer.values())
+                        if buf_size == 0:
+                            return
+                        _bf_agent_runs[0] += 1
+                        run_id = _bf_agent_runs[0]
+                        _backend = getattr(coordinator.llm_client, 'backend', 'none')
+                        _n_agents = len(coordinator.agents)
+                        _orch_label = 'CrewAI' if _crew_orchestrator else _backend
+                        log.info(f'Backfill agent run #{run_id}: '
+                                 f'{buf_size:,} events, {_n_agents} agents '
+                                 f'({_orch_label})')
+                        send('running',
+                             f'Cycle {cycle}: analyzing batch #{run_id} '
+                             f'({buf_size:,} events, '
+                             f'{_bf_total_events[0]:,} total so far)...',
+                             40, {'cycle': cycle,
+                                  'stage_detail': 'llm_analysis',
+                                  'total_nodes': len(nm.nodes),
+                                  'batch': run_id,
+                                  'batch_events': buf_size,
+                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+                        try:
+                            context = NetworkState.from_data_with_map(
+                                _bf_buffer, nm.nodes)
+                            if _crew_orchestrator:
+                                assessment = _crew_orchestrator.hunt(
+                                    data=_bf_buffer, network_state=context)
+                            else:
+                                assessment = coordinator.hunt(
+                                    data=_bf_buffer, network_state=context)
+
+                            for ao in assessment.get('agent_outputs', []):
+                                ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+                                for f in ao_dict.get('findings', []):
+                                    findings_this_cycle += 1
+                                    db.save_finding(
+                                        finding_id=f.get('fingerprint',
+                                                         f.get('activity_type', '') + str(cycle) + f'_b{run_id}'),
+                                        agent_name=ao_dict.get('agent_name', 'unknown'),
+                                        activity_type=f.get('activity_type', ''),
+                                        severity=ao_dict.get('severity', 'medium'),
+                                        confidence=ao_dict.get('confidence', 0.0),
+                                        description=f.get('description', ''),
+                                        indicators=f.get('indicators', []),
+                                        affected_assets=f.get('affected_assets', []),
+                                        mitre_tactics=ao_dict.get('mitre_tactics', []),
+                                        mitre_techniques=f.get('mitre_techniques', []),
+                                        evidence_count=len(f.get('evidence', [])),
+                                        recommended_actions=ao_dict.get('recommended_actions', []),
+                                        source_cycle=cycle,
+                                    )
+                            llm_synth = assessment.get('llm_synthesis')
+                            if llm_synth:
+                                try:
+                                    db.save_synthesis(cycle, llm_synth)
+                                except Exception:
+                                    pass
+                            log.info(f'Backfill agent run #{run_id} done')
+                        except Exception as ae:
+                            log.warning(f'Backfill agent run #{run_id} error: {ae}')
+
+                        # Clear buffer for next batch
+                        for k in _bf_buffer:
+                            _bf_buffer[k] = []
 
                     def _map_window(window_data):
                         conns = window_data.get('network_connections', [])
                         dns_q = window_data.get('dns_queries', [])
                         ntlm_l = window_data.get('ntlm_logs', [])
+                        window_events = len(conns) + len(dns_q) + len(ntlm_l)
                         if conns or dns_q or ntlm_l:
                             nm.execute(
                                 network_connections=conns,
@@ -551,16 +630,30 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                                 ntlm_logs=ntlm_l,
                             )
                             _bf_windows_mapped[0] += 1
+                            _bf_total_events[0] += window_events
+
+                            # Accumulate for agent analysis
+                            _bf_buffer['network_connections'].extend(conns)
+                            _bf_buffer['dns_queries'].extend(dns_q)
+                            _bf_buffer['ntlm_logs'].extend(ntlm_l)
+
                             # Save map periodically so UI can see progress
                             if _bf_windows_mapped[0] % 3 == 0:
                                 nm.save_map()
                                 send('running',
                                      f'Cycle {cycle}: backfill — mapped '
-                                     f'{_bf_windows_mapped[0]} windows so far '
-                                     f'({len(nm.nodes)} nodes)...',
+                                     f'{_bf_windows_mapped[0]} windows '
+                                     f'({_bf_total_events[0]:,} events, '
+                                     f'{len(nm.nodes)} nodes)...',
                                      30, {'cycle': cycle,
                                           'stage_detail': 'backfill_mapping',
-                                          'total_nodes': len(nm.nodes)})
+                                          'total_nodes': len(nm.nodes),
+                                          'total_events': _bf_total_events[0]})
+
+                            # Run agents every 50k events
+                            buf_size = sum(len(v) for v in _bf_buffer.values())
+                            if buf_size >= _AGENT_BATCH:
+                                _run_agents_on_buffer()
 
                     hunting_data = pipeline.collect_hunting_data(
                         earliest_time=bf_start,
@@ -569,27 +662,44 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                         progress_callback=_splunk_progress,
                         per_window_callback=_map_window,
                     )
+                    # Run agents on any remaining buffered events
+                    _run_agents_on_buffer()
                     # Final save after all windows
                     if _bf_windows_mapped[0] > 0:
                         nm.save_map()
                         log.info(f'Backfill: incrementally mapped '
-                                 f'{_bf_windows_mapped[0]} windows → '
-                                 f'{len(nm.nodes)} nodes')
+                                 f'{_bf_windows_mapped[0]} windows, '
+                                 f'{_bf_total_events[0]:,} events → '
+                                 f'{len(nm.nodes)} nodes, '
+                                 f'{_bf_agent_runs[0]} agent runs')
                 else:
                     hunting_data = pipeline.collect_hunting_data(
                         time_range=time_range)
 
                 # ---------------------------------------------------------
-                # Decide whether to stream or materialise events.
-                # SqliteEventStore (backfill) can hold tens of millions
-                # of events — materialising them all into Python lists
-                # at once would exhaust RAM.  Instead, stream them into
-                # the network mapper and pass only event *counts* and a
-                # manageable sample to the coordinator / agents.
+                # For backfill cycles, the network mapper and hunting
+                # agents already ran incrementally (every 50k events)
+                # inside the per-window callback.  Skip the redundant
+                # full-dataset pass and go straight to cycle summary.
                 # ---------------------------------------------------------
                 _is_sqlite = hasattr(hunting_data, 'iter_events')
+                _backfill_already_processed = _is_sqlite and bf_start
 
-                if _is_sqlite:
+                if _backfill_already_processed:
+                    # Backfill: counts for summary only
+                    conn_count = hunting_data.count('network_connections')
+                    dns_count = hunting_data.count('dns_queries')
+                    ntlm_count = hunting_data.count('ntlm_logs')
+                    has_data = (conn_count + dns_count + ntlm_count) > 0
+                    if has_data:
+                        result = {
+                            'total_nodes': len(nm.nodes),
+                            'internal_nodes': sum(
+                                1 for n in nm.nodes.values()
+                                if getattr(n, 'is_internal', False)
+                            ),
+                        }
+                elif _is_sqlite:
                     conn_count = hunting_data.count('network_connections')
                     dns_count = hunting_data.count('dns_queries')
                     ntlm_count = hunting_data.count('ntlm_logs')
@@ -601,7 +711,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     conn_count, dns_count, ntlm_count = len(conns), len(dns), len(ntlm)
                     has_data = bool(conns or dns or ntlm)
 
-                if has_data:
+                if has_data and not _backfill_already_processed:
                     # -- Feed network mapper (streaming if SQLite) --
                     if _is_sqlite:
                         total_events = conn_count + dns_count + ntlm_count
@@ -626,11 +736,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     nm.save_map()
 
                     # Build a lightweight data dict for the coordinator
-                    # and agents.  With millions of events the agents
-                    # cannot usefully inspect every row — they operate on
-                    # patterns.  We provide counts and a sample so the
-                    # LLM hypothesis generation and rule-based agents can
-                    # still function.
+                    # and agents.
                     _SAMPLE = 50_000
                     if _is_sqlite:
                         agent_data = {
@@ -646,7 +752,6 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                             'ids_alerts': list(
                                 hunting_data.iter_events('ids_alerts', limit=_SAMPLE)
                             ) if hunting_data.count('ids_alerts') else [],
-                            # Preserve counts so summaries are accurate
                             '_counts': hunting_data.counts_by_type(),
                         }
                     else:
@@ -715,6 +820,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                              f'Cycle {cycle}: agent error: {ae}', 50,
                              {'cycle': cycle, 'agent_error': str(ae)})
 
+                if has_data:
                     msg = (f'Cycle {cycle} done: {conn_count} conns, '
                            f'{dns_count} DNS, {ntlm_count} NTLM → '
                            f'{result["total_nodes"]} nodes'
