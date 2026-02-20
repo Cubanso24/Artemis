@@ -325,7 +325,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         for s in node_data.get('services', []):
             parts = s.split('/')
             if len(parts) == 2:
-                node.services.add((parts[0], parts[1]))
+                try:
+                    node.services.add((int(parts[0]), parts[1]))
+                except (ValueError, TypeError):
+                    node.services.add((parts[0], parts[1]))
         node.total_connections = node_data.get('total_connections', 0)
         node.bytes_sent = node_data.get('bytes_sent', 0)
         node.bytes_received = node_data.get('bytes_received', 0)
@@ -592,6 +595,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         dst_node.bytes_received += bytes_out
 
         if dst_port:
+            try:
+                dst_port = int(dst_port)
+            except (ValueError, TypeError):
+                pass
             dst_node.services.add((dst_port, protocol))
 
         # Mark both nodes as dirty for role inference
@@ -3938,7 +3945,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     if node.services:
                         svcs = ", ".join(
                             f"{p}/{pr}"
-                            for p, pr in sorted(node.services)[:5]
+                            for p, pr in sorted(node.services, key=lambda x: (str(x[0]), x[1]))[:5]
                         )
                         f.write(
                             f"                              "
@@ -3975,7 +3982,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     reverse=True,
                 )[:20]:
                     svcs = ", ".join(
-                        f"{p}/{pr}" for p, pr in sorted(node.services)[:8]
+                        f"{p}/{pr}" for p, pr in sorted(node.services, key=lambda x: (str(x[0]), x[1]))[:8]
                     )
                     vlan_tag = f" [v{node.vlan}]" if node.vlan != '0' else ""
                     f.write(
@@ -4158,7 +4165,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     'file_types': n.file_mime_types[:5],
                 })
 
-        # Sort each category by connection count and cap at 25
+        # Real device type counts (before display cap)
+        device_type_real_counts = {dtype: len(items) for dtype, items in device_inventory.items()}
+
+        # Sort each category by connection count and cap at 25 for display
         for dtype in device_inventory:
             device_inventory[dtype].sort(key=lambda x: x['connections'], reverse=True)
             device_inventory[dtype] = device_inventory[dtype][:25]
@@ -4211,9 +4221,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
             ],
             'device_inventory': device_inventory_ordered,
             'sensor_inventory': sensor_inventory_out,
-            'device_counts': {
-                dtype: len(items) for dtype, items in device_inventory_ordered.items()
-            },
+            'device_counts': device_type_real_counts,
             'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
             'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
             'virtual_machines': sum(1 for n in nodes if n.is_internal and n.is_virtual),
@@ -4288,10 +4296,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         # Separate internal and external nodes
         internal_nodes = [n for n in filtered if n.is_internal]
-        external_keys = {
-            self._node_key(n.sensor_id, n.vlan, n.ip)
-            for n in filtered if not n.is_internal
-        }
+        external_ips = {n.ip for n in filtered if not n.is_internal}
 
         # Compute VLAN distribution from ALL internal nodes (not just top-N)
         all_vlan_counts: Dict[str, int] = {}
@@ -4302,9 +4307,26 @@ class NetworkMapperPlugin(ArtemisPlugin):
         top = sorted(
             internal_nodes, key=lambda n: n.total_connections, reverse=True
         )[:max_nodes]
-        top_keys = {
-            self._node_key(n.sensor_id, n.vlan, n.ip) for n in top
-        }
+
+        # Deduplicate by (sensor, IP): routers/gateways on multiple VLANs
+        # produce separate node keys — merge into one graph node.
+        _best: Dict[tuple, list] = {}
+        for n in top:
+            sid_ip = (n.sensor_id, n.ip)
+            key = self._node_key(n.sensor_id, n.vlan, n.ip)
+            if sid_ip not in _best:
+                _best[sid_ip] = [n, key, {n.vlan}]
+            else:
+                _best[sid_ip][2].add(n.vlan)
+                if n.total_connections > _best[sid_ip][0].total_connections:
+                    _best[sid_ip][0] = n
+                    _best[sid_ip][1] = key
+
+        top = [entry[0] for entry in _best.values()]
+        top_keys = {entry[1] for entry in _best.values()}
+        # Canonical key lookup: (sensor_id, ip) -> graph node ID
+        _ip_canon = {k: v[1] for k, v in _best.items()}
+        _ip_vlans = {k: v[2] for k, v in _best.items()}
 
         nodes = []
         internet_total_conns = 0
@@ -4334,8 +4356,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 node.connections_to.items(),
                 key=lambda x: x[1], reverse=True,
             ):
-                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
-                if dst_key in external_keys:
+                if dst_ip in external_ips:
                     ext_conns_out.append({'ip': dst_ip, 'count': count})
                     internet_unique_ips.add(dst_ip)
                     internet_total_conns += count
@@ -4345,8 +4366,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 node.connections_from.items(),
                 key=lambda x: x[1], reverse=True,
             ):
-                src_key = self._node_key(node.sensor_id, node.vlan, src_ip)
-                if src_key in external_keys:
+                if src_ip in external_ips:
                     ext_conns_in.append({'ip': src_ip, 'count': count})
                     internet_unique_ips.add(src_ip)
 
@@ -4354,21 +4374,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
             # Include ALL internal peers (both directions) regardless
             # of whether the peer is in the current graph view.
             int_conns_out = []
-            own_key = self._node_key(node.sensor_id, node.vlan, node.ip)
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1], reverse=True,
             )[:30]:
-                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
-                if dst_key != own_key and dst_key not in external_keys:
+                if dst_ip != node.ip and dst_ip not in external_ips:
                     int_conns_out.append({'ip': dst_ip, 'count': count})
             int_conns_in = []
             for src_ip, count in sorted(
                 node.connections_from.items(),
                 key=lambda x: x[1], reverse=True,
             )[:30]:
-                src_key = self._node_key(node.sensor_id, node.vlan, src_ip)
-                if src_key != own_key and src_key not in external_keys:
+                if src_ip != node.ip and src_ip not in external_ips:
                     int_conns_in.append({'ip': src_ip, 'count': count})
 
             # Count how many IPs this MAC has been seen with
@@ -4384,10 +4401,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             )
 
             nodes.append({
-                'id': self._node_key(node.sensor_id, node.vlan, node.ip),
+                'id': _ip_canon[(node.sensor_id, node.ip)],
                 'label': label,
                 'sensor_id': node.sensor_id,
                 'vlan': node.vlan,
+                'vlans': sorted(_ip_vlans.get((node.sensor_id, node.ip), {node.vlan})),
                 'subnet': subnet,
                 'group': 'internal',
                 'size': min(node.total_connections / 10, 50),
@@ -4454,25 +4472,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'total_connections': internet_total_conns,
             })
 
-        # Build edges between internal nodes
+        # Build edges between internal nodes (using canonical keys)
         edges = []
         seen_edges: Set[tuple] = set()
         for node in top:
-            src_key = self._node_key(node.sensor_id, node.vlan, node.ip)
+            src_key = _ip_canon[(node.sensor_id, node.ip)]
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )[:15]:
-                dst_key = self._node_key(node.sensor_id, node.vlan, dst_ip)
-                if dst_key not in top_keys:
+                dst_canon = _ip_canon.get((node.sensor_id, dst_ip))
+                if dst_canon is None or dst_canon == src_key:
                     continue
-                edge_key = tuple(sorted([src_key, dst_key]))
+                edge_key = tuple(sorted([src_key, dst_canon]))
                 if edge_key in seen_edges:
                     continue
                 edges.append({
                     'from': src_key,
-                    'to': dst_key,
+                    'to': dst_canon,
                     'value': count,
                     'title': f"{count} connections",
                 })
@@ -4481,10 +4499,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Build edges from internal nodes to the Internet cloud
         if has_external:
             for node in top:
-                src_key = self._node_key(node.sensor_id, node.vlan, node.ip)
+                src_key = _ip_canon[(node.sensor_id, node.ip)]
                 ext_count = sum(
                     count for dst_ip, count in node.connections_to.items()
-                    if self._node_key(node.sensor_id, node.vlan, dst_ip) in external_keys
+                    if dst_ip in external_ips
                 )
                 if ext_count > 0:
                     edges.append({

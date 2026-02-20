@@ -1576,6 +1576,8 @@
             if (vlan === null) return _fullGraphData;
             const filteredNodes = _fullGraphData.nodes.filter(n => {
                 if (n.group === 'internet') return true;
+                // Use vlans array for multi-VLAN nodes (routers/gateways)
+                if (n.vlans && n.vlans.length) return n.vlans.includes(vlan);
                 return (n.vlan || '0') === vlan;
             });
             const nodeIds = new Set(filteredNodes.map(n => n.id));
@@ -2048,7 +2050,15 @@
                     // Use tier as rank constraint
                     rank: function(node) {
                         if (node.hasClass('internet-cloud')) return 0;
-                        if (node.hasClass('subnet-group')) return undefined;
+                        if (node.hasClass('subnet-group')) {
+                            // Use the minimum tier of children so the group ranks properly
+                            const children = node.children();
+                            if (children.length > 0) {
+                                const tiers = children.map(c => c.data('_tier') !== undefined ? c.data('_tier') : 3);
+                                return Math.min(...tiers);
+                            }
+                            return 3;
+                        }
                         return node.data('_tier') !== undefined ? node.data('_tier') : 3;
                     },
                 },
