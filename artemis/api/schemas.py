@@ -30,6 +30,7 @@ class ContinuousHuntRequest(BaseModel):
     lookback_minutes: int = 20
     mode: str = "PARALLEL"
     target_hosts: Optional[list] = None   # Filter to specific hosts/sensors
+    backfill_from: Optional[str] = None   # ISO 8601 date, e.g. "2025-01-15T00:00:00"
 
 
 class PluginConfig(BaseModel):

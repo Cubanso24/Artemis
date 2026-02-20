@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from artemis.api.schemas import (
     PluginConfig, ProfileRequest, BackgroundProfileRequest,
+    ContinuousHuntRequest,
     LanGroupCreate, LanGroupUpdate,
     DeviceFlagRequest, ThreatIntelConfigRequest, ThreatIntelLookupRequest,
     ThreatIntelBatchRequest, LLMSettingsRequest,
@@ -292,11 +293,7 @@ async def stop_background_profile():
 # --- Continuous ingestion --------------------------------------------------
 
 @router.post("/api/network-graph/continuous/start")
-async def start_continuous_ingestion(
-    interval_minutes: int = 15,
-    lookback_minutes: int = 20,
-    backfill_from: Optional[str] = None,
-):
+async def start_continuous_ingestion(req: ContinuousHuntRequest = ContinuousHuntRequest()):
     """Start continuous network map ingestion.
 
     Runs a background loop that queries Splunk every *interval_minutes*
@@ -310,7 +307,8 @@ async def start_continuous_ingestion(
     *lookback_minutes* window.
     """
     return await hunt_manager.start_continuous(
-        interval_minutes, lookback_minutes, backfill_from=backfill_from,
+        req.interval_minutes, req.lookback_minutes,
+        backfill_from=req.backfill_from,
     )
 
 
