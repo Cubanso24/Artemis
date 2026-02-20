@@ -303,7 +303,7 @@ async def start_continuous_ingestion(req: ContinuousHuntRequest = ContinuousHunt
 
     If *backfill_from* is set (ISO 8601 date, e.g. ``"2025-01-15"``),
     the **first cycle** pulls all data from that date to now (using
-    automatic 24-hour windowing), then subsequent cycles use the normal
+    automatic 1-hour windowing), then subsequent cycles use the normal
     *lookback_minutes* window.
     """
     return await hunt_manager.start_continuous(

@@ -5375,62 +5375,111 @@
             refreshHuntStats();
             setInterval(refreshHuntStats, 10000);
 
-            // --- Hunt log messages ---
-            const huntMessages = [
-                'Scanning 10.0.1.0/24 subnet for anomalies...',
-                'Deep packet inspection: TCP SYN flood check...',
-                'Analyzing DNS query patterns for DGA detection...',
-                'Checking SSL/TLS certificates for C2 indicators...',
-                'Correlating NetFlow data with known IOCs...',
-                'Inspecting ARP tables for spoofing attempts...',
-                'Running YARA rules against captured payloads...',
-                'Matching Sigma rules: lateral movement detection...',
-                'Behavioral analysis: process injection patterns...',
-                'Scanning for Cobalt Strike beacon signatures...',
-                'Checking HTTP headers for webshell indicators...',
-                'Entropy analysis on outbound DNS TXT records...',
-                'Monitoring SMB traffic for EternalBlue exploits...',
-                'Inspecting PowerShell execution patterns...',
-                'Hunting for persistence mechanisms in registry...',
-                'Correlating threat intel feeds with network flows...',
-                'Checking for data exfiltration via DNS tunneling...',
-                'Analyzing beaconing intervals for C2 callbacks...',
-                'Scanning HTTPS SNI fields for suspicious domains...',
-                'Validating certificate chains for MITM detection...',
-                'Profiling new host: fingerprinting OS and services...',
-                'Cross-referencing with MITRE ATT&CK techniques...',
-                'Hunting for Mimikatz credential dump signatures...',
-                'Inspecting LDAP queries for BloodHound activity...',
-                'Checking for Kerberoasting attack patterns...',
-                'Monitoring WMI event subscriptions for persistence...',
-                'Analyzing scheduled tasks for malicious entries...',
-                'Scanning for obfuscated JavaScript in HTTP traffic...',
-                'Detecting fileless malware execution via AMSI logs...',
-                'Hunting for anomalous parent-child process trees...',
-            ];
-            const statusMessages = [
-                'SCANNING ENVIRONMENT',
-                'HUNTING THREATS',
-                'ANALYZING TRAFFIC',
-                'DEEP INSPECTION',
-                'CORRELATING IOCs',
-                'BEHAVIORAL ANALYSIS',
-                'PATTERN MATCHING',
-                'ACTIVE DEFENSE',
-            ];
+            // --- Agent activity feed (left HUD) ---
+            const agentLabels = {
+                'c2_hunter': 'C2 Hunter',
+                'reconnaissance_hunter': 'Recon Hunter',
+                'lateral_movement_hunter': 'Lateral Movement',
+                'collection_exfiltration_hunter': 'Exfil Hunter',
+                'impact_hunter': 'Impact Hunter',
+            };
+            let agentLines = ['Waiting for agent data...'];
+            let agentIdx = 0;
+            let lastSynthesisId = null;
 
-            let logIdx = 0;
-            let statusIdx = 0;
+            async function refreshAgentActivity() {
+                try {
+                    const [findingsResp, synthResp, summaryResp] = await Promise.all([
+                        fetch('/api/findings?limit=10').catch(() => null),
+                        fetch('/api/llm-synthesis/latest').catch(() => null),
+                        fetch('/api/findings/summary').catch(() => null),
+                    ]);
+
+                    const lines = [];
+
+                    // Latest LLM synthesis reasoning
+                    if (synthResp && synthResp.ok) {
+                        const synth = await synthResp.json();
+                        if (synth && synth.reasoning && synth.id !== lastSynthesisId) {
+                            lastSynthesisId = synth.id;
+                        }
+                        if (synth && synth.reasoning) {
+                            const sev = (synth.overall_severity || 'low').toUpperCase();
+                            lines.push(`Coordinator: ${sev} severity — ${synth.reasoning.substring(0, 120)}`);
+                        }
+                        if (synth && synth.recommended_actions) {
+                            try {
+                                const actions = typeof synth.recommended_actions === 'string'
+                                    ? JSON.parse(synth.recommended_actions) : synth.recommended_actions;
+                                if (Array.isArray(actions) && actions.length > 0) {
+                                    const a = actions[0];
+                                    const txt = typeof a === 'string' ? a : (a.action || a.description || JSON.stringify(a));
+                                    lines.push(`Action: ${txt.substring(0, 120)}`);
+                                }
+                            } catch(_) {}
+                        }
+                    }
+
+                    // Per-agent summary from findings
+                    if (summaryResp && summaryResp.ok) {
+                        const summary = await summaryResp.json();
+                        if (summary.by_agent) {
+                            for (const [agent, count] of Object.entries(summary.by_agent)) {
+                                const label = agentLabels[agent] || agent;
+                                lines.push(`${label}: ${count} finding${count !== 1 ? 's' : ''} active`);
+                            }
+                        }
+                        if (summary.by_severity) {
+                            const crit = summary.by_severity.critical || 0;
+                            const high = summary.by_severity.high || 0;
+                            if (crit + high > 0) {
+                                lines.push(`Alert: ${crit} critical, ${high} high severity findings`);
+                            }
+                        }
+                    }
+
+                    // Recent individual findings
+                    if (findingsResp && findingsResp.ok) {
+                        const findings = await findingsResp.json();
+                        if (Array.isArray(findings)) {
+                            for (const f of findings.slice(0, 5)) {
+                                const label = agentLabels[f.agent_name] || f.agent_name || 'Agent';
+                                const desc = (f.description || f.activity_type || 'investigating').substring(0, 100);
+                                lines.push(`${label}: ${desc}`);
+                            }
+                        }
+                    }
+
+                    if (lines.length > 0) agentLines = lines;
+                } catch (e) {
+                    console.debug('Agent activity refresh:', e);
+                }
+            }
+            refreshAgentActivity();
+            setInterval(refreshAgentActivity, 15000);
+
+            // Rotate through real agent lines
             setInterval(() => {
                 const el = document.getElementById('hunt-log-line');
-                if (el) el.textContent = huntMessages[logIdx % huntMessages.length];
-                logIdx++;
-            }, 2800);
+                if (el && agentLines.length > 0) {
+                    el.textContent = agentLines[agentIdx % agentLines.length];
+                    agentIdx++;
+                }
+            }, 3500);
+
+            // Status text: show agent summary or live ingest status
+            // (live ingest override is handled in refreshHuntStats above)
             setInterval(() => {
                 const el = document.getElementById('hunt-status-text');
-                if (el) el.textContent = statusMessages[statusIdx % statusMessages.length];
-                statusIdx++;
-            }, 5000);
+                if (!el) return;
+                // Only update if not overridden by live ingestion
+                if (el.textContent.startsWith('LIVE INGESTION')) return;
+                if (agentLines.length > 1) {
+                    el.textContent = `${agentLines.length} AGENT REPORTS`;
+                } else {
+                    el.textContent = 'MONITORING';
+                }
+            }, 8000);
 
             // --- Main render loop ---
             function draw() {

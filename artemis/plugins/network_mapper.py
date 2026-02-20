@@ -1402,7 +1402,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
     @staticmethod
     def _generate_profile_windows(
         time_range: str,
-        window_hours: int = 24,
+        window_hours: int = 1,
     ) -> List[Tuple[str, str]]:
         """Split a time range into fixed-size windows for profiling.
 
@@ -1903,9 +1903,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """
         Profile network devices by querying Splunk zeek logs.
 
-        For time ranges > 24 h the work is split into 24-hour windows so
-        that no single Splunk search job becomes too large.  Results are
-        merged across windows before enrichment and classification.
+        For time ranges > 1 h the work is split into 1-hour windows so
+        that results appear incrementally and no single Splunk search
+        job becomes too large.  Results are merged across windows
+        before enrichment and classification.
 
         Args:
             splunk_connector: SplunkConnector instance
@@ -1938,7 +1939,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         _progress('profile', f'Network map loaded: {len(self.nodes)} nodes ({internal_count} internal)', 30)
 
         # ---- Split time range into windows ----
-        windows = self._generate_profile_windows(time_range, window_hours=24)
+        windows = self._generate_profile_windows(time_range, window_hours=1)
         total_windows = len(windows)
         logger.info(f"Profiling will use {total_windows} time window(s)")
 

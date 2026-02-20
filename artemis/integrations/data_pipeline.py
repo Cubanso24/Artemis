@@ -213,7 +213,7 @@ class DataPipeline:
     @staticmethod
     def _generate_time_windows(
         time_range: str,
-        window_hours: int = 24,
+        window_hours: int = 1,
         earliest_time: Optional[str] = None,
         latest_time: Optional[str] = None,
     ) -> List[Tuple[str, str]]:
@@ -274,9 +274,9 @@ class DataPipeline:
         """
         Collect data from Splunk and merge into *store*.
 
-        For time ranges > 24 hours, the query is broken into 24-hour
-        windows so the Splunk search head isn't overwhelmed by a single
-        massive job.  Each window's per-type queries run in parallel,
+        For time ranges > 1 hour, the query is broken into 1-hour
+        windows so results appear incrementally and the Splunk search
+        head isn't overwhelmed.  Each window's per-type queries run in parallel,
         then results are merged into *store* before the next window so
         that per-window memory is freed immediately (important when
         *store* is a SqliteEventStore).
@@ -299,7 +299,7 @@ class DataPipeline:
         else:
             total_hours = self._parse_time_range_hours(time_range)
 
-        if total_hours <= 24:
+        if total_hours <= 1:
             # Short range — single pass
             if earliest_time and latest_time:
                 window = self._collect_splunk_window(
@@ -315,14 +315,14 @@ class DataPipeline:
             store.update(window)
             return
 
-        # Long range — split into 24h windows
+        # Long range — split into 1h windows for faster incremental results
         windows = self._generate_time_windows(
-            time_range, window_hours=24,
+            time_range, window_hours=1,
             earliest_time=earliest_time, latest_time=latest_time,
         )
         self.logger.info(
             f"Large time range ({time_range} = {total_hours:.0f}h): "
-            f"splitting into {len(windows)} x 24h windows"
+            f"splitting into {len(windows)} x 1h windows"
         )
 
         for idx, (earliest, latest) in enumerate(windows, 1):

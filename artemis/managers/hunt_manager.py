@@ -227,7 +227,7 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
              {'total': total, 'profiled': already_profiled,
               'newly_profiled': 0, 'phase': 'querying'})
 
-        windows = nm._generate_profile_windows(time_range, window_hours=24)
+        windows = nm._generate_profile_windows(time_range, window_hours=1)
         total_windows = len(windows)
         log.info(f"BG Profile: {total_windows} query window(s)")
 
@@ -374,7 +374,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
 
     If *backfill_from* is set (ISO 8601 date string), the first cycle
     pulls all data from that date to now using absolute time ranges
-    (the data pipeline auto-splits into 24-hour windows and uses
+    (the data pipeline auto-splits into 1-hour windows and uses
     SQLite storage to avoid memory exhaustion).
 
     The process writes its state to the ``hunt_progress`` table so the
