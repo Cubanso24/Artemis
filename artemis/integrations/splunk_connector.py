@@ -334,8 +334,8 @@ class SplunkConnector:
         | spath
         | eval timestamp=_time
         | eval vlan=coalesce(vlan, "0")
-        | table _time host vlan id.orig_h id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
-        | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as destination_ip, "id.resp_p" as destination_port, proto as protocol, orig_bytes as bytes_in, resp_bytes as bytes_out
+        | table _time host vlan id.orig_h id.orig_p id.resp_h id.resp_p proto orig_bytes resp_bytes conn_state
+        | rename host as sensor_id, "id.orig_h" as source_ip, "id.orig_p" as source_port, "id.resp_h" as destination_ip, "id.resp_p" as destination_port, proto as protocol, orig_bytes as bytes_in, resp_bytes as bytes_out
         '''
 
         if source_filter:
@@ -356,6 +356,7 @@ class SplunkConnector:
             connections.append({
                 "source_ip": get_first(event.get("source_ip")),
                 "destination_ip": get_first(event.get("destination_ip")),
+                "source_port": int(get_first(event.get("source_port"), 0)),
                 "destination_port": int(get_first(event.get("destination_port"), 0)),
                 "protocol": get_first(event.get("protocol"), "tcp"),
                 "bytes_in": int(get_first(event.get("bytes_in"), 0)),

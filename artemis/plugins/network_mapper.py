@@ -125,6 +125,8 @@ class NetworkNode:
         self.bytes_received = 0
         self.connections_to: Dict[str, int] = defaultdict(int)  # IP -> count
         self.connections_from: Dict[str, int] = defaultdict(int)  # IP -> count
+        # Per-external-peer detail: ip -> {lp: set, ep: set, last_seen: str}
+        self.ext_conn_detail: Dict[str, Dict] = {}
         self.is_internal = self._is_internal_ip(ip)
         self.roles: Set[str] = set()
         self.device_type: str = ''
@@ -187,6 +189,14 @@ class NetworkNode:
                 key=lambda x: x[1],
                 reverse=True
             )[:50]),
+            'ext_conn_detail': {
+                ip: {
+                    'lp': sorted(d['lp']) if isinstance(d['lp'], set) else d['lp'],
+                    'ep': sorted(d['ep']) if isinstance(d['ep'], set) else d['ep'],
+                    'last_seen': d.get('last_seen', ''),
+                }
+                for ip, d in list(self.ext_conn_detail.items())[:200]
+            },
             # Deep fingerprint fields
             'dhcp_client_fqdn': self.dhcp_client_fqdn,
             'dhcp_vendor_class': self.dhcp_vendor_class,
@@ -369,6 +379,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
             node.connections_to[dst_ip] = int(count)
         for src_ip, count in node_data.get('connections_from', {}).items():
             node.connections_from[src_ip] = int(count)
+        # Restore external connection detail (ports + timestamps)
+        for peer_ip, detail in node_data.get('ext_conn_detail', {}).items():
+            node.ext_conn_detail[peer_ip] = {
+                'lp': set(detail.get('lp', [])),
+                'ep': set(detail.get('ep', [])),
+                'last_seen': detail.get('last_seen', ''),
+            }
         # Backward compat: older maps used top_destinations/top_sources
         if not node.connections_to:
             for dst_ip, count in node_data.get('top_destinations', {}).items():
@@ -558,15 +575,26 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """Process a network connection."""
         src_ip = conn.get('source_ip')
         dst_ip = conn.get('destination_ip')
+        src_port = conn.get('source_port', 0)
         dst_port = conn.get('destination_port')
         protocol = conn.get('protocol', 'tcp')
         bytes_out = conn.get('bytes_out', 0)
         bytes_in = conn.get('bytes_in', 0)
         sensor_id = conn.get('sensor_id', 'default')
         vlan = str(conn.get('vlan', '0'))
+        conn_ts = conn.get('timestamp')
 
         if not src_ip or not dst_ip:
             return
+
+        try:
+            src_port = int(src_port)
+        except (ValueError, TypeError):
+            src_port = 0
+        try:
+            dst_port_int = int(dst_port) if dst_port else 0
+        except (ValueError, TypeError):
+            dst_port_int = 0
 
         src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
         dst_node = self._get_or_create_node(sensor_id, vlan, dst_ip)
@@ -600,6 +628,49 @@ class NetworkMapperPlugin(ArtemisPlugin):
             except (ValueError, TypeError):
                 pass
             dst_node.services.add((dst_port, protocol))
+
+        # Track external connection detail (ports + timestamp)
+        # For an internal node talking to an external peer, record LP/EP/time
+        _MAX_EXT_DETAIL = 500
+        src_internal = src_node.is_internal
+        dst_internal = dst_node.is_internal
+
+        ts_str = ''
+        if conn_ts:
+            try:
+                ts_str = conn_ts.strftime('%Y-%m-%d %H:%M') if hasattr(conn_ts, 'strftime') else str(conn_ts)
+            except Exception:
+                ts_str = str(conn_ts)
+
+        if src_internal and not dst_internal:
+            # src is local, dst is external — outbound connection
+            # LP = src_port (local port), EP = dst_port_int (external port)
+            detail = src_node.ext_conn_detail.get(dst_ip)
+            if detail is None and len(src_node.ext_conn_detail) < _MAX_EXT_DETAIL:
+                detail = {'lp': set(), 'ep': set(), 'last_seen': ''}
+                src_node.ext_conn_detail[dst_ip] = detail
+            if detail is not None:
+                if src_port and len(detail['lp']) < 20:
+                    detail['lp'].add(src_port)
+                if dst_port_int and len(detail['ep']) < 20:
+                    detail['ep'].add(dst_port_int)
+                if ts_str:
+                    detail['last_seen'] = ts_str
+
+        if dst_internal and not src_internal:
+            # dst is local, src is external — inbound connection
+            # LP = dst_port_int (local port), EP = src_port (external port)
+            detail = dst_node.ext_conn_detail.get(src_ip)
+            if detail is None and len(dst_node.ext_conn_detail) < _MAX_EXT_DETAIL:
+                detail = {'lp': set(), 'ep': set(), 'last_seen': ''}
+                dst_node.ext_conn_detail[src_ip] = detail
+            if detail is not None:
+                if dst_port_int and len(detail['lp']) < 20:
+                    detail['lp'].add(dst_port_int)
+                if src_port and len(detail['ep']) < 20:
+                    detail['ep'].add(src_port)
+                if ts_str:
+                    detail['last_seen'] = ts_str
 
         # Mark both nodes as dirty for role inference
         src_key = self._node_key(sensor_id, vlan, src_ip)
@@ -4353,14 +4424,21 @@ class NetworkMapperPlugin(ArtemisPlugin):
             else:
                 label = node.ip
 
-            # Collect external connections for this node
+            # Collect external connections for this node (with port/time detail)
             ext_conns_out = []
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1], reverse=True,
             ):
                 if dst_ip in external_ips:
-                    ext_conns_out.append({'ip': dst_ip, 'count': count})
+                    detail = node.ext_conn_detail.get(dst_ip, {})
+                    lp = sorted(detail['lp']) if isinstance(detail.get('lp'), set) else detail.get('lp', [])
+                    ep = sorted(detail['ep']) if isinstance(detail.get('ep'), set) else detail.get('ep', [])
+                    ext_conns_out.append({
+                        'ip': dst_ip, 'count': count,
+                        'lp': lp[:10], 'ep': ep[:10],
+                        'last_seen': detail.get('last_seen', ''),
+                    })
                     internet_unique_ips.add(dst_ip)
                     internet_total_conns += count
 
@@ -4370,7 +4448,14 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 key=lambda x: x[1], reverse=True,
             ):
                 if src_ip in external_ips:
-                    ext_conns_in.append({'ip': src_ip, 'count': count})
+                    detail = node.ext_conn_detail.get(src_ip, {})
+                    lp = sorted(detail['lp']) if isinstance(detail.get('lp'), set) else detail.get('lp', [])
+                    ep = sorted(detail['ep']) if isinstance(detail.get('ep'), set) else detail.get('ep', [])
+                    ext_conns_in.append({
+                        'ip': src_ip, 'count': count,
+                        'lp': lp[:10], 'ep': ep[:10],
+                        'last_seen': detail.get('last_seen', ''),
+                    })
                     internet_unique_ips.add(src_ip)
 
             # Collect internal peer connections for click details.

@@ -123,6 +123,7 @@ class PCAPAnalyzer:
                 connections[conn_tuple] = {
                     "source_ip": src_ip,
                     "destination_ip": dst_ip,
+                    "source_port": src_port,
                     "destination_port": dst_port,
                     "protocol": protocol,
                     "packet_count": 0,

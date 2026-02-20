@@ -2467,23 +2467,48 @@
                 if (intSorted.length > 30) html += `<p style="opacity:0.5; font-size:12px; margin-top:4px;">Showing 30 of ${intSorted.length}</p>`;
             }
 
-            // External connections table
+            // External connections table (with LP, EP, Last Seen)
             const extOut = node.external_connections_out || [];
             const extIn = node.external_connections_in || [];
             const allExt = {};
-            extOut.forEach(c => { allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0 }; allExt[c.ip].out = c.count; });
-            extIn.forEach(c => { allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0 }; allExt[c.ip].in = c.count; });
+            extOut.forEach(c => {
+                allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0, lp: [], ep: [], last_seen: '' };
+                allExt[c.ip].out = c.count;
+                if (c.lp && c.lp.length) allExt[c.ip].lp = [...new Set([...allExt[c.ip].lp, ...c.lp])];
+                if (c.ep && c.ep.length) allExt[c.ip].ep = [...new Set([...allExt[c.ip].ep, ...c.ep])];
+                if (c.last_seen) allExt[c.ip].last_seen = c.last_seen;
+            });
+            extIn.forEach(c => {
+                allExt[c.ip] = allExt[c.ip] || { out: 0, in: 0, lp: [], ep: [], last_seen: '' };
+                allExt[c.ip].in = c.count;
+                if (c.lp && c.lp.length) allExt[c.ip].lp = [...new Set([...allExt[c.ip].lp, ...c.lp])];
+                if (c.ep && c.ep.length) allExt[c.ip].ep = [...new Set([...allExt[c.ip].ep, ...c.ep])];
+                if (c.last_seen && !allExt[c.ip].last_seen) allExt[c.ip].last_seen = c.last_seen;
+            });
             const extSorted = Object.entries(allExt).sort((a, b) => (b[1].out + b[1].in) - (a[1].out + a[1].in));
 
             if (extSorted.length > 0) {
                 html += `<h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;">External Connections (${extSorted.length} IPs)</h4>`;
                 html += `<table style="width:100%; font-size:13px; border-collapse:collapse;">`;
-                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;"><td style="padding:4px 8px;">External IP</td><td style="padding:4px 8px; text-align:right;">Out</td><td style="padding:4px 8px; text-align:right;">In</td></tr>`;
+                html += `<tr style="opacity:0.6; font-size:11px; text-transform:uppercase;">
+                    <td style="padding:4px 8px;">External IP</td>
+                    <td style="padding:4px 8px; text-align:right;">Out</td>
+                    <td style="padding:4px 8px; text-align:right;">In</td>
+                    <td style="padding:4px 8px; text-align:right;" title="Local Port(s)">LP</td>
+                    <td style="padding:4px 8px; text-align:right;" title="External Port(s)">EP</td>
+                    <td style="padding:4px 8px; text-align:right;">Last Seen</td>
+                </tr>`;
                 extSorted.slice(0, 50).forEach(([ip, info]) => {
+                    const lpStr = info.lp.length ? info.lp.slice(0, 5).join(', ') + (info.lp.length > 5 ? '...' : '') : '-';
+                    const epStr = info.ep.length ? info.ep.slice(0, 5).join(', ') + (info.ep.length > 5 ? '...' : '') : '-';
+                    const lastSeen = info.last_seen || '-';
                     html += `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
                         <td style="padding:4px 8px; font-family:monospace;">${escapeHtml(ip)}</td>
                         <td style="padding:4px 8px; text-align:right;">${info.out.toLocaleString()}</td>
                         <td style="padding:4px 8px; text-align:right;">${info.in.toLocaleString()}</td>
+                        <td style="padding:4px 8px; text-align:right; font-family:monospace; font-size:11px; opacity:0.85;" title="${escapeHtml(info.lp.join(', '))}">${escapeHtml(lpStr)}</td>
+                        <td style="padding:4px 8px; text-align:right; font-family:monospace; font-size:11px; opacity:0.85;" title="${escapeHtml(info.ep.join(', '))}">${escapeHtml(epStr)}</td>
+                        <td style="padding:4px 8px; text-align:right; font-size:11px; opacity:0.7;">${escapeHtml(lastSeen)}</td>
                     </tr>`;
                 });
                 html += '</table>';
