@@ -962,6 +962,7 @@
             <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
             <button class="tab" onclick="showTab('llm-intel-tab')">LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
+            <button class="tab" onclick="showTab('ai-settings-tab')">AI Settings</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
 
@@ -1400,9 +1401,13 @@
                 </button>
             </div>
 
+        </div>
+
+        <!-- AI Settings Tab -->
+        <div id="ai-settings-tab" class="tab-content">
             <!-- LLM Backend Configuration -->
-            <div class="card" style="margin-top:16px;">
-                <h3><i class="fa-solid fa-brain"></i> LLM Backend Configuration</h3>
+            <div class="card">
+                <h2><i class="fa-solid fa-brain"></i> LLM Backend Configuration</h2>
                 <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
                     Choose which AI backend powers threat synthesis during continuous ingestion.
                     Changes take effect on the next ingestion cycle.
@@ -1437,6 +1442,50 @@
                 <button class="btn" onclick="saveLLMSettings()" style="margin-top:12px;">
                     <i class="fa-solid fa-floppy-disk"></i> Save LLM Settings
                 </button>
+            </div>
+
+            <!-- Orchestration Configuration -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-sitemap"></i> Agent Orchestration</h3>
+                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
+                    Control how hunting agents are coordinated. Standard mode uses the built-in
+                    pipeline. CrewAI mode enables autonomous multi-agent collaboration with RAG.
+                </p>
+                <div id="orchestration-status" style="margin-bottom:12px;"></div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Orchestration Mode</label>
+                        <select id="orchestration-select" onchange="toggleOrchestrationFields()"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="standard">Standard (built-in coordinator pipeline)</option>
+                            <option value="crewai">CrewAI (autonomous multi-agent collaboration)</option>
+                        </select>
+                    </div>
+                    <div id="crewai-process-group" style="display:none;">
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">CrewAI Process</label>
+                        <select id="crewai-process-select"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="sequential">Sequential (agents run one after another)</option>
+                            <option value="hierarchical">Hierarchical (lead analyst delegates to specialists)</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn" onclick="saveOrchestrationSettings()" style="margin-top:12px;">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Orchestration Settings
+                </button>
+            </div>
+
+            <!-- RAG Status -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-database"></i> RAG Knowledge Store</h3>
+                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
+                    Retrieval-Augmented Generation indexes past findings, network baselines, and threat
+                    intelligence into a vector store. The LLM automatically queries this store for
+                    historical context when analysing new data. RAG is active in both orchestration modes.
+                </p>
+                <div id="rag-status" style="font-size:13px; color:var(--text-secondary);">
+                    RAG uses the same Ollama model configured above for embeddings. Requires <code>chromadb</code> to be installed.
+                </div>
             </div>
         </div>
 
@@ -4924,6 +4973,17 @@
                 const keyNote = cfg.has_anthropic_key ? ' (Anthropic key configured)' : '';
                 statusDiv.innerHTML = `<span style="font-size:12px;">Active backend: ${badge}${keyNote}</span>`;
                 toggleLLMFields();
+
+                // Orchestration settings
+                const orch = cfg.orchestration || 'standard';
+                document.getElementById('orchestration-select').value = orch;
+                document.getElementById('crewai-process-select').value = cfg.crewai_process || 'sequential';
+                toggleOrchestrationFields();
+                const orchStatus = document.getElementById('orchestration-status');
+                const orchBadge = orch === 'crewai'
+                    ? '<span style="color:#d2a8ff;">CrewAI</span>'
+                    : '<span style="color:#3fb950;">Standard</span>';
+                orchStatus.innerHTML = `<span style="font-size:12px;">Active mode: ${orchBadge}</span>`;
             } catch (e) {
                 console.error('Error loading LLM settings:', e);
             }
@@ -4950,6 +5010,35 @@
                 loadLLMSettings();
             } catch (e) {
                 addLog('Error saving LLM settings: ' + e.message, 'error');
+            }
+        }
+
+        // ========================================
+        // Orchestration Settings
+        // ========================================
+
+        function toggleOrchestrationFields() {
+            const mode = document.getElementById('orchestration-select').value;
+            document.getElementById('crewai-process-group').style.display = mode === 'crewai' ? '' : 'none';
+        }
+
+        async function saveOrchestrationSettings() {
+            const settings = {
+                orchestration: document.getElementById('orchestration-select').value,
+                crewai_process: document.getElementById('crewai-process-select').value,
+            };
+
+            try {
+                const resp = await fetch('/api/llm/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+                const result = await resp.json();
+                addLog(`Orchestration saved: ${result.orchestration}. Takes effect on next ingestion cycle.`, 'info');
+                loadLLMSettings();
+            } catch (e) {
+                addLog('Error saving orchestration settings: ' + e.message, 'error');
             }
         }
 
