@@ -2478,31 +2478,28 @@
                     'iot_device': { label: 'IoT Devices', icon: '📱' },
                 };
 
+                const extIPs = summary.external_ips_tracked || summary.external_nodes || 0;
                 let html = `
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:20px;">
-                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${summary.total_nodes}</div>
-                            <div style="font-size:11px; opacity:0.7;">Total Nodes</div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #4CAF50;">
+                            <div style="font-size:20px; font-weight:700; color:#4CAF50;">${(summary.total_nodes || summary.internal_nodes || 0).toLocaleString()}</div>
+                            <div style="font-size:11px; opacity:0.7;">Network Devices</div>
                         </div>
                         <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${summary.internal_nodes}</div>
-                            <div style="font-size:11px; opacity:0.7;">Internal</div>
-                        </div>
-                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${summary.external_nodes}</div>
-                            <div style="font-size:11px; opacity:0.7;">External</div>
-                        </div>
-                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${summary.profiled || 0}</div>
+                            <div style="font-size:20px; font-weight:700;">${(summary.profiled || 0).toLocaleString()}</div>
                             <div style="font-size:11px; opacity:0.7;">Profiled</div>
                         </div>
                         <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${summary.total_services}</div>
+                            <div style="font-size:20px; font-weight:700;">${(summary.total_services || 0).toLocaleString()}</div>
                             <div style="font-size:11px; opacity:0.7;">Services</div>
                         </div>
                         <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
-                            <div style="font-size:20px; font-weight:700;">${(summary.mac_tracking || {}).total_macs || 0}</div>
+                            <div style="font-size:20px; font-weight:700;">${((summary.mac_tracking || {}).total_macs || 0).toLocaleString()}</div>
                             <div style="font-size:11px; opacity:0.7;">MACs Tracked</div>
+                        </div>
+                        <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center;">
+                            <div style="font-size:16px; font-weight:700; opacity:0.7;">${extIPs.toLocaleString()}</div>
+                            <div style="font-size:11px; opacity:0.5;">External IPs</div>
                         </div>
                         ${(summary.virtual_machines || 0) > 0 ? `
                         <div style="background:var(--bg-tertiary); padding:10px; border-radius:5px; text-align:center; border-left:3px solid #CE93D8;">

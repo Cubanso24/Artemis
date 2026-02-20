@@ -541,18 +541,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
         if elapsed > self.auto_save_interval:
             self.save_map()
 
+        internal = [n for n in self.nodes.values() if n.is_internal]
         return {
-            'total_nodes': len(self.nodes),
+            'total_nodes': len(internal),
             'sensors': list(self.sensors),
-            'internal_nodes': sum(
-                1 for n in self.nodes.values() if n.is_internal
-            ),
-            'external_nodes': sum(
-                1 for n in self.nodes.values() if not n.is_internal
-            ),
-            'total_services': sum(
-                len(n.services) for n in self.nodes.values()
-            ),
+            'internal_nodes': len(internal),
+            'external_ips_tracked': len(self.nodes) - len(internal),
+            'total_services': sum(len(n.services) for n in internal),
             'map_file': str(self.output_dir / "current_map.json")
         }
 
@@ -4117,13 +4112,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
             nodes = list(self.nodes.values())
 
         internal_count = sum(1 for n in nodes if n.is_internal)
+        external_count = len(nodes) - internal_count
+        internal_nodes = [n for n in nodes if n.is_internal]
 
         vlans = sorted({n.vlan for n in nodes if n.vlan != '0'})
 
         top_talkers = sorted(
             [
                 (n.ip, n.sensor_id, n.vlan, n.total_connections)
-                for n in nodes
+                for n in internal_nodes
             ],
             key=lambda x: x[3],
             reverse=True,
@@ -4196,12 +4193,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         summary = {
             '_key': cache_key,
-            'total_nodes': len(nodes),
+            'total_nodes': internal_count,
             'sensors': sorted(self.sensors),
             'vlans': vlans,
             'internal_nodes': internal_count,
-            'external_nodes': len(nodes) - internal_count,
-            'total_services': sum(len(n.services) for n in nodes),
+            'external_ips_tracked': external_count,
+            'total_services': sum(len(n.services) for n in internal_nodes),
             'servers': [
                 n.ip for n in nodes if 'server' in n.roles
             ][:10],
