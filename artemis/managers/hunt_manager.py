@@ -564,6 +564,9 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                         log.info(f'Backfill agent run #{run_id}: '
                                  f'{buf_size:,} events, {_n_agents} agents '
                                  f'({_orch_label})')
+                        # Save map now so the graph renders in the UI
+                        # while agents are analyzing (LLM calls block).
+                        nm.save_map()
                         send('running',
                              f'Cycle {cycle}: analyzing batch #{run_id} '
                              f'({buf_size:,} events, '
