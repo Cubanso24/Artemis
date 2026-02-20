@@ -39,9 +39,10 @@ class AgentLLM:
     calls ``enrich_output`` after the threshold-based detection runs.
     """
 
-    def __init__(self, client: LLMClient, agent_name: str):
+    def __init__(self, client: LLMClient, agent_name: str, rag_store=None):
         self.client = client
         self.agent_name = agent_name
+        self.rag_store = rag_store
         self.system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_name, "")
         self.logger = ArtemisLogger.setup_logger(
             f"artemis.llm.agent.{agent_name}"
@@ -121,14 +122,30 @@ class AgentLLM:
         if network_state:
             state_text = format_network_state(network_state) + "\n\n"
 
+        # RAG: inject historical context for this agent's domain
+        rag_context = ""
+        if self.rag_store and self.rag_store.available:
+            rag_context = self.rag_store.build_context(
+                current_findings_text=findings_text[:600],
+                network_summary="",
+                n_findings=3,
+                n_baselines=1,
+                n_intel=2,
+            )
+            if rag_context:
+                rag_context = f"\n{rag_context}\n"
+
         user_message = (
             f"{state_text}"
             f"{directive_text}\n"
+            f"{rag_context}"
             f"{findings_text}\n\n"
             "Review these findings from the threshold-based detector. "
             "For each finding, assess whether it's a true positive or "
             "false positive, adjust confidence, explain your reasoning, "
-            "and note any patterns the detector may have missed."
+            "and note any patterns the detector may have missed.  If "
+            "historical findings are shown above, use them to inform "
+            "your assessment (e.g. previously dismissed false positives)."
         )
 
         result = self.client.agent_json(

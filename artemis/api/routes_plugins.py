@@ -630,6 +630,8 @@ async def get_llm_settings():
         "ollama_url": cfg.get("ollama_url", "http://localhost:11434"),
         "ollama_model": cfg.get("ollama_model", "llama3.1"),
         "has_anthropic_key": bool(cfg.get("anthropic_api_key")),
+        "orchestration": cfg.get("orchestration", "standard"),
+        "crewai_process": cfg.get("crewai_process", "sequential"),
     }
 
 
@@ -645,9 +647,15 @@ async def save_llm_settings(req: LLMSettingsRequest):
     if req.anthropic_api_key is not None:
         cfg["anthropic_api_key"] = req.anthropic_api_key
 
+    if req.orchestration is not None:
+        cfg["orchestration"] = req.orchestration
+    if req.crewai_process is not None:
+        cfg["crewai_process"] = req.crewai_process
+
     _LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     _LLM_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    return {"status": "saved", "backend": cfg["backend"]}
+    return {"status": "saved", "backend": cfg["backend"],
+            "orchestration": cfg.get("orchestration", "standard")}
 
 
 @router.post("/api/threat-intel/lookup")

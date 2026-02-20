@@ -48,8 +48,9 @@ class CoordinatorLLM:
     a unified threat assessment from all agent outputs.
     """
 
-    def __init__(self, client: LLMClient):
+    def __init__(self, client: LLMClient, rag_store=None):
         self.client = client
+        self.rag_store = rag_store
         self.logger = ArtemisLogger.setup_logger("artemis.llm.coordinator")
 
     @property
@@ -80,14 +81,26 @@ class CoordinatorLLM:
         signals_text = format_signals(initial_signals)
         data_text = format_hunting_data_summary(hunting_data)
 
+        # RAG: inject historical context if available
+        rag_context = ""
+        if self.rag_store and self.rag_store.available:
+            rag_context = self.rag_store.build_context(
+                current_findings_text=signals_text,
+                network_summary=data_text[:300],
+            )
+            if rag_context:
+                rag_context = f"\n{rag_context}\n"
+
         user_message = (
             f"{state_text}\n\n"
             f"{signals_text}\n\n"
             f"{data_text}\n\n"
-            "Based on this network state, signals, and data summary, "
-            "generate threat hypotheses. Consider what attacks could be "
-            "in progress, what kill chain stages might be active, and "
-            "which agents should investigate."
+            f"{rag_context}"
+            "Based on this network state, signals, data summary, and "
+            "any historical context above, generate threat hypotheses. "
+            "Consider what attacks could be in progress, what kill chain "
+            "stages might be active, which agents should investigate, and "
+            "whether similar patterns were seen in the past."
         )
 
         result = self.client.coordinator_json(
@@ -222,13 +235,29 @@ class CoordinatorLLM:
             format_agent_output(o) for o in agent_outputs if o.findings
         )
 
+        # RAG: inject historical context for synthesis
+        rag_context = ""
+        if self.rag_store and self.rag_store.available:
+            rag_context = self.rag_store.build_context(
+                current_findings_text=outputs_text[:800],
+                network_summary="",
+                n_findings=5,
+                n_baselines=2,
+                n_intel=3,
+            )
+            if rag_context:
+                rag_context = f"\n{rag_context}\n"
+
         user_message = (
             f"{state_text}\n\n"
             f"=== AGENT OUTPUTS ===\n{outputs_text}\n\n"
+            f"{rag_context}"
             "Synthesize these agent findings into a unified threat "
             "assessment. Identify correlations, assess kill chain "
             "progression, flag likely false positives, and recommend "
-            "specific response actions."
+            "specific response actions.  If historical findings are "
+            "shown above, use them to assess whether current detections "
+            "match known patterns or were previously dismissed."
         )
 
         result = self.client.coordinator_json(

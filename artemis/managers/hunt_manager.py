@@ -463,6 +463,26 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         )
         log.info(f'Initialized {len(coordinator.agents)} hunting agents')
 
+        # Try to initialise CrewAI orchestrator (optional overlay)
+        _crew_orchestrator = None
+        _use_crewai = _llm_cfg.get('orchestration') == 'crewai'
+        if _use_crewai:
+            try:
+                from artemis.llm.crew import CrewOrchestrator, crewai_available
+                if crewai_available():
+                    _ollama_model = _llm_cfg.get('ollama_model') or os.environ.get('OLLAMA_MODEL', 'llama3.1')
+                    _crew_orchestrator = CrewOrchestrator(
+                        detectors=coordinator.agents,
+                        rag_store=getattr(coordinator, 'rag_store', None),
+                        llm_model=f"ollama/{_ollama_model}",
+                        process=_llm_cfg.get('crewai_process', 'sequential'),
+                    )
+                    log.info('CrewAI orchestrator initialised — will use CrewAI for hunt cycles')
+                else:
+                    log.warning('CrewAI requested but crewai package not installed — falling back to standard coordinator')
+            except Exception as _ce:
+                log.warning(f'CrewAI init failed: {_ce} — falling back to standard coordinator')
+
         cycle = 0
         time_range = f'-{lookback_minutes}m'
         _backfill_pending = bool(backfill_from)
@@ -602,18 +622,25 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                     try:
                         _backend = getattr(coordinator.llm_client, 'backend', 'none')
                         _n_agents = len(coordinator.agents)
+                        _orch_label = 'CrewAI' if _crew_orchestrator else _backend
                         log.info(f'Cycle {cycle}: running {_n_agents} '
-                                 f'hunting agents (LLM backend: {_backend})')
+                                 f'hunting agents (orchestration: {_orch_label})')
                         send('running',
                              f'Cycle {cycle}: analyzing with {_n_agents} agents '
-                             f'(LLM: {_backend})...',
+                             f'({_orch_label})...',
                              65, {'cycle': cycle, 'total_nodes': result['total_nodes'],
                                   'internal_nodes': result['internal_nodes'],
-                                  'stage_detail': 'llm_analysis'})
+                                  'stage_detail': 'llm_analysis',
+                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
                         context = NetworkState.from_data_with_map(
                             agent_data, nm.nodes)
-                        assessment = coordinator.hunt(
-                            data=agent_data, network_state=context)
+
+                        if _crew_orchestrator:
+                            assessment = _crew_orchestrator.hunt(
+                                data=agent_data, network_state=context)
+                        else:
+                            assessment = coordinator.hunt(
+                                data=agent_data, network_state=context)
 
                         agent_outputs = assessment.get('agent_outputs', [])
                         for ao in agent_outputs:

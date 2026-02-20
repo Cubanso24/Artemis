@@ -10,6 +10,13 @@ pyyaml>=6.0                    # Sigma rule parsing
 # LLM integration
 anthropic>=0.39.0              # Claude API for LLM-powered hunting
 
+# RAG (Retrieval-Augmented Generation)
+chromadb>=0.4.0                # Vector store for historical findings & threat intel
+
+# CrewAI multi-agent orchestration
+crewai>=0.80.0                 # Agentic AI orchestration framework
+crewai-tools>=0.14.0           # CrewAI tool decorators
+
 # Reporting
 reportlab>=4.0.0               # PDF report generation
 

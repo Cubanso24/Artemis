@@ -1,16 +1,19 @@
 """
-Artemis LLM Layer — Two-tier LLM architecture for intelligent threat hunting.
+Artemis LLM Layer — intelligent threat hunting with RAG and CrewAI.
 
-Tier 1 (Coordinator): Claude Sonnet reasons about network state, generates
-    threat hypotheses, directs agents, and synthesizes results.
-
-Tier 2 (Agent Specialists): Claude Haiku provides domain-specific analysis
-    for each hunting agent, enriching threshold-based detections with
-    contextual reasoning and false-positive filtering.
+Components
+----------
+- **LLMClient**: Backend abstraction (Anthropic / Ollama).
+- **CoordinatorLLM**: Hypothesis generation, agent directives, synthesis.
+- **AgentLLM**: Per-agent specialist enrichment.
+- **RAGStore**: ChromaDB vector store for historical findings, baselines,
+  and threat intel.
+- **CrewOrchestrator**: CrewAI-based multi-agent orchestration (optional).
 """
 
 from artemis.llm.client import LLMClient
 from artemis.llm.coordinator_llm import CoordinatorLLM
 from artemis.llm.agent_llm import AgentLLM
+from artemis.llm.rag import RAGStore
 
-__all__ = ["LLMClient", "CoordinatorLLM", "AgentLLM"]
+__all__ = ["LLMClient", "CoordinatorLLM", "AgentLLM", "RAGStore"]

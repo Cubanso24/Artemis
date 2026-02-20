@@ -126,14 +126,29 @@ class MetaLearnerCoordinator:
         agent_model: Optional[str],
         backend: str = "auto",
     ):
-        """Initialize the two-tier LLM layer."""
+        """Initialize the two-tier LLM layer with optional RAG."""
         self.llm_client = LLMClient(
             backend=backend,
             api_key=api_key,
             coordinator_model=coordinator_model,
             agent_model=agent_model,
         )
-        self.coordinator_llm = CoordinatorLLM(self.llm_client)
+
+        # Initialize RAG store (gracefully degrades if chromadb missing)
+        rag_store = None
+        try:
+            from artemis.llm.rag import RAGStore
+            rag_store = RAGStore()
+            if rag_store.available:
+                self.logger.info("RAG store initialised — historical context enabled")
+            else:
+                rag_store = None
+                self.logger.info("RAG store unavailable — running without historical context")
+        except Exception as e:
+            self.logger.info(f"RAG store disabled: {e}")
+        self.rag_store = rag_store
+
+        self.coordinator_llm = CoordinatorLLM(self.llm_client, rag_store=rag_store)
 
         # Create one specialist AgentLLM per hunting agent
         agent_names = [
@@ -144,7 +159,7 @@ class MetaLearnerCoordinator:
             "impact_hunter",
         ]
         for name in agent_names:
-            self.agent_llms[name] = AgentLLM(self.llm_client, name)
+            self.agent_llms[name] = AgentLLM(self.llm_client, name, rag_store=rag_store)
 
     def _initialize_agents(self) -> Dict[str, BaseAgent]:
         """Initialize all specialized hunting agents."""
@@ -227,6 +242,9 @@ class MetaLearnerCoordinator:
 
         # Stage 6: Update Statistics
         self._update_statistics(assessment, selected_agents)
+
+        # Stage 7: Index findings into RAG for future hunts
+        self._index_to_rag(agent_outputs, data)
 
         self.logger.info(
             f"Hunt complete: confidence={assessment['final_confidence']:.2f}, "
@@ -593,6 +611,49 @@ class MetaLearnerCoordinator:
 
         if assessment["final_confidence"] >= 0.7:
             self.stats["high_confidence_detections"] += 1
+
+    def _index_to_rag(
+        self,
+        agent_outputs: List[AgentOutput],
+        data: Dict[str, Any],
+    ):
+        """Stage 7: Index hunt findings into the RAG store."""
+        if not getattr(self, 'rag_store', None):
+            return
+        if not self.rag_store.available:
+            return
+
+        findings = []
+        for output in agent_outputs:
+            for f in output.findings:
+                findings.append({
+                    "activity_type": f.activity_type,
+                    "description": f.description,
+                    "indicators": f.indicators,
+                    "severity": (
+                        output.severity.value
+                        if hasattr(output.severity, "value")
+                        else str(output.severity)
+                    ),
+                    "mitre_techniques": getattr(f, 'mitre_techniques', []),
+                    "agent_name": output.agent_name,
+                    "confidence": output.confidence,
+                })
+
+        counts = data.get("_counts", {})
+        baseline = None
+        if counts:
+            baseline = {
+                "type": "hunt_cycle",
+                "scope": "global",
+                "total_connections": counts.get("network_connections", 0),
+                "total_dns": counts.get("dns_queries", 0),
+                "total_ntlm": counts.get("ntlm_logs", 0),
+            }
+
+        if findings or baseline:
+            indexed = self.rag_store.index_hunt_results(findings, baseline)
+            self.logger.info(f"RAG: indexed {indexed} items from this hunt cycle")
 
     def provide_feedback(
         self,

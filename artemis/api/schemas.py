@@ -101,3 +101,5 @@ class LLMSettingsRequest(BaseModel):
     ollama_url: Optional[str] = None
     ollama_model: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    orchestration: Optional[str] = None  # "standard" or "crewai"
+    crewai_process: Optional[str] = None  # "sequential" or "hierarchical"
