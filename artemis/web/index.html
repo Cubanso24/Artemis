@@ -947,6 +947,44 @@
             <span style="font-size:12px; color:var(--text-secondary); opacity:0.6;">Network Mapping Platform</span>
         </header>
 
+        <!-- Live Hunt Visualizer -->
+        <div id="hunt-visualizer" style="position:relative; width:100%; height:120px; background:#0a0d12; border-bottom:1px solid var(--border-color); overflow:hidden; cursor:default; user-select:none;">
+            <canvas id="hunt-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%;"></canvas>
+            <!-- Overlay HUD -->
+            <div style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; display:flex; align-items:center; justify-content:space-between; padding:0 24px;">
+                <!-- Left: status -->
+                <div style="display:flex; flex-direction:column; gap:2px; z-index:2;">
+                    <div style="font-family:'Courier New',monospace; font-size:11px; color:#3fb950; text-shadow:0 0 8px rgba(63,185,80,0.5);">
+                        <i class="fa-solid fa-crosshairs fa-spin" style="margin-right:6px;"></i><span id="hunt-status-text">SCANNING ENVIRONMENT</span>
+                    </div>
+                    <div id="hunt-log-line" style="font-family:'Courier New',monospace; font-size:10px; color:rgba(88,166,255,0.8); max-width:500px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">
+                        Initializing threat detection routines...
+                    </div>
+                </div>
+                <!-- Center: Artemis logo glow -->
+                <div style="position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:2; text-align:center;">
+                    <div style="font-family:'Courier New',monospace; font-size:20px; font-weight:700; color:#58a6ff; text-shadow:0 0 20px rgba(88,166,255,0.6), 0 0 40px rgba(88,166,255,0.3); letter-spacing:6px;">
+                        ARTEMIS
+                    </div>
+                    <div style="font-family:'Courier New',monospace; font-size:9px; color:rgba(88,166,255,0.5); letter-spacing:3px; margin-top:2px;">
+                        THREAT HUNTER ACTIVE
+                    </div>
+                </div>
+                <!-- Right: stats -->
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; z-index:2;">
+                    <div style="font-family:'Courier New',monospace; font-size:10px; color:#3fb950;">
+                        <span id="hunt-packets">0</span> PACKETS ANALYZED
+                    </div>
+                    <div style="font-family:'Courier New',monospace; font-size:10px; color:#d29922;">
+                        <span id="hunt-threats">0</span> ANOMALIES FLAGGED
+                    </div>
+                    <div style="font-family:'Courier New',monospace; font-size:10px; color:#f85149;">
+                        <span id="hunt-malware">0</span> MALWARE SIGNATURES
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="stats">
             <div class="stat-card">
                 <h3 id="stat-plugins">0</h3>
@@ -1530,6 +1568,9 @@
 
             // Show network graph tab by default
             showTab('network-graph-tab');
+
+            // Start the hunt visualizer
+            initHuntVisualizer();
 
             // Refresh data every 10 seconds
             setInterval(loadStats, 10000);
@@ -5224,6 +5265,263 @@
                 logOutput.removeChild(logOutput.firstChild);
             }
         }
+        // ========================================
+        // Live Hunt Visualizer
+        // ========================================
+
+        function initHuntVisualizer() {
+            const canvas = document.getElementById('hunt-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+
+            function resize() {
+                const rect = canvas.parentElement.getBoundingClientRect();
+                canvas.width = rect.width * (window.devicePixelRatio || 1);
+                canvas.height = rect.height * (window.devicePixelRatio || 1);
+                ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+            }
+            resize();
+            window.addEventListener('resize', resize);
+
+            const W = () => canvas.width / (window.devicePixelRatio || 1);
+            const H = () => canvas.height / (window.devicePixelRatio || 1);
+
+            // --- Matrix rain columns ---
+            const fontSize = 11;
+            const cols = () => Math.floor(W() / fontSize);
+            let drops = Array.from({ length: cols() }, () => Math.random() * -50);
+            const matrixChars = '01ABCDEF.:>/\\{}[]<>|abcdef0123456789';
+
+            // --- Scanning beam ---
+            let beamX = 0;
+            const beamSpeed = 1.5;
+
+            // --- Particles (threat pings) ---
+            const particles = [];
+            function spawnParticle() {
+                particles.push({
+                    x: Math.random() * W(),
+                    y: Math.random() * H(),
+                    r: Math.random() * 3 + 1,
+                    life: 1,
+                    decay: 0.005 + Math.random() * 0.015,
+                    color: Math.random() > 0.7 ? '#f85149' : Math.random() > 0.5 ? '#d29922' : '#3fb950',
+                });
+            }
+
+            // --- Network nodes ---
+            const nodes = [];
+            for (let i = 0; i < 18; i++) {
+                nodes.push({
+                    x: Math.random() * 0.8 + 0.1,
+                    y: Math.random() * 0.7 + 0.15,
+                    vx: (Math.random() - 0.5) * 0.1,
+                    vy: (Math.random() - 0.5) * 0.08,
+                    size: Math.random() * 2 + 1.5,
+                    pulse: Math.random() * Math.PI * 2,
+                });
+            }
+
+            // --- HUD counters ---
+            let packetCount = 0;
+            let threatCount = 0;
+            let malwareCount = 0;
+
+            // --- Hunt log messages ---
+            const huntMessages = [
+                'Scanning 10.0.1.0/24 subnet for anomalies...',
+                'Deep packet inspection: TCP SYN flood check...',
+                'Analyzing DNS query patterns for DGA detection...',
+                'Checking SSL/TLS certificates for C2 indicators...',
+                'Correlating NetFlow data with known IOCs...',
+                'Inspecting ARP tables for spoofing attempts...',
+                'Running YARA rules against captured payloads...',
+                'Matching Sigma rules: lateral movement detection...',
+                'Behavioral analysis: process injection patterns...',
+                'Scanning for Cobalt Strike beacon signatures...',
+                'Checking HTTP headers for webshell indicators...',
+                'Entropy analysis on outbound DNS TXT records...',
+                'Monitoring SMB traffic for EternalBlue exploits...',
+                'Inspecting PowerShell execution patterns...',
+                'Hunting for persistence mechanisms in registry...',
+                'Correlating threat intel feeds with network flows...',
+                'Checking for data exfiltration via DNS tunneling...',
+                'Analyzing beaconing intervals for C2 callbacks...',
+                'Scanning HTTPS SNI fields for suspicious domains...',
+                'Validating certificate chains for MITM detection...',
+                'Profiling new host: fingerprinting OS and services...',
+                'Cross-referencing with MITRE ATT&CK techniques...',
+                'Hunting for Mimikatz credential dump signatures...',
+                'Inspecting LDAP queries for BloodHound activity...',
+                'Checking for Kerberoasting attack patterns...',
+                'Monitoring WMI event subscriptions for persistence...',
+                'Analyzing scheduled tasks for malicious entries...',
+                'Scanning for obfuscated JavaScript in HTTP traffic...',
+                'Detecting fileless malware execution via AMSI logs...',
+                'Hunting for anomalous parent-child process trees...',
+            ];
+            const statusMessages = [
+                'SCANNING ENVIRONMENT',
+                'HUNTING THREATS',
+                'ANALYZING TRAFFIC',
+                'DEEP INSPECTION',
+                'CORRELATING IOCs',
+                'BEHAVIORAL ANALYSIS',
+                'PATTERN MATCHING',
+                'ACTIVE DEFENSE',
+            ];
+
+            let logIdx = 0;
+            let statusIdx = 0;
+            setInterval(() => {
+                const el = document.getElementById('hunt-log-line');
+                if (el) el.textContent = huntMessages[logIdx % huntMessages.length];
+                logIdx++;
+            }, 2800);
+            setInterval(() => {
+                const el = document.getElementById('hunt-status-text');
+                if (el) el.textContent = statusMessages[statusIdx % statusMessages.length];
+                statusIdx++;
+            }, 5000);
+
+            // Increment counters
+            setInterval(() => {
+                packetCount += Math.floor(Math.random() * 47) + 12;
+                const el = document.getElementById('hunt-packets');
+                if (el) el.textContent = packetCount.toLocaleString();
+            }, 300);
+            setInterval(() => {
+                if (Math.random() > 0.6) {
+                    threatCount += 1;
+                    const el = document.getElementById('hunt-threats');
+                    if (el) el.textContent = threatCount.toLocaleString();
+                }
+            }, 4000);
+            setInterval(() => {
+                if (Math.random() > 0.8) {
+                    malwareCount += 1;
+                    const el = document.getElementById('hunt-malware');
+                    if (el) el.textContent = malwareCount.toLocaleString();
+                }
+            }, 7000);
+
+            // --- Main render loop ---
+            function draw() {
+                const w = W();
+                const h = H();
+                // Dark fade for trails
+                ctx.fillStyle = 'rgba(10, 13, 18, 0.15)';
+                ctx.fillRect(0, 0, w, h);
+
+                // -- Matrix rain --
+                ctx.font = fontSize + 'px Courier New';
+                const numCols = cols();
+                // Resize drops array if needed
+                while (drops.length < numCols) drops.push(Math.random() * -50);
+
+                for (let i = 0; i < numCols; i++) {
+                    if (drops[i] * fontSize > h && Math.random() > 0.975) {
+                        drops[i] = 0;
+                    }
+                    const char = matrixChars[Math.floor(Math.random() * matrixChars.length)];
+                    const alpha = 0.04 + Math.random() * 0.04;
+                    ctx.fillStyle = `rgba(63, 185, 80, ${alpha})`;
+                    ctx.fillText(char, i * fontSize, drops[i] * fontSize);
+                    drops[i] += 0.3 + Math.random() * 0.2;
+                }
+
+                // -- Network nodes & connections --
+                ctx.lineWidth = 0.5;
+                for (let i = 0; i < nodes.length; i++) {
+                    const n = nodes[i];
+                    n.x += n.vx * 0.003;
+                    n.y += n.vy * 0.003;
+                    n.pulse += 0.03;
+                    // Bounce
+                    if (n.x < 0.05 || n.x > 0.95) n.vx *= -1;
+                    if (n.y < 0.05 || n.y > 0.95) n.vy *= -1;
+
+                    const px = n.x * w;
+                    const py = n.y * h;
+                    const pSize = n.size + Math.sin(n.pulse) * 0.5;
+
+                    // Draw connections to nearby nodes
+                    for (let j = i + 1; j < nodes.length; j++) {
+                        const m = nodes[j];
+                        const mx = m.x * w;
+                        const my = m.y * h;
+                        const dist = Math.hypot(px - mx, py - my);
+                        if (dist < 120) {
+                            const linkAlpha = (1 - dist / 120) * 0.15;
+                            ctx.strokeStyle = `rgba(88, 166, 255, ${linkAlpha})`;
+                            ctx.beginPath();
+                            ctx.moveTo(px, py);
+                            ctx.lineTo(mx, my);
+                            ctx.stroke();
+                        }
+                    }
+
+                    // Draw node
+                    ctx.beginPath();
+                    ctx.arc(px, py, pSize, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(88, 166, 255, ${0.3 + Math.sin(n.pulse) * 0.15})`;
+                    ctx.fill();
+                }
+
+                // -- Scanning beam --
+                beamX += beamSpeed;
+                if (beamX > w + 80) beamX = -80;
+                const grad = ctx.createLinearGradient(beamX - 80, 0, beamX + 80, 0);
+                grad.addColorStop(0, 'rgba(63, 185, 80, 0)');
+                grad.addColorStop(0.5, 'rgba(63, 185, 80, 0.06)');
+                grad.addColorStop(1, 'rgba(63, 185, 80, 0)');
+                ctx.fillStyle = grad;
+                ctx.fillRect(beamX - 80, 0, 160, h);
+                // Beam leading edge line
+                ctx.strokeStyle = 'rgba(63, 185, 80, 0.2)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(beamX, 0);
+                ctx.lineTo(beamX, h);
+                ctx.stroke();
+
+                // -- Particles --
+                if (Math.random() > 0.85) spawnParticle();
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.life -= p.decay;
+                    if (p.life <= 0) { particles.splice(i, 1); continue; }
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+                    ctx.fillStyle = p.color.replace(')', `, ${p.life * 0.6})`).replace('rgb', 'rgba');
+                    ctx.fill();
+                    // Glow ring
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.r * 3 * p.life, 0, Math.PI * 2);
+                    ctx.strokeStyle = p.color.replace(')', `, ${p.life * 0.15})`).replace('rgb', 'rgba');
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                }
+
+                // -- Horizontal grid lines --
+                ctx.strokeStyle = 'rgba(48, 54, 61, 0.3)';
+                ctx.lineWidth = 0.5;
+                for (let y = 20; y < h; y += 30) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(w, y);
+                    ctx.stroke();
+                }
+
+                requestAnimationFrame(draw);
+            }
+
+            // Clear canvas first
+            ctx.fillStyle = '#0a0d12';
+            ctx.fillRect(0, 0, W(), H());
+            draw();
+        }
+
     </script>
 </body>
 </html>
