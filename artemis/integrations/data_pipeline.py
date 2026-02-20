@@ -110,6 +110,7 @@ class DataPipeline:
         earliest_time: Optional[str] = None,
         latest_time: Optional[str] = None,
         target_hosts: Optional[List[str]] = None,
+        per_window_callback=None,
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
@@ -127,6 +128,9 @@ class DataPipeline:
                            When set, overrides *time_range*.
             latest_time: Absolute end time (ISO 8601).
             target_hosts: Optional list of host/sensor names to restrict queries.
+            per_window_callback: Optional callable(window_data_dict) called after
+                each time window is collected, enabling incremental processing
+                (e.g. building the network map) before the full collection finishes.
 
         Returns:
             Hunting data (dict or SqliteEventStore).
@@ -155,6 +159,7 @@ class DataPipeline:
                 earliest_time=earliest_time,
                 latest_time=latest_time,
                 target_hosts=target_hosts,
+                per_window_callback=per_window_callback,
             )
 
         # Collect from Security Onion
@@ -270,7 +275,8 @@ class DataPipeline:
     def _collect_from_splunk(self, time_range: str, progress_callback=None,
                              store=None, earliest_time: Optional[str] = None,
                              latest_time: Optional[str] = None,
-                             target_hosts: Optional[List[str]] = None) -> None:
+                             target_hosts: Optional[List[str]] = None,
+                             per_window_callback=None) -> None:
         """
         Collect data from Splunk and merge into *store*.
 
@@ -372,6 +378,16 @@ class DataPipeline:
                     'running_total': running_total,
                     'events_by_type': events_by_type,
                 })
+
+            # Allow caller to process each window's data incrementally
+            # (e.g. build the network map before all windows are done)
+            if per_window_callback and window_total > 0:
+                try:
+                    per_window_callback(window_data)
+                except Exception as pwc_err:
+                    self.logger.warning(
+                        f"per_window_callback error on window {idx}: {pwc_err}"
+                    )
 
     def _collect_splunk_window(
         self,

@@ -227,7 +227,7 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
              {'total': total, 'profiled': already_profiled,
               'newly_profiled': 0, 'phase': 'querying'})
 
-        windows = nm._generate_profile_windows(time_range, window_hours=1)
+        windows = nm._generate_profile_windows(time_range, window_hours=24)
         total_windows = len(windows)
         log.info(f"BG Profile: {total_windows} query window(s)")
 
@@ -535,12 +535,46 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                         log.info(f'Cycle {cycle}: query {qn} returned {qc:,} events')
 
                 if bf_start:
+                    # Build network map incrementally as each 1-hour
+                    # window completes, so the map appears in the UI
+                    # while backfill is still running.
+                    _bf_windows_mapped = [0]
+
+                    def _map_window(window_data):
+                        conns = window_data.get('network_connections', [])
+                        dns_q = window_data.get('dns_queries', [])
+                        ntlm_l = window_data.get('ntlm_logs', [])
+                        if conns or dns_q or ntlm_l:
+                            nm.execute(
+                                network_connections=conns,
+                                dns_queries=dns_q,
+                                ntlm_logs=ntlm_l,
+                            )
+                            _bf_windows_mapped[0] += 1
+                            # Save map periodically so UI can see progress
+                            if _bf_windows_mapped[0] % 3 == 0:
+                                nm.save_map()
+                                send('running',
+                                     f'Cycle {cycle}: backfill — mapped '
+                                     f'{_bf_windows_mapped[0]} windows so far '
+                                     f'({len(nm.nodes)} nodes)...',
+                                     30, {'cycle': cycle,
+                                          'stage_detail': 'backfill_mapping',
+                                          'total_nodes': len(nm.nodes)})
+
                     hunting_data = pipeline.collect_hunting_data(
                         earliest_time=bf_start,
                         latest_time=bf_end,
                         storage_mode='sqlite',
                         progress_callback=_splunk_progress,
+                        per_window_callback=_map_window,
                     )
+                    # Final save after all windows
+                    if _bf_windows_mapped[0] > 0:
+                        nm.save_map()
+                        log.info(f'Backfill: incrementally mapped '
+                                 f'{_bf_windows_mapped[0]} windows → '
+                                 f'{len(nm.nodes)} nodes')
                 else:
                     hunting_data = pipeline.collect_hunting_data(
                         time_range=time_range)
@@ -700,6 +734,36 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                             hunting_data.close()
                         except Exception:
                             pass
+
+                    # --- Auto-profile unprofiled devices ---
+                    try:
+                        stats = nm.get_profiling_stats()
+                        unprofiled = stats.get('unprofiled', 0)
+                        if unprofiled > 0:
+                            log.info(f'Cycle {cycle}: auto-profiling '
+                                     f'{unprofiled} unprofiled devices')
+                            send('running',
+                                 f'Cycle {cycle}: profiling {unprofiled} '
+                                 f'new devices...',
+                                 80, {'cycle': cycle,
+                                      'stage_detail': 'auto_profile'})
+                            profile_result = nm.profile_devices(
+                                pipeline.splunk,
+                                time_range=f'-{lookback_minutes}m',
+                            )
+                            nm.save_map()
+                            classified = profile_result.get('classified', 0)
+                            log.info(f'Cycle {cycle}: auto-profiled '
+                                     f'{classified} devices')
+                            send('running',
+                                 f'Cycle {cycle}: profiled {classified} '
+                                 f'devices',
+                                 85, {'cycle': cycle,
+                                      'stage_detail': 'auto_profile_done',
+                                      'classified': classified})
+                    except Exception as pe:
+                        log.warning(f'Cycle {cycle}: auto-profile error: {pe}')
+
                 else:
                     msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
                     log.info(msg)
