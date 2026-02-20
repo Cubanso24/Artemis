@@ -3,10 +3,25 @@
 import json
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List
 
 logger = logging.getLogger("artemis.db")
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """Handle datetime and other non-serializable types from agent outputs."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def _dumps(obj):
+    """json.dumps with datetime-safe encoding."""
+    return json.dumps(obj, cls=_SafeEncoder)
 
 
 class DatabaseManager:
@@ -164,12 +179,12 @@ class DatabaseManager:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (finding_id, agent_name, activity_type, severity, confidence,
                  description,
-                 json.dumps(indicators or []),
-                 json.dumps(affected_assets or []),
-                 json.dumps(mitre_tactics or []),
-                 json.dumps(mitre_techniques or []),
+                 _dumps(indicators or []),
+                 _dumps(affected_assets or []),
+                 _dumps(mitre_tactics or []),
+                 _dumps(mitre_techniques or []),
                  evidence_count,
-                 json.dumps(recommended_actions or []),
+                 _dumps(recommended_actions or []),
                  source_cycle, now),
             )
             conn.commit()
@@ -304,11 +319,11 @@ class DatabaseManager:
                  synthesis.get('overall_severity', 'low'),
                  synthesis.get('overall_confidence', 0.0),
                  synthesis.get('reasoning', ''),
-                 json.dumps(synthesis.get('kill_chain_assessment', {})),
-                 json.dumps(synthesis.get('correlations', [])),
-                 json.dumps(synthesis.get('false_positive_flags', [])),
-                 json.dumps(synthesis.get('recommended_actions', [])),
-                 json.dumps(synthesis),
+                 _dumps(synthesis.get('kill_chain_assessment', {})),
+                 _dumps(synthesis.get('correlations', [])),
+                 _dumps(synthesis.get('false_positive_flags', [])),
+                 _dumps(synthesis.get('recommended_actions', [])),
+                 _dumps(synthesis),
                  now),
             )
             conn.commit()
@@ -515,7 +530,7 @@ class DatabaseManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 hunt_id, pid, stage, message, progress,
-                json.dumps(data) if data else None,
+                _dumps(data) if data else None,
                 datetime.now().isoformat(),
             ))
             conn.commit()
@@ -578,7 +593,7 @@ class DatabaseManager:
             conn.execute(
                 "INSERT OR REPLACE INTO enrichment_results "
                 "(ip, verdict, sources, enriched_at) VALUES (?, ?, ?, ?)",
-                (ip, verdict, json.dumps(sources), datetime.now().isoformat()),
+                (ip, verdict, _dumps(sources), datetime.now().isoformat()),
             )
             conn.commit()
         finally:
