@@ -1112,6 +1112,7 @@
                         <span style="margin:0 8px;">|</span>
                         <span id="continuous-nodes">Nodes: —</span>
                         <span style="margin:0 8px;">|</span>
+                        <span id="continuous-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:11px; margin-right:6px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
                         <span id="continuous-msg">Waiting...</span>
                     </div>
                 </div>
@@ -3724,6 +3725,10 @@
                 document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
                 document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
                 document.getElementById('continuous-msg').textContent = data.message || '';
+
+                // Show/hide the LLM badge based on current stage
+                const llmBadge = document.getElementById('continuous-llm-badge');
+                llmBadge.style.display = result.stage_detail === 'llm_analysis' ? 'inline' : 'none';
 
                 // Refresh the graph periodically when new data comes in
                 if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;

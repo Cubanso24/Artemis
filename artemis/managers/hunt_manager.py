@@ -519,9 +519,16 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
 
                     # ---- Run hunting agents with network map context ----
                     try:
-                        log.info(f'Cycle {cycle}: running {len(coordinator.agents)} '
-                                 f'hunting agents (LLM backend: '
-                                 f'{getattr(coordinator.llm_client, "backend", "none")})')
+                        _backend = getattr(coordinator.llm_client, 'backend', 'none')
+                        _n_agents = len(coordinator.agents)
+                        log.info(f'Cycle {cycle}: running {_n_agents} '
+                                 f'hunting agents (LLM backend: {_backend})')
+                        send('running',
+                             f'Cycle {cycle}: analyzing with {_n_agents} agents '
+                             f'(LLM: {_backend})...',
+                             65, {'cycle': cycle, 'total_nodes': result['total_nodes'],
+                                  'internal_nodes': result['internal_nodes'],
+                                  'stage_detail': 'llm_analysis'})
                         context = NetworkState.from_data_with_map(
                             hunting_data, nm.nodes)
                         assessment = coordinator.hunt(
