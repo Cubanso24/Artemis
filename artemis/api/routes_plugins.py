@@ -289,6 +289,35 @@ async def stop_background_profile():
     return await hunt_manager.stop_background_profile()
 
 
+# --- Continuous ingestion --------------------------------------------------
+
+@router.post("/api/network-graph/continuous/start")
+async def start_continuous_ingestion(
+    interval_minutes: int = 15,
+    lookback_minutes: int = 20,
+):
+    """Start continuous network map ingestion.
+
+    Runs a background loop that queries Splunk every *interval_minutes*
+    for the last *lookback_minutes* of network connections, DNS queries,
+    and NTLM events, then feeds them into the network mapper to grow
+    the map in real-time.
+    """
+    return await hunt_manager.start_continuous(interval_minutes, lookback_minutes)
+
+
+@router.post("/api/network-graph/continuous/stop")
+async def stop_continuous_ingestion():
+    """Stop continuous network map ingestion."""
+    return await hunt_manager.stop_continuous()
+
+
+@router.get("/api/network-graph/continuous/status")
+async def continuous_ingestion_status():
+    """Get current continuous ingestion status."""
+    return hunt_manager.get_continuous_status()
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")

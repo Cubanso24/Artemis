@@ -360,6 +360,139 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
 
 
 # ---------------------------------------------------------------------------
+# Continuous ingestion worker — runs in its own process, loops forever
+# ---------------------------------------------------------------------------
+
+def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
+                               db_path):
+    """Continuously collect network data and update the map.
+
+    Runs in a non-daemon subprocess that survives server restarts.
+    Every *interval_minutes* it queries Splunk for the last
+    *lookback_minutes* of data and feeds it into the network mapper's
+    ``execute()`` method, which builds/updates the live network map.
+
+    The process writes its state to the ``hunt_progress`` table so the
+    server can track it and broadcast updates via WebSocket.
+    """
+    import os, logging, traceback, json, time, signal as _signal
+    from datetime import datetime
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+    log = logging.getLogger('artemis.continuous_ingest')
+
+    db = DatabaseManager(db_path)
+    pid = os.getpid()
+    _stop = False
+
+    def _handle_term(*_a):
+        nonlocal _stop
+        _stop = True
+        log.info('Received SIGTERM — stopping after current cycle')
+
+    _signal.signal(_signal.SIGTERM, _handle_term)
+
+    def send(stage, message, progress, extra=None):
+        try:
+            db.write_progress(job_id, pid, stage, message, progress, extra)
+        except Exception:
+            pass
+
+    send('running', 'Starting continuous ingestion...', 0)
+
+    try:
+        # Build Splunk connector
+        host, token, username, password = _read_splunk_credentials()
+        cfg = DataSourceConfig(
+            splunk_host=host, splunk_port=8089,
+            splunk_token=token or '',
+            splunk_username=username or '',
+            splunk_password=password or '',
+        )
+        pipeline = DataPipeline(cfg)
+        if not pipeline.splunk:
+            send('error', 'Cannot connect to Splunk', 0)
+            return
+
+        # Load network mapper
+        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm.initialize()
+
+        cycle = 0
+        time_range = f'-{lookback_minutes}m'
+
+        while not _stop:
+            cycle += 1
+            cycle_start = datetime.now()
+            log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m of data')
+            send('running',
+                 f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
+                 50, {'cycle': cycle, 'interval': interval_minutes,
+                      'lookback': lookback_minutes})
+
+            try:
+                hunting_data = pipeline.collect_hunting_data(
+                    time_range=time_range)
+
+                conns = hunting_data.get('network_connections', [])
+                dns = hunting_data.get('dns_queries', [])
+                ntlm = hunting_data.get('ntlm_logs', [])
+
+                if conns or dns or ntlm:
+                    result = nm.execute(
+                        network_connections=conns,
+                        dns_queries=dns,
+                        ntlm_logs=ntlm,
+                    )
+                    nm.save_map()
+
+                    msg = (f'Cycle {cycle} done: {len(conns)} conns, '
+                           f'{len(dns)} DNS, {len(ntlm)} NTLM → '
+                           f'{result["total_nodes"]} nodes')
+                    log.info(msg)
+                    send('running', msg, 50,
+                         {'cycle': cycle, 'new_conns': len(conns),
+                          'new_dns': len(dns), 'new_ntlm': len(ntlm),
+                          'total_nodes': result['total_nodes'],
+                          'internal_nodes': result['internal_nodes']})
+                else:
+                    msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
+                    log.info(msg)
+                    send('running', msg, 50, {'cycle': cycle})
+
+            except Exception as e:
+                log.error(f'Cycle {cycle} error: {e}')
+                log.error(traceback.format_exc())
+                send('running', f'Cycle {cycle} error: {e}', 50,
+                     {'cycle': cycle, 'error': str(e)})
+
+            # Sleep in 5-second increments so SIGTERM is checked promptly
+            wait_seconds = interval_minutes * 60
+            elapsed = (datetime.now() - cycle_start).total_seconds()
+            remaining = max(0, wait_seconds - elapsed)
+            while remaining > 0 and not _stop:
+                time.sleep(min(5, remaining))
+                remaining -= 5
+
+        send('complete', f'Stopped after {cycle} cycles', 100,
+             {'cycles_completed': cycle})
+        log.info(f'Continuous ingestion stopped after {cycle} cycles')
+
+    except Exception as e:
+        log.error(f'Continuous ingestion failed: {e}')
+        log.error(traceback.format_exc())
+        send('error', f'Ingestion failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc()})
+
+
+# ---------------------------------------------------------------------------
 # HuntManager — lives in the web server process
 # ---------------------------------------------------------------------------
 
@@ -377,6 +510,9 @@ class HuntManager:
         self._monitored_hunts: dict = {}      # job_id -> pid
         self._poll_task: Optional[asyncio.Task] = None
         self._splunk = None
+        # Continuous ingestion state
+        self._continuous_id: Optional[str] = None
+        self._continuous_pid: Optional[int] = None
 
     # WebSocket broadcast callback — set by the app at startup
     _broadcast_fn = None
@@ -388,6 +524,128 @@ class HuntManager:
             pipeline = DataPipeline(cfg)
             self._splunk = pipeline.splunk
         return self._splunk
+
+    # ------------------------------------------------------------------
+    # Continuous ingestion
+    # ------------------------------------------------------------------
+
+    async def start_continuous(self, interval_minutes: int = 15,
+                               lookback_minutes: int = 20) -> dict:
+        """Start continuous network map ingestion in a background process."""
+        import multiprocessing
+
+        if self._continuous_pid and _pid_alive(self._continuous_pid):
+            return {
+                'status': 'already_running',
+                'job_id': self._continuous_id,
+                'pid': self._continuous_pid,
+            }
+
+        job_id = f'continuous_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        db_path = self.db.db_path
+
+        proc = multiprocessing.Process(
+            target=_continuous_ingest_process,
+            args=(job_id, interval_minutes, lookback_minutes, db_path),
+            daemon=False,
+        )
+        proc.start()
+
+        self._continuous_id = job_id
+        self._continuous_pid = proc.pid
+        self._monitored_hunts[job_id] = proc.pid
+        self.active_hunts[job_id] = {
+            'status': 'running',
+            'type': 'continuous',
+            'progress': 0,
+            'start_time': datetime.now(),
+            'interval_minutes': interval_minutes,
+            'lookback_minutes': lookback_minutes,
+        }
+
+        logger.info(
+            f'Started continuous ingestion {job_id} (pid {proc.pid}), '
+            f'interval={interval_minutes}m, lookback={lookback_minutes}m'
+        )
+        self._ensure_poll_task()
+        return {
+            'status': 'started',
+            'job_id': job_id,
+            'pid': proc.pid,
+            'interval_minutes': interval_minutes,
+            'lookback_minutes': lookback_minutes,
+        }
+
+    async def stop_continuous(self) -> dict:
+        """Stop the continuous ingestion process."""
+        if not self._continuous_pid:
+            return {'status': 'not_running'}
+
+        if not _pid_alive(self._continuous_pid):
+            job_id = self._continuous_id
+            self._continuous_id = None
+            self._continuous_pid = None
+            self._monitored_hunts.pop(job_id, None)
+            return {'status': 'already_stopped', 'job_id': job_id}
+
+        job_id = self._continuous_id
+        logger.info(
+            f'Stopping continuous ingestion {job_id} (pid {self._continuous_pid})'
+        )
+
+        # Send SIGTERM — the process catches it and stops gracefully
+        try:
+            import signal as _sig
+            os.kill(self._continuous_pid, _sig.SIGTERM)
+        except OSError:
+            pass
+
+        # Wait up to 10 seconds
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            if not _pid_alive(self._continuous_pid):
+                break
+
+        self._monitored_hunts.pop(job_id, None)
+        if job_id in self.active_hunts:
+            self.active_hunts[job_id]['status'] = 'stopped'
+        self._continuous_id = None
+        self._continuous_pid = None
+        return {'status': 'stopped', 'job_id': job_id}
+
+    def get_continuous_status(self) -> dict:
+        """Return current continuous ingestion status."""
+        if not self._continuous_id:
+            return {'running': False}
+
+        alive = self._continuous_pid and _pid_alive(self._continuous_pid)
+        if not alive:
+            job_id = self._continuous_id
+            self._continuous_id = None
+            self._continuous_pid = None
+            return {'running': False, 'last_job_id': job_id}
+
+        state = self.active_hunts.get(self._continuous_id, {})
+        last_progress = state.get('last_progress', {})
+        extra = {}
+        if last_progress.get('extra'):
+            try:
+                import json
+                extra = json.loads(last_progress['extra']) if isinstance(
+                    last_progress['extra'], str) else last_progress['extra']
+            except Exception:
+                pass
+
+        return {
+            'running': True,
+            'job_id': self._continuous_id,
+            'pid': self._continuous_pid,
+            'message': last_progress.get('message', ''),
+            'cycle': extra.get('cycle', 0),
+            'interval_minutes': extra.get('interval', state.get('interval_minutes', 15)),
+            'lookback_minutes': extra.get('lookback', state.get('lookback_minutes', 20)),
+            'total_nodes': extra.get('total_nodes', 0),
+        }
 
     # ------------------------------------------------------------------
     # Cancel a running job
@@ -676,8 +934,10 @@ class HuntManager:
                     # Broadcast to WebSocket clients
                     if self._broadcast_fn:
                         is_bg_profile = hunt_id.startswith('bgprofile_')
-                        msg_type = ('bg_profile_progress'
-                                    if is_bg_profile else 'profile_progress')
+                        is_continuous = hunt_id.startswith('continuous_')
+                        msg_type = ('continuous_progress' if is_continuous
+                                    else 'bg_profile_progress' if is_bg_profile
+                                    else 'profile_progress')
                         msg = {
                             'type': msg_type,
                             'stage': row['stage'],
@@ -698,11 +958,14 @@ class HuntManager:
                         plugin_manager.reload_from_disk(
                             ['network_mapper', 'sigma_engine']
                         )
-                        # Clear profile tracking if this was a profile job
+                        # Clear tracking for finished jobs
                         if hunt_id == self._profile_id:
                             self._profile_pid = None
                         if hunt_id == self._bg_profile_id:
                             self._bg_profile_pid = None
+                        if hunt_id == self._continuous_id:
+                            self._continuous_id = None
+                            self._continuous_pid = None
                         finished.append(hunt_id)
                     elif not _pid_alive(pid):
                         # Process died without writing terminal state
@@ -754,13 +1017,16 @@ class HuntManager:
                     'collection_stats': {},
                     'last_progress': row,
                 }
-                # Restore profile tracking
+                # Restore job tracking
                 if hunt_id.startswith('profile_'):
                     self._profile_id = hunt_id
                     self._profile_pid = pid
                 elif hunt_id.startswith('bgprofile_'):
                     self._bg_profile_id = hunt_id
                     self._bg_profile_pid = pid
+                elif hunt_id.startswith('continuous_'):
+                    self._continuous_id = hunt_id
+                    self._continuous_pid = pid
                 reconnected += 1
             else:
                 logger.warning(

@@ -1064,6 +1064,46 @@
                     <p id="bg-profile-msg" style="font-size:12px; color:var(--text-secondary); margin-top:6px; margin-bottom:0;">Starting profiler...</p>
                 </div>
 
+                <!-- Continuous ingestion controls -->
+                <div id="continuous-ingest-panel" style="margin-top:8px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span id="continuous-status-icon" style="font-size:13px;">
+                                <i class="fa-solid fa-circle" style="color:var(--text-secondary); font-size:8px; vertical-align:middle;"></i>
+                            </span>
+                            <span style="font-size:13px; font-weight:600;">Live Ingestion</span>
+                            <span id="continuous-status-text" style="font-size:12px; color:var(--text-secondary);">Stopped</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <label style="font-size:12px; color:var(--text-secondary);">Interval</label>
+                            <select id="continuous-interval" style="padding:4px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); font-size:12px;">
+                                <option value="5">5 min</option>
+                                <option value="10">10 min</option>
+                                <option value="15" selected>15 min</option>
+                                <option value="30">30 min</option>
+                                <option value="60">60 min</option>
+                            </select>
+                            <label style="font-size:12px; color:var(--text-secondary);">Lookback</label>
+                            <select id="continuous-lookback" style="padding:4px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); font-size:12px;">
+                                <option value="10">10 min</option>
+                                <option value="20" selected>20 min</option>
+                                <option value="30">30 min</option>
+                                <option value="60">60 min</option>
+                            </select>
+                            <button class="btn" id="continuous-toggle-btn" onclick="toggleContinuousIngest()" style="font-size:12px; padding:5px 14px;">
+                                <i class="fa-solid fa-play"></i> Start
+                            </button>
+                        </div>
+                    </div>
+                    <div id="continuous-detail" style="display:none; margin-top:8px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:8px;">
+                        <span id="continuous-cycle">Cycle: —</span>
+                        <span style="margin:0 8px;">|</span>
+                        <span id="continuous-nodes">Nodes: —</span>
+                        <span style="margin:0 8px;">|</span>
+                        <span id="continuous-msg">Waiting...</span>
+                    </div>
+                </div>
+
                 <!-- Group selection toolbar (shown when creating a group) -->
                 <div id="group-select-bar" class="group-select-bar" style="display:none;">
                     <i class="fa-solid fa-object-group" style="color:var(--accent-primary);"></i>
@@ -1239,6 +1279,9 @@
         // Subnet clustering state
         let _expandedSubnets = new Set();
 
+        // Continuous ingestion state
+        let continuousRunning = false;
+
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             connectWebSocket();
@@ -1247,6 +1290,7 @@
             loadNetworkMaps();
             initializeTheme();
             checkBgProfileStatus();
+            checkContinuousStatus();
 
             // Show network graph tab by default
             showTab('network-graph-tab');
@@ -1380,6 +1424,8 @@
                     addLog(data.message, data.log_type);
                 } else if (data.type === 'bg_profile_progress') {
                     handleBgProfileProgress(data);
+                } else if (data.type === 'continuous_progress') {
+                    handleContinuousProgress(data);
                 }
             };
 
@@ -3322,6 +3368,153 @@
             } catch(e) {
                 addLog(`Error cancelling profile: ${e.message}`, 'error');
             }
+        }
+
+        // ---- Continuous Ingestion ----
+        async function toggleContinuousIngest() {
+            if (continuousRunning) {
+                await stopContinuousIngest();
+            } else {
+                await startContinuousIngest();
+            }
+        }
+
+        async function startContinuousIngest() {
+            const btn = document.getElementById('continuous-toggle-btn');
+            const interval = parseInt(document.getElementById('continuous-interval').value);
+            const lookback = parseInt(document.getElementById('continuous-lookback').value);
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Starting...';
+
+            try {
+                const resp = await fetch('/api/network-graph/continuous/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ interval_minutes: interval, lookback_minutes: lookback })
+                });
+                const data = await resp.json();
+
+                if (data.error) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-play"></i> Start';
+                    addLog(`Continuous ingestion error: ${data.error}`, 'error');
+                    return;
+                }
+
+                setContinuousRunning(true);
+                addLog(`Live ingestion started (${interval}m interval, ${lookback}m lookback)`, 'info');
+
+            } catch (e) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-play"></i> Start';
+                addLog(`Failed to start continuous ingestion: ${e.message}`, 'error');
+            }
+        }
+
+        async function stopContinuousIngest() {
+            const btn = document.getElementById('continuous-toggle-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Stopping...';
+
+            try {
+                await fetch('/api/network-graph/continuous/stop', { method: 'POST' });
+                addLog('Live ingestion stopped', 'info');
+            } catch (e) {
+                addLog('Failed to stop continuous ingestion', 'error');
+            }
+
+            setContinuousRunning(false);
+            document.getElementById('continuous-detail').style.display = 'none';
+        }
+
+        function setContinuousRunning(running) {
+            continuousRunning = running;
+            const btn = document.getElementById('continuous-toggle-btn');
+            const icon = document.getElementById('continuous-status-icon');
+            const text = document.getElementById('continuous-status-text');
+            const intervalSel = document.getElementById('continuous-interval');
+            const lookbackSel = document.getElementById('continuous-lookback');
+
+            btn.disabled = false;
+            if (running) {
+                btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop';
+                btn.style.background = '#e53935';
+                icon.innerHTML = '<i class="fa-solid fa-circle fa-beat-fade" style="color:#4caf50; font-size:8px; vertical-align:middle;"></i>';
+                text.textContent = 'Running';
+                text.style.color = '#4caf50';
+                intervalSel.disabled = true;
+                lookbackSel.disabled = true;
+                document.getElementById('continuous-detail').style.display = 'block';
+            } else {
+                btn.innerHTML = '<i class="fa-solid fa-play"></i> Start';
+                btn.style.background = '';
+                icon.innerHTML = '<i class="fa-solid fa-circle" style="color:var(--text-secondary); font-size:8px; vertical-align:middle;"></i>';
+                text.textContent = 'Stopped';
+                text.style.color = 'var(--text-secondary)';
+                intervalSel.disabled = false;
+                lookbackSel.disabled = false;
+            }
+        }
+
+        function handleContinuousProgress(data) {
+            const result = data.result || {};
+
+            if (data.stage === 'complete') {
+                // Graceful stop
+                setContinuousRunning(false);
+                document.getElementById('continuous-msg').textContent = data.message || 'Ingestion stopped';
+                addLog(`Live ingestion stopped: ${data.message}`, 'info');
+                // Refresh graph one final time
+                loadNetworkGraph();
+                loadNetworkSummary();
+                setTimeout(() => {
+                    document.getElementById('continuous-detail').style.display = 'none';
+                }, 5000);
+
+            } else if (data.stage === 'error') {
+                setContinuousRunning(false);
+                document.getElementById('continuous-msg').textContent = data.message || 'Error';
+                addLog(`Live ingestion error: ${data.message}`, 'error');
+                setTimeout(() => {
+                    document.getElementById('continuous-detail').style.display = 'none';
+                }, 5000);
+
+            } else {
+                // Running — update status display
+                setContinuousRunning(true);
+                const cycle = result.cycle || '—';
+                const totalNodes = result.total_nodes || '—';
+                document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
+                document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
+                document.getElementById('continuous-msg').textContent = data.message || '';
+
+                // Refresh the graph periodically when new data comes in
+                if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
+                const now = Date.now();
+                if (result.total_nodes && now - handleContinuousProgress._lastRefresh > 30000) {
+                    handleContinuousProgress._lastRefresh = now;
+                    loadNetworkGraph(true);
+                    loadNetworkSummary();
+                }
+            }
+        }
+
+        async function checkContinuousStatus() {
+            try {
+                const resp = await fetch('/api/network-graph/continuous/status');
+                const status = await resp.json();
+                if (status.running) {
+                    setContinuousRunning(true);
+                    document.getElementById('continuous-cycle').textContent = `Cycle: ${status.cycle || '—'}`;
+                    document.getElementById('continuous-nodes').textContent = `Nodes: ${status.total_nodes || '—'}`;
+                    document.getElementById('continuous-msg').textContent = status.message || 'Running...';
+                    // Set dropdowns to match running config
+                    document.getElementById('continuous-interval').value = status.interval_minutes || 15;
+                    document.getElementById('continuous-lookback').value = status.lookback_minutes || 20;
+                    addLog(`Reconnected to live ingestion (cycle ${status.cycle || 0})`, 'info');
+                }
+            } catch(e) {}
         }
 
         async function loadPlugins() {
