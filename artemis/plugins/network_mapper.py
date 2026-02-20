@@ -2920,31 +2920,29 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 subnet_gateway_ips[node.ip].add(subnet)
 
         # Phase 4: Cross-subnet traffic analysis
-        # Devices that communicate with many DIFFERENT subnets (≥4) and have
-        # high bidirectional traffic are likely routers/firewalls
+        # Devices that RECEIVE traffic from many different internal subnets
+        # are likely routers/firewalls.  Outbound to many subnets is normal
+        # client behaviour (cloud, CDNs) so we only count inbound from
+        # internal RFC-1918 peers.
         cross_subnet_ips: Dict[str, set] = defaultdict(set)  # ip -> set of /24 subnets
         for key, node in self.nodes.items():
             if not node.is_internal:
                 continue
-            subnets_seen = set()
             own_parts = node.ip.split('.')
             if len(own_parts) != 4:
                 continue
             own_subnet = '.'.join(own_parts[:3])
-            for peer_ip in list(node.connections_to.keys())[:500]:
-                p = peer_ip.split('.')
-                if len(p) == 4:
-                    peer_sub = '.'.join(p[:3])
-                    if peer_sub != own_subnet:
-                        subnets_seen.add(peer_sub + '.0/24')
+            subnets_in = set()
             for peer_ip in list(node.connections_from.keys())[:500]:
+                if not NetworkNode._is_internal_ip(peer_ip):
+                    continue
                 p = peer_ip.split('.')
                 if len(p) == 4:
                     peer_sub = '.'.join(p[:3])
                     if peer_sub != own_subnet:
-                        subnets_seen.add(peer_sub + '.0/24')
-            if len(subnets_seen) >= 4:
-                cross_subnet_ips[node.ip] = subnets_seen
+                        subnets_in.add(peer_sub + '.0/24')
+            if len(subnets_in) >= 6:
+                cross_subnet_ips[node.ip] = subnets_in
 
         # Phase 5: MAC vendor-based infrastructure detection
         mac_infra_ips: Dict[str, str] = {}  # ip -> infra hint
@@ -3043,8 +3041,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 )
 
             # Router/firewall override: use multi-signal evidence when
-            # the port-based classifier returned gateway or no match
-            if not device_type or device_type in ('gateway', 'iot_device', 'workstation'):
+            # the port-based classifier returned gateway or no match.
+            # Do NOT override 'workstation' — those are classified from
+            # traffic patterns (high outbound, many destinations) and
+            # phones/laptops trivially hit cross-subnet thresholds.
+            if not device_type or device_type in ('gateway', 'iot_device'):
                 infra_evidence_count = 0
                 inferred_infra_type = ''
 
@@ -4308,23 +4309,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
             internal_nodes, key=lambda n: n.total_connections, reverse=True
         )[:max_nodes]
 
-        # Deduplicate by (sensor, IP): routers/gateways on multiple VLANs
-        # produce separate node keys — merge into one graph node.
-        _best: Dict[tuple, list] = {}
+        # Deduplicate by IP: the same device seen by different sensors or
+        # on different VLANs produces separate node keys — merge into one
+        # graph node, keeping the variant with the most connections.
+        _best: Dict[str, list] = {}  # ip -> [node, key, vlans_set, sensors_set]
         for n in top:
-            sid_ip = (n.sensor_id, n.ip)
+            ip = n.ip
             key = self._node_key(n.sensor_id, n.vlan, n.ip)
-            if sid_ip not in _best:
-                _best[sid_ip] = [n, key, {n.vlan}]
+            if ip not in _best:
+                _best[ip] = [n, key, {n.vlan}, {n.sensor_id}]
             else:
-                _best[sid_ip][2].add(n.vlan)
-                if n.total_connections > _best[sid_ip][0].total_connections:
-                    _best[sid_ip][0] = n
-                    _best[sid_ip][1] = key
+                _best[ip][2].add(n.vlan)
+                _best[ip][3].add(n.sensor_id)
+                if n.total_connections > _best[ip][0].total_connections:
+                    _best[ip][0] = n
+                    _best[ip][1] = key
 
         top = [entry[0] for entry in _best.values()]
         top_keys = {entry[1] for entry in _best.values()}
-        # Canonical key lookup: (sensor_id, ip) -> graph node ID
+        # Canonical key lookup: ip -> graph node ID
         _ip_canon = {k: v[1] for k, v in _best.items()}
         _ip_vlans = {k: v[2] for k, v in _best.items()}
 
@@ -4401,11 +4404,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             )
 
             nodes.append({
-                'id': _ip_canon[(node.sensor_id, node.ip)],
+                'id': _ip_canon[node.ip],
                 'label': label,
                 'sensor_id': node.sensor_id,
                 'vlan': node.vlan,
-                'vlans': sorted(_ip_vlans.get((node.sensor_id, node.ip), {node.vlan})),
+                'vlans': sorted(_ip_vlans.get(node.ip, {node.vlan})),
                 'subnet': subnet,
                 'group': 'internal',
                 'size': min(node.total_connections / 10, 50),
@@ -4476,13 +4479,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
         edges = []
         seen_edges: Set[tuple] = set()
         for node in top:
-            src_key = _ip_canon[(node.sensor_id, node.ip)]
+            src_key = _ip_canon[node.ip]
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )[:15]:
-                dst_canon = _ip_canon.get((node.sensor_id, dst_ip))
+                dst_canon = _ip_canon.get(dst_ip)
                 if dst_canon is None or dst_canon == src_key:
                     continue
                 edge_key = tuple(sorted([src_key, dst_canon]))
@@ -4499,7 +4502,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Build edges from internal nodes to the Internet cloud
         if has_external:
             for node in top:
-                src_key = _ip_canon[(node.sensor_id, node.ip)]
+                src_key = _ip_canon[node.ip]
                 ext_count = sum(
                     count for dst_ip, count in node.connections_to.items()
                     if dst_ip in external_ips
