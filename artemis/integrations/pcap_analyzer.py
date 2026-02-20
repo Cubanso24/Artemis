@@ -398,8 +398,9 @@ class PCAPAnalyzer:
         agent_mappings = {
             "reconnaissance_hunter": ["network_connections", "dns_queries", "port_scan_indicators"],
             "c2_hunter": ["beaconing_candidates", "network_connections"],
-            "collection_exfiltration_hunter": ["data_transfers"],
-            "initial_access_hunter": ["http_requests"],
+            "collection_exfiltration_hunter": ["data_transfers", "http_requests"],
+            "lateral_movement_hunter": ["network_connections"],
+            "impact_hunter": ["network_connections", "dns_queries"],
         }
 
         relevant_features = agent_mappings.get(agent_name, [])

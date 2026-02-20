@@ -25,8 +25,7 @@ class ArtemisConfig:
     enable_all_agents: bool = True
     baseline_agents: List[str] = field(default_factory=lambda: [
         "c2_hunter",
-        "reconnaissance_hunter",
-        "defense_evasion_hunter"
+        "reconnaissance_hunter"
     ])
 
     # Confidence thresholds

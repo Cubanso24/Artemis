@@ -654,7 +654,12 @@ class SplunkConnector:
 
     def get_all_hunting_data(self, time_range: str = "-1h") -> Dict[str, List]:
         """
-        Get comprehensive hunting data for all Artemis agents.
+        Get hunting data from Zeek network telemetry.
+
+        Only queries data sources that Zeek actually provides.
+        Windows-specific log sources (process, powershell, file ops,
+        scheduled tasks, registry) are not collected since they require
+        Sysmon/Windows Event Log forwarding which is not deployed.
 
         Args:
             time_range: Time range for data collection
@@ -662,18 +667,12 @@ class SplunkConnector:
         Returns:
             Dictionary with all data types
         """
-        self.logger.info(f"Collecting comprehensive hunting data for {time_range}")
+        self.logger.info(f"Collecting Zeek hunting data for {time_range}")
 
         hunting_data = {
             "network_connections": self.get_network_connections(time_range),
             "dns_queries": self.get_dns_queries(time_range),
             "ntlm_logs": self.get_ntlm_logs(time_range),
-            "authentication_logs": self.get_authentication_logs(time_range),
-            "process_logs": self.get_process_logs(time_range),
-            "powershell_logs": self.get_powershell_logs(time_range),
-            "file_operations": self.get_file_operations(time_range),
-            "scheduled_tasks": self.get_scheduled_tasks(time_range),
-            "registry_changes": self.get_registry_changes(time_range)
         }
 
         total_events = sum(len(v) for v in hunting_data.values())

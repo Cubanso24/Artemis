@@ -87,14 +87,10 @@ class HuntAnalyzer:
 
         agent_descriptions = {
             "ReconnaissanceHunter": "Scanning for port scans, network sweeps, DNS recon",
-            "C2Hunter": "Detecting beaconing, DGA domains, suspicious callbacks",
-            "LateralMovementHunter": "Tracking SMB/RDP lateral movement patterns",
-            "CollectionExfiltrationHunter": "Monitoring large data transfers and exfil",
-            "InitialAccessHunter": "Analyzing authentication patterns and access",
-            "ExecutionPersistenceHunter": "Checking process execution and persistence",
-            "CredentialAccessHunter": "Detecting credential theft attempts",
-            "DefenseEvasionHunter": "Finding evasion techniques and anti-forensics",
-            "ImpactHunter": "Identifying destructive activities and impacts"
+            "C2Hunter": "Detecting beaconing, DGA domains, DNS tunneling, suspicious callbacks",
+            "LateralMovementHunter": "Tracking SMB/RDP/SSH/WinRM fan-out and NTLM relay",
+            "CollectionExfiltrationHunter": "Monitoring large transfers, DNS exfil, cloud uploads",
+            "ImpactHunter": "Detecting cryptomining, ransomware spread, DDoS participation",
         }
 
         for agent in selected_agents:
