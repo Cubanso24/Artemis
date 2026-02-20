@@ -33,7 +33,12 @@ logger = logging.getLogger("artemis.llm.rag")
 # ---------------------------------------------------------------------------
 
 _OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
+# Use the same model already running for LLM inference — no need for a
+# separate embedding model when running locally.
+_EMBED_MODEL = os.getenv(
+    "RAG_EMBED_MODEL",
+    os.getenv("OLLAMA_MODEL", "glm-4.7-flash:latest"),
+)
 
 # Lazy-loaded fallback
 _FALLBACK_ENCODER = None
