@@ -495,11 +495,31 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
 
             findings_this_cycle = 0
             try:
+                # Progress callback relays Splunk fetch progress to the UI
+                def _splunk_progress(info):
+                    ptype = info.get('type', '')
+                    if ptype == 'window_done':
+                        w = info.get('window', '?')
+                        tw = info.get('total_windows', '?')
+                        rt = info.get('running_total', 0)
+                        send('running',
+                             f'Cycle {cycle}: fetched window {w}/{tw} '
+                             f'({rt:,} events so far)...',
+                             25 + int(30 * w / max(tw, 1)),
+                             {'cycle': cycle, 'stage_detail': 'splunk_fetch',
+                              'window': w, 'total_windows': tw,
+                              'running_total': rt})
+                    elif ptype == 'query_done':
+                        qn = info.get('query_name', '')
+                        qc = info.get('query_events', 0)
+                        log.info(f'Cycle {cycle}: query {qn} returned {qc:,} events')
+
                 if bf_start:
                     hunting_data = pipeline.collect_hunting_data(
                         earliest_time=bf_start,
                         latest_time=bf_end,
                         storage_mode='sqlite',
+                        progress_callback=_splunk_progress,
                     )
                 else:
                     hunting_data = pipeline.collect_hunting_data(
@@ -530,8 +550,14 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                 if has_data:
                     # -- Feed network mapper (streaming if SQLite) --
                     if _is_sqlite:
+                        total_events = conn_count + dns_count + ntlm_count
                         log.info(f'Cycle {cycle}: streaming {conn_count} conns, '
                                  f'{dns_count} DNS, {ntlm_count} NTLM into network mapper')
+                        send('running',
+                             f'Cycle {cycle}: building network map from '
+                             f'{total_events:,} events...',
+                             55, {'cycle': cycle, 'stage_detail': 'network_mapper',
+                                  'total_events': total_events})
                         result = nm.execute(
                             network_connections=hunting_data.iter_events('network_connections'),
                             dns_queries=hunting_data.iter_events('dns_queries'),
