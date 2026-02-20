@@ -1100,6 +1100,12 @@
                                 <i class="fa-solid fa-play"></i> Start
                             </button>
                         </div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                            <label style="font-size:12px; color:var(--text-secondary);">Backfill from</label>
+                            <input type="date" id="continuous-backfill-date"
+                                style="padding:3px 8px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); font-size:12px;">
+                            <span style="font-size:11px; color:var(--text-secondary);">Optional — first cycle pulls all data from this date to now, then switches to normal lookback</span>
+                        </div>
                     </div>
                     <div id="continuous-detail" style="display:none; margin-top:8px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:8px;">
                         <span id="continuous-cycle">Cycle: —</span>
@@ -3594,15 +3600,21 @@
             const btn = document.getElementById('continuous-toggle-btn');
             const interval = parseInt(document.getElementById('continuous-interval').value);
             const lookback = parseInt(document.getElementById('continuous-lookback').value);
+            const backfillDate = document.getElementById('continuous-backfill-date').value;
 
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Starting...';
+
+            const body = { interval_minutes: interval, lookback_minutes: lookback };
+            if (backfillDate) {
+                body.backfill_from = backfillDate + 'T00:00:00';
+            }
 
             try {
                 const resp = await fetch('/api/network-graph/continuous/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ interval_minutes: interval, lookback_minutes: lookback })
+                    body: JSON.stringify(body)
                 });
                 const data = await resp.json();
 

@@ -364,13 +364,18 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
 # ---------------------------------------------------------------------------
 
 def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
-                               db_path):
+                               db_path, backfill_from=None):
     """Continuously collect network data and update the map.
 
     Runs in a non-daemon subprocess that survives server restarts.
     Every *interval_minutes* it queries Splunk for the last
     *lookback_minutes* of data and feeds it into the network mapper's
     ``execute()`` method, which builds/updates the live network map.
+
+    If *backfill_from* is set (ISO 8601 date string), the first cycle
+    pulls all data from that date to now using absolute time ranges
+    (the data pipeline auto-splits into 24-hour windows and uses
+    SQLite storage to avoid memory exhaustion).
 
     The process writes its state to the ``hunt_progress`` table so the
     server can track it and broadcast updates via WebSocket.
@@ -460,20 +465,45 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
 
         cycle = 0
         time_range = f'-{lookback_minutes}m'
+        _backfill_pending = bool(backfill_from)
 
         while not _stop:
             cycle += 1
             cycle_start = datetime.now()
-            log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m of data')
-            send('running',
-                 f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
-                 50, {'cycle': cycle, 'interval': interval_minutes,
-                      'lookback': lookback_minutes})
+
+            # First cycle with backfill: pull all data from the start
+            # date to now using absolute time ranges + sqlite storage.
+            if _backfill_pending:
+                _backfill_pending = False
+                bf_start = backfill_from
+                bf_end = datetime.now().isoformat()
+                log.info(f'Cycle {cycle}: backfill from {bf_start} to now')
+                send('running',
+                     f'Cycle {cycle}: backfilling from {bf_start} '
+                     f'(auto-windowed, may take a while)...',
+                     25, {'cycle': cycle, 'interval': interval_minutes,
+                          'lookback': lookback_minutes,
+                          'backfill_from': bf_start})
+            else:
+                log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m of data')
+                send('running',
+                     f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
+                     50, {'cycle': cycle, 'interval': interval_minutes,
+                          'lookback': lookback_minutes})
+                bf_start = None
+                bf_end = None
 
             findings_this_cycle = 0
             try:
-                hunting_data = pipeline.collect_hunting_data(
-                    time_range=time_range)
+                if bf_start:
+                    hunting_data = pipeline.collect_hunting_data(
+                        earliest_time=bf_start,
+                        latest_time=bf_end,
+                        storage_mode='sqlite',
+                    )
+                else:
+                    hunting_data = pipeline.collect_hunting_data(
+                        time_range=time_range)
 
                 conns = hunting_data.get('network_connections', [])
                 dns = hunting_data.get('dns_queries', [])
@@ -609,7 +639,8 @@ class HuntManager:
     # ------------------------------------------------------------------
 
     async def start_continuous(self, interval_minutes: int = 15,
-                               lookback_minutes: int = 20) -> dict:
+                               lookback_minutes: int = 20,
+                               backfill_from: str = None) -> dict:
         """Start continuous network map ingestion in a background process."""
         import multiprocessing
 
@@ -625,7 +656,8 @@ class HuntManager:
 
         proc = multiprocessing.Process(
             target=_continuous_ingest_process,
-            args=(job_id, interval_minutes, lookback_minutes, db_path),
+            args=(job_id, interval_minutes, lookback_minutes, db_path,
+                  backfill_from),
             daemon=False,
         )
         proc.start()

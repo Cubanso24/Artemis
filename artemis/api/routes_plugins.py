@@ -295,6 +295,7 @@ async def stop_background_profile():
 async def start_continuous_ingestion(
     interval_minutes: int = 15,
     lookback_minutes: int = 20,
+    backfill_from: Optional[str] = None,
 ):
     """Start continuous network map ingestion.
 
@@ -302,8 +303,15 @@ async def start_continuous_ingestion(
     for the last *lookback_minutes* of network connections, DNS queries,
     and NTLM events, then feeds them into the network mapper to grow
     the map in real-time.
+
+    If *backfill_from* is set (ISO 8601 date, e.g. ``"2025-01-15"``),
+    the **first cycle** pulls all data from that date to now (using
+    automatic 24-hour windowing), then subsequent cycles use the normal
+    *lookback_minutes* window.
     """
-    return await hunt_manager.start_continuous(interval_minutes, lookback_minutes)
+    return await hunt_manager.start_continuous(
+        interval_minutes, lookback_minutes, backfill_from=backfill_from,
+    )
 
 
 @router.post("/api/network-graph/continuous/stop")
