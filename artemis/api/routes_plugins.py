@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from artemis.api.schemas import (
     PluginConfig, ProfileRequest, BackgroundProfileRequest,
@@ -634,3 +634,52 @@ async def get_ip_enrichment(ip: str):
     return result
 
 
+# --- LLM Synthesis reports ------------------------------------------------
+
+@router.get("/api/llm-synthesis")
+async def get_syntheses(limit: int = 20):
+    """Get recent LLM threat synthesis reports."""
+    return db_manager.get_syntheses(limit=limit)
+
+
+@router.get("/api/llm-synthesis/latest")
+async def get_latest_synthesis():
+    """Get the most recent LLM synthesis report."""
+    result = db_manager.get_latest_synthesis()
+    if not result:
+        return JSONResponse(status_code=404,
+                            content={"error": "No synthesis reports yet"})
+    return result
+
+
+@router.get("/api/llm-synthesis/report/pdf")
+async def generate_pdf_report():
+    """Generate a PDF threat report from the latest LLM synthesis + findings."""
+    synthesis = db_manager.get_latest_synthesis()
+    findings = db_manager.get_findings(limit=200)
+    findings_summary = db_manager.get_findings_summary()
+
+    if not synthesis and not findings:
+        return JSONResponse(status_code=404,
+                            content={"error": "No data for report generation"})
+
+    try:
+        from artemis.reporting.pdf_report import generate_threat_report
+        pdf_bytes = generate_threat_report(synthesis, findings, findings_summary)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return StreamingResponse(
+            iter([pdf_bytes]),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition":
+                    f'attachment; filename="artemis_threat_report_{timestamp}.pdf"'
+            },
+        )
+    except ImportError:
+        return JSONResponse(status_code=500,
+                            content={"error": "PDF generation library not installed. "
+                                     "Run: pip install reportlab"})
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        return JSONResponse(status_code=500,
+                            content={"error": f"PDF generation failed: {str(e)}"})

@@ -491,6 +491,16 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                                     recommended_actions=ao_dict.get('recommended_actions', []),
                                     source_cycle=cycle,
                                 )
+                        # Persist LLM synthesis if present
+                        llm_synth = assessment.get('llm_synthesis')
+                        if llm_synth:
+                            try:
+                                db.save_synthesis(cycle, llm_synth)
+                                log.info(f'Cycle {cycle}: saved LLM synthesis '
+                                         f'(severity={llm_synth.get("overall_severity", "?")})')
+                            except Exception as se:
+                                log.error(f'Failed to save LLM synthesis: {se}')
+
                         if findings_this_cycle:
                             log.info(f'Cycle {cycle}: agents produced {findings_this_cycle} findings')
                     except Exception as ae:

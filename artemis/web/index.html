@@ -960,6 +960,7 @@
             <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
             <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
             <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
+            <button class="tab" onclick="showTab('llm-intel-tab')">LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('plugins')">Plugins</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
@@ -1209,6 +1210,102 @@
                 <ul id="network-maps-list" class="map-list">
                     <li>Loading...</li>
                 </ul>
+            </div>
+        </div>
+
+        <!-- LLM Threat Intelligence Tab -->
+        <div id="llm-intel-tab" class="tab-content">
+            <div class="card">
+                <h2><i class="fa-solid fa-brain" style="margin-right:6px;"></i> LLM THREAT INTELLIGENCE</h2>
+                <p style="margin-bottom:15px; opacity:0.8;">
+                    AI-powered threat synthesis from Claude — correlates findings across all hunting agents, assesses kill chain progression, and provides actionable recommendations.
+                </p>
+
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" onclick="loadLLMSynthesis()">
+                        <i class="fa-solid fa-rotate"></i> Refresh
+                    </button>
+                    <button class="btn" onclick="downloadPDFReport()" id="pdf-download-btn">
+                        <i class="fa-solid fa-file-pdf"></i> Download PDF Report
+                    </button>
+                    <select id="llm-history-select" onchange="loadLLMSynthesisById(this.value)" style="padding:8px 12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:13px;">
+                        <option value="">Latest Report</option>
+                    </select>
+                </div>
+
+                <!-- Summary cards -->
+                <div id="llm-summary-cards" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-bottom:20px;">
+                    <div class="stat-card" style="text-align:center;">
+                        <h3 id="llm-severity-val" style="color:var(--text-secondary);">--</h3>
+                        <p>Threat Level</p>
+                    </div>
+                    <div class="stat-card" style="text-align:center;">
+                        <h3 id="llm-confidence-val" style="color:var(--accent-primary);">--</h3>
+                        <p>Confidence</p>
+                    </div>
+                    <div class="stat-card" style="text-align:center;">
+                        <h3 id="llm-correlations-val" style="color:var(--accent-primary);">--</h3>
+                        <p>Correlations</p>
+                    </div>
+                    <div class="stat-card" style="text-align:center;">
+                        <h3 id="llm-actions-val" style="color:var(--accent-primary);">--</h3>
+                        <p>Actions</p>
+                    </div>
+                    <div class="stat-card" style="text-align:center;">
+                        <h3 id="llm-cycle-val" style="color:var(--text-secondary);">--</h3>
+                        <p>Hunt Cycle</p>
+                    </div>
+                </div>
+
+                <!-- Narrative / Reasoning -->
+                <div id="llm-narrative-section" style="display:none; margin-bottom:20px;">
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-left:3px solid var(--accent-primary); border-radius:6px; padding:16px;">
+                        <h3 style="margin-bottom:8px; font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--accent-primary);">
+                            <i class="fa-solid fa-message"></i> Threat Narrative
+                        </h3>
+                        <p id="llm-narrative-text" style="line-height:1.6; color:var(--text-primary); white-space:pre-wrap;"></p>
+                    </div>
+                </div>
+
+                <!-- Kill Chain Assessment -->
+                <div id="llm-killchain-section" style="display:none; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px; font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary);">
+                        <i class="fa-solid fa-link"></i> Kill Chain Assessment
+                    </h3>
+                    <div id="llm-killchain-stages" style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:10px;"></div>
+                    <p id="llm-killchain-progression" style="opacity:0.8; font-size:13px;"></p>
+                </div>
+
+                <!-- Correlations -->
+                <div id="llm-correlations-section" style="display:none; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px; font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary);">
+                        <i class="fa-solid fa-diagram-project"></i> Cross-Agent Correlations
+                    </h3>
+                    <div id="llm-correlations-list"></div>
+                </div>
+
+                <!-- False Positive Flags -->
+                <div id="llm-fp-section" style="display:none; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px; font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary);">
+                        <i class="fa-solid fa-flag"></i> False Positive Flags
+                    </h3>
+                    <div id="llm-fp-list"></div>
+                </div>
+
+                <!-- Recommended Actions -->
+                <div id="llm-actions-section" style="display:none; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px; font-size:13px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary);">
+                        <i class="fa-solid fa-clipboard-check"></i> Recommended Actions
+                    </h3>
+                    <div id="llm-actions-list"></div>
+                </div>
+
+                <!-- Empty state -->
+                <div id="llm-empty-state" style="text-align:center; padding:40px 0; opacity:0.5;">
+                    <i class="fa-solid fa-brain" style="font-size:48px; margin-bottom:12px; display:block;"></i>
+                    <p>No LLM synthesis reports yet.</p>
+                    <p style="font-size:12px; margin-top:4px;">Start continuous ingestion with an ANTHROPIC_API_KEY configured to generate AI-powered threat analysis.</p>
+                </div>
             </div>
         </div>
 
@@ -3693,6 +3790,218 @@
             }
         }
 
+        // -----------------------------------------------------------
+        // LLM Threat Intelligence
+        // -----------------------------------------------------------
+
+        const _sevColorMap = {
+            critical: 'var(--danger)',
+            high: '#db6d28',
+            medium: 'var(--warning)',
+            low: 'var(--info)',
+        };
+
+        let _llmSyntheses = [];
+
+        async function loadLLMSynthesis() {
+            try {
+                const resp = await fetch('/api/llm-synthesis?limit=30');
+                if (!resp.ok) { renderLLMEmpty(); return; }
+                _llmSyntheses = await resp.json();
+                if (!_llmSyntheses.length) { renderLLMEmpty(); return; }
+
+                // Populate history dropdown
+                const sel = document.getElementById('llm-history-select');
+                sel.innerHTML = '<option value="">Latest Report</option>';
+                _llmSyntheses.forEach((s, i) => {
+                    const dt = new Date(s.created_at).toLocaleString();
+                    const sev = (s.overall_severity || '').toUpperCase();
+                    sel.innerHTML += `<option value="${i}">Cycle ${s.cycle} — ${sev} — ${dt}</option>`;
+                });
+
+                // Update badge
+                const badge = document.getElementById('llm-intel-badge');
+                badge.textContent = _llmSyntheses.length;
+                badge.style.display = '';
+
+                renderLLMSynthesis(_llmSyntheses[0]);
+            } catch(e) {
+                console.error('LLM synthesis load error:', e);
+                renderLLMEmpty();
+            }
+        }
+
+        function loadLLMSynthesisById(idx) {
+            if (idx === '' || idx === null) {
+                if (_llmSyntheses.length) renderLLMSynthesis(_llmSyntheses[0]);
+                return;
+            }
+            const s = _llmSyntheses[parseInt(idx)];
+            if (s) renderLLMSynthesis(s);
+        }
+
+        function renderLLMEmpty() {
+            document.getElementById('llm-empty-state').style.display = '';
+            document.getElementById('llm-narrative-section').style.display = 'none';
+            document.getElementById('llm-killchain-section').style.display = 'none';
+            document.getElementById('llm-correlations-section').style.display = 'none';
+            document.getElementById('llm-fp-section').style.display = 'none';
+            document.getElementById('llm-actions-section').style.display = 'none';
+            ['llm-severity-val','llm-confidence-val','llm-correlations-val','llm-actions-val','llm-cycle-val']
+                .forEach(id => document.getElementById(id).textContent = '--');
+        }
+
+        function renderLLMSynthesis(s) {
+            document.getElementById('llm-empty-state').style.display = 'none';
+
+            // Grab full_synthesis (has most detail) with top-level fallback
+            const full = s.full_synthesis || s;
+
+            // --- Summary cards ---
+            const sev = (full.overall_severity || s.overall_severity || 'unknown').toLowerCase();
+            const sevEl = document.getElementById('llm-severity-val');
+            sevEl.textContent = sev.toUpperCase();
+            sevEl.style.color = _sevColorMap[sev] || 'var(--text-secondary)';
+
+            const conf = full.overall_confidence || s.overall_confidence || 0;
+            document.getElementById('llm-confidence-val').textContent = (conf * 100).toFixed(0) + '%';
+
+            const correlations = full.correlations || s.correlations || [];
+            document.getElementById('llm-correlations-val').textContent = correlations.length;
+
+            const actions = full.recommended_actions || s.recommended_actions || [];
+            document.getElementById('llm-actions-val').textContent = actions.length;
+
+            document.getElementById('llm-cycle-val').textContent = s.cycle || '--';
+
+            // --- Narrative ---
+            const reasoning = full.reasoning || s.reasoning || '';
+            const narrativeSection = document.getElementById('llm-narrative-section');
+            if (reasoning) {
+                document.getElementById('llm-narrative-text').textContent = reasoning;
+                narrativeSection.style.display = '';
+            } else {
+                narrativeSection.style.display = 'none';
+            }
+
+            // --- Kill Chain ---
+            const kc = full.kill_chain_assessment || full.kill_chain || s.kill_chain || {};
+            const kcSection = document.getElementById('llm-killchain-section');
+            const stages = kc.stages || [];
+            if (stages.length || kc.progression) {
+                const stagesDiv = document.getElementById('llm-killchain-stages');
+                stagesDiv.innerHTML = '';
+                if (Array.isArray(stages)) {
+                    stages.forEach(st => {
+                        const name = typeof st === 'string' ? st : (st.stage || st.name || '');
+                        const status = typeof st === 'string' ? '' : (st.status || st.active || '');
+                        const isActive = status && status !== 'none' && status !== 'inactive' && status !== 'not_observed';
+                        const color = isActive ? 'var(--danger)' : 'var(--bg-tertiary)';
+                        const textColor = isActive ? '#fff' : 'var(--text-secondary)';
+                        const evidence = typeof st === 'object' ? (st.evidence || '') : '';
+                        const tooltip = evidence ? (typeof evidence === 'string' ? evidence : evidence.join(', ')) : status;
+                        stagesDiv.innerHTML += `<div title="${escapeHtml(tooltip)}" style="
+                            background:${color}; color:${textColor};
+                            padding:6px 12px; border-radius:4px; font-size:11px; font-weight:600;
+                            text-transform:uppercase; letter-spacing:0.03em; cursor:default;
+                        ">${escapeHtml(name)}${status ? ' (' + escapeHtml(status) + ')' : ''}</div>`;
+                    });
+                }
+                const prog = kc.progression || '';
+                document.getElementById('llm-killchain-progression').textContent = prog;
+                kcSection.style.display = '';
+            } else {
+                kcSection.style.display = 'none';
+            }
+
+            // --- Correlations ---
+            const corrSection = document.getElementById('llm-correlations-section');
+            if (correlations.length) {
+                const corrDiv = document.getElementById('llm-correlations-list');
+                corrDiv.innerHTML = correlations.map((c, i) => {
+                    if (typeof c === 'string') return `<div style="background:var(--bg-primary); border-left:3px solid var(--accent-primary); border-radius:4px; padding:10px 14px; margin-bottom:6px;">${escapeHtml(c)}</div>`;
+                    const desc = c.description || '';
+                    const agents = (c.agents_involved || []).join(', ');
+                    const cConf = c.confidence ? (c.confidence * 100).toFixed(0) + '%' : '';
+                    return `<div style="background:var(--bg-primary); border-left:3px solid var(--accent-primary); border-radius:4px; padding:10px 14px; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-primary); margin-bottom:4px;">${i+1}. ${escapeHtml(desc)}</div>
+                        <div style="font-size:12px; color:var(--text-secondary);">${agents ? 'Agents: ' + escapeHtml(agents) : ''}${cConf ? ' | Confidence: ' + cConf : ''}</div>
+                    </div>`;
+                }).join('');
+                corrSection.style.display = '';
+            } else {
+                corrSection.style.display = 'none';
+            }
+
+            // --- False Positive Flags ---
+            const fpFlags = full.false_positive_flags || s.false_positive_flags || [];
+            const fpSection = document.getElementById('llm-fp-section');
+            if (fpFlags.length) {
+                const fpDiv = document.getElementById('llm-fp-list');
+                fpDiv.innerHTML = fpFlags.map(fp => {
+                    const text = typeof fp === 'string' ? fp : (fp.description || fp.finding || JSON.stringify(fp));
+                    return `<div style="background:var(--bg-primary); border-left:3px solid var(--warning); border-radius:4px; padding:10px 14px; margin-bottom:6px; color:var(--text-primary);">
+                        <i class="fa-solid fa-triangle-exclamation" style="color:var(--warning); margin-right:6px;"></i>${escapeHtml(text)}
+                    </div>`;
+                }).join('');
+                fpSection.style.display = '';
+            } else {
+                fpSection.style.display = 'none';
+            }
+
+            // --- Recommended Actions ---
+            const actionsSection = document.getElementById('llm-actions-section');
+            if (actions.length) {
+                const actDiv = document.getElementById('llm-actions-list');
+                actDiv.innerHTML = actions.map((a, i) => {
+                    if (typeof a === 'string') return `<div style="background:var(--bg-primary); border-left:3px solid var(--success); border-radius:4px; padding:10px 14px; margin-bottom:6px; color:var(--text-primary);">${i+1}. ${escapeHtml(a)}</div>`;
+                    const act = a.action || '';
+                    const pri = (a.priority || '').toLowerCase();
+                    const timeline = a.timeline || '';
+                    const affected = Array.isArray(a.affected_assets) ? a.affected_assets.join(', ') : (a.affected_assets || '');
+                    const borderColor = _sevColorMap[pri] || 'var(--success)';
+                    return `<div style="background:var(--bg-primary); border-left:3px solid ${borderColor}; border-radius:4px; padding:10px 14px; margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-primary);">${i+1}. <span style="color:${borderColor}; text-transform:uppercase; font-size:11px;">[${escapeHtml(pri || 'action')}]</span> ${escapeHtml(act)}</div>
+                        ${timeline || affected ? `<div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">${timeline ? 'Timeline: ' + escapeHtml(timeline) : ''}${timeline && affected ? ' | ' : ''}${affected ? 'Assets: ' + escapeHtml(affected) : ''}</div>` : ''}
+                    </div>`;
+                }).join('');
+                actionsSection.style.display = '';
+            } else {
+                actionsSection.style.display = 'none';
+            }
+        }
+
+        async function downloadPDFReport() {
+            const btn = document.getElementById('pdf-download-btn');
+            const origText = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating...';
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/llm-synthesis/report/pdf');
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert(err.error || 'PDF generation failed');
+                    return;
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                const disposition = resp.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename="(.+)"/);
+                link.download = match ? match[1] : `artemis_threat_report_${new Date().toISOString().slice(0,10)}.pdf`;
+                link.href = url;
+                link.click();
+                URL.revokeObjectURL(url);
+                addLog('Downloaded PDF threat report', 'info');
+            } catch(e) {
+                console.error('PDF download error:', e);
+                alert('Failed to download PDF report.');
+            } finally {
+                btn.innerHTML = origText;
+                btn.disabled = false;
+            }
+        }
+
         async function loadPlugins() {
             try {
                 const response = await fetch('/api/plugins');
@@ -3794,6 +4103,8 @@
                 loadThreatIntelStatus();
             } else if (tabName === 'findings-tab') {
                 loadFindings();
+            } else if (tabName === 'llm-intel-tab') {
+                loadLLMSynthesis();
             }
         }
 

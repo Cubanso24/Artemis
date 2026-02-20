@@ -120,6 +120,23 @@ class DatabaseManager:
             )
         """)
 
+        # LLM synthesis reports — stored per hunt cycle
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS llm_syntheses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle INTEGER NOT NULL,
+                overall_severity TEXT NOT NULL DEFAULT 'low',
+                overall_confidence REAL NOT NULL DEFAULT 0.0,
+                reasoning TEXT DEFAULT '',
+                kill_chain TEXT DEFAULT '{}',
+                correlations TEXT DEFAULT '[]',
+                false_positive_flags TEXT DEFAULT '[]',
+                recommended_actions TEXT DEFAULT '[]',
+                full_synthesis TEXT DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -253,6 +270,70 @@ class DatabaseManager:
             }
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # LLM synthesis reports
+    # ------------------------------------------------------------------
+
+    def save_synthesis(self, cycle: int, synthesis: Dict) -> Dict:
+        """Save an LLM synthesis report."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT INTO llm_syntheses "
+                "(cycle, overall_severity, overall_confidence, reasoning, "
+                "kill_chain, correlations, false_positive_flags, "
+                "recommended_actions, full_synthesis, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (cycle,
+                 synthesis.get('overall_severity', 'low'),
+                 synthesis.get('overall_confidence', 0.0),
+                 synthesis.get('reasoning', ''),
+                 json.dumps(synthesis.get('kill_chain_assessment', {})),
+                 json.dumps(synthesis.get('correlations', [])),
+                 json.dumps(synthesis.get('false_positive_flags', [])),
+                 json.dumps(synthesis.get('recommended_actions', [])),
+                 json.dumps(synthesis),
+                 now),
+            )
+            conn.commit()
+            return {'cycle': cycle, 'created_at': now}
+        finally:
+            conn.close()
+
+    def get_syntheses(self, limit: int = 20) -> List[Dict]:
+        """Get recent LLM synthesis reports."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM llm_syntheses ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            results = []
+            for r in rows:
+                results.append({
+                    'id': r['id'],
+                    'cycle': r['cycle'],
+                    'overall_severity': r['overall_severity'],
+                    'overall_confidence': r['overall_confidence'],
+                    'reasoning': r['reasoning'],
+                    'kill_chain': json.loads(r['kill_chain']),
+                    'correlations': json.loads(r['correlations']),
+                    'false_positive_flags': json.loads(r['false_positive_flags']),
+                    'recommended_actions': json.loads(r['recommended_actions']),
+                    'full_synthesis': json.loads(r['full_synthesis']),
+                    'created_at': r['created_at'],
+                })
+            return results
+        finally:
+            conn.close()
+
+    def get_latest_synthesis(self) -> Dict | None:
+        """Get the most recent LLM synthesis report."""
+        results = self.get_syntheses(limit=1)
+        return results[0] if results else None
 
     # ------------------------------------------------------------------
     # LAN groups

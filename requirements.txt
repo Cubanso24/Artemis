@@ -10,6 +10,9 @@ pyyaml>=6.0                    # Sigma rule parsing
 # LLM integration
 anthropic>=0.39.0              # Claude API for LLM-powered hunting
 
+# Reporting
+reportlab>=4.0.0               # PDF report generation
+
 # Web interface dependencies
 fastapi>=0.104.0               # Modern web framework
 uvicorn[standard]>=0.24.0      # ASGI server
