@@ -54,8 +54,8 @@ class NetworkNode:
         'os_info', 'device_model', 'software', 'user_agents',
         'services', 'first_seen',
         'last_seen', 'total_connections', 'bytes_sent', 'bytes_received',
-        'connections_to', 'connections_from', 'is_internal', 'roles',
-        'device_type',
+        'connections_to', 'connections_from', 'ext_conn_detail',
+        'is_internal', 'roles', 'device_type',
         # Deep fingerprint fields
         'dhcp_client_fqdn', 'dhcp_vendor_class',
         'ja3_fingerprints', 'ja3s_fingerprints',
