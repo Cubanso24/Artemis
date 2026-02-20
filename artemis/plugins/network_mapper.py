@@ -3934,10 +3934,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
     # ------------------------------------------------------------------
 
     def save_map(self) -> str:
-        """Save current network map to disk using NDJSON (one node per line)."""
-        map_file = self.output_dir / "current_map.json"
+        """Save current network map to disk using NDJSON (one node per line).
 
-        with open(map_file, 'w') as f:
+        Uses atomic write (temp file + rename) to prevent the API process
+        from loading a half-written file if it restarts mid-save.
+        """
+        map_file = self.output_dir / "current_map.json"
+        tmp_file = self.output_dir / "current_map.json.tmp"
+
+        with open(tmp_file, 'w') as f:
             # Header line
             header = {
                 'timestamp': datetime.now().isoformat(),
@@ -3949,6 +3954,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
             # One node per line — no need to hold full JSON tree in memory
             for node in self.nodes.values():
                 f.write(json.dumps(node.to_dict()) + '\n')
+
+        # Atomic replace — readers always see a complete file
+        tmp_file.replace(map_file)
 
         self.last_save = datetime.now()
         logger.info(
@@ -4425,15 +4433,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 label = node.ip
 
             # Collect external connections for this node (with port/time detail)
+            _ext_detail = getattr(node, 'ext_conn_detail', {}) or {}
             ext_conns_out = []
             for dst_ip, count in sorted(
                 node.connections_to.items(),
                 key=lambda x: x[1], reverse=True,
             ):
                 if dst_ip in external_ips:
-                    detail = node.ext_conn_detail.get(dst_ip, {})
-                    lp = sorted(detail['lp']) if isinstance(detail.get('lp'), set) else detail.get('lp', [])
-                    ep = sorted(detail['ep']) if isinstance(detail.get('ep'), set) else detail.get('ep', [])
+                    detail = _ext_detail.get(dst_ip, {})
+                    lp_raw = detail.get('lp', [])
+                    ep_raw = detail.get('ep', [])
+                    lp = sorted(lp_raw) if isinstance(lp_raw, set) else list(lp_raw) if lp_raw else []
+                    ep = sorted(ep_raw) if isinstance(ep_raw, set) else list(ep_raw) if ep_raw else []
                     ext_conns_out.append({
                         'ip': dst_ip, 'count': count,
                         'lp': lp[:10], 'ep': ep[:10],
@@ -4448,9 +4459,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 key=lambda x: x[1], reverse=True,
             ):
                 if src_ip in external_ips:
-                    detail = node.ext_conn_detail.get(src_ip, {})
-                    lp = sorted(detail['lp']) if isinstance(detail.get('lp'), set) else detail.get('lp', [])
-                    ep = sorted(detail['ep']) if isinstance(detail.get('ep'), set) else detail.get('ep', [])
+                    detail = _ext_detail.get(src_ip, {})
+                    lp_raw = detail.get('lp', [])
+                    ep_raw = detail.get('ep', [])
+                    lp = sorted(lp_raw) if isinstance(lp_raw, set) else list(lp_raw) if lp_raw else []
+                    ep = sorted(ep_raw) if isinstance(ep_raw, set) else list(ep_raw) if ep_raw else []
                     ext_conns_in.append({
                         'ip': src_ip, 'count': count,
                         'lp': lp[:10], 'ep': ep[:10],

@@ -1008,6 +1008,22 @@ class HuntManager:
                             msg['result'] = row['data']
                         await self._broadcast_fn(msg)
 
+                    # For continuous ingestion, reload the map from disk
+                    # periodically so the API serves up-to-date graph data.
+                    if is_continuous and row['stage'] == 'running':
+                        data = row.get('data') or {}
+                        cur_cycle = data.get('cycle', 0) if isinstance(data, dict) else 0
+                        last_key = f'_last_reload_cycle_{hunt_id}'
+                        prev_cycle = getattr(self, last_key, 0)
+                        if cur_cycle and cur_cycle != prev_cycle:
+                            setattr(self, last_key, cur_cycle)
+                            try:
+                                plugin_manager.reload_from_disk(
+                                    ['network_mapper']
+                                )
+                            except Exception:
+                                pass
+
                     # Terminal states
                     if row['stage'] in ('complete', 'error'):
                         status = 'completed' if row['stage'] == 'complete' else 'failed'
