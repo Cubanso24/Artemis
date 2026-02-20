@@ -1,9 +1,13 @@
 """
 LLM client abstraction for the Artemis threat hunting system.
 
-Wraps the Anthropic API with:
-- Graceful degradation when API key is not set or package is missing
-- Separate model configs for coordinator (Sonnet) and agent (Haiku) tiers
+Supports two backends:
+- **anthropic**: Uses the Anthropic API (requires ANTHROPIC_API_KEY)
+- **ollama**: Uses a locally-hosted Ollama instance (no API key needed)
+
+Both backends support:
+- Graceful degradation when the backend is unavailable
+- Separate model configs for coordinator and agent tiers
 - JSON response parsing with fallback extraction
 - Error handling that never breaks the hunting pipeline
 """
@@ -11,6 +15,8 @@ Wraps the Anthropic API with:
 import os
 import json
 from typing import Optional, Dict, Any, List
+
+import requests as _requests
 
 try:
     from anthropic import Anthropic
@@ -21,51 +27,169 @@ except ImportError:
 from artemis.utils.logging_config import ArtemisLogger
 
 
+# Default Ollama models — good general-purpose choices
+_DEFAULT_OLLAMA_MODEL = "llama3.1"
+_DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+
 class LLMClient:
     """
     Two-tier LLM client for Artemis.
 
-    - coordinator model (Sonnet): high-level reasoning, hypothesis generation,
+    Supports both Anthropic (cloud) and Ollama (local) backends.
+
+    - coordinator model: high-level reasoning, hypothesis generation,
       agent direction, result synthesis
-    - agent model (Haiku): fast domain-specific analysis for each hunting agent
+    - agent model: fast domain-specific analysis for each hunting agent
     """
 
     def __init__(
         self,
+        backend: str = "auto",
         api_key: Optional[str] = None,
-        coordinator_model: str = "claude-sonnet-4-5-20250929",
-        agent_model: str = "claude-haiku-4-5-20251001",
+        coordinator_model: Optional[str] = None,
+        agent_model: Optional[str] = None,
+        ollama_url: Optional[str] = None,
     ):
-        self.logger = ArtemisLogger.setup_logger("artemis.llm.client")
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        self.coordinator_model = coordinator_model
-        self.agent_model = agent_model
-        self._client: Optional[Any] = None
+        """
+        Initialize the LLM client.
 
-        if not ANTHROPIC_AVAILABLE:
-            self.logger.warning(
-                "anthropic package not installed — LLM features disabled. "
-                "Install with: pip install anthropic"
-            )
-        elif not self.api_key:
-            self.logger.warning(
-                "ANTHROPIC_API_KEY not set — LLM features disabled. "
-                "Set the environment variable to enable LLM-powered hunting."
-            )
-        else:
-            try:
-                self._client = Anthropic(api_key=self.api_key)
-                self.logger.info(
-                    f"LLM client initialized "
-                    f"(coordinator={coordinator_model}, agent={agent_model})"
+        Args:
+            backend: "anthropic", "ollama", or "auto" (tries anthropic first,
+                     then ollama)
+            api_key: Anthropic API key (only for anthropic backend)
+            coordinator_model: Model for coordinator tier
+            agent_model: Model for agent tier
+            ollama_url: Ollama server URL (default http://localhost:11434)
+        """
+        self.logger = ArtemisLogger.setup_logger("artemis.llm.client")
+        self.backend = backend.lower()
+        self.ollama_url = (
+            ollama_url
+            or os.getenv("OLLAMA_URL", _DEFAULT_OLLAMA_URL)
+        ).rstrip("/")
+
+        self._anthropic_client: Optional[Any] = None
+        self._ollama_ok = False
+
+        # ----------------------------------------------------------
+        # Resolve backend
+        # ----------------------------------------------------------
+        if self.backend == "auto":
+            # Try Anthropic first, fall back to Ollama
+            api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            if ANTHROPIC_AVAILABLE and api_key:
+                self.backend = "anthropic"
+            else:
+                self.backend = "ollama"
+
+        # ----------------------------------------------------------
+        # Initialize chosen backend
+        # ----------------------------------------------------------
+        if self.backend == "anthropic":
+            self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            self.coordinator_model = coordinator_model or "claude-sonnet-4-5-20250929"
+            self.agent_model = agent_model or "claude-haiku-4-5-20251001"
+
+            if not ANTHROPIC_AVAILABLE:
+                self.logger.warning(
+                    "anthropic package not installed — LLM features disabled. "
+                    "Install with: pip install anthropic"
                 )
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize Anthropic client: {e}")
+            elif not self.api_key:
+                self.logger.warning(
+                    "ANTHROPIC_API_KEY not set — LLM features disabled. "
+                    "Set the environment variable or switch to ollama backend."
+                )
+            else:
+                try:
+                    self._anthropic_client = Anthropic(api_key=self.api_key)
+                    self.logger.info(
+                        f"LLM client initialized [anthropic] "
+                        f"(coordinator={self.coordinator_model}, "
+                        f"agent={self.agent_model})"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to initialize Anthropic client: {e}"
+                    )
+
+        elif self.backend == "ollama":
+            ollama_model = (
+                os.getenv("OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
+            )
+            self.coordinator_model = coordinator_model or ollama_model
+            self.agent_model = agent_model or ollama_model
+            self._ollama_ok = self._check_ollama()
+
+        else:
+            self.logger.warning(
+                f"Unknown LLM backend '{self.backend}' — "
+                f"LLM features disabled. Use 'anthropic' or 'ollama'."
+            )
+
+    # ------------------------------------------------------------------
+    # Ollama health check
+    # ------------------------------------------------------------------
+
+    def _check_ollama(self) -> bool:
+        """Verify that Ollama is reachable and the model is available."""
+        try:
+            resp = _requests.get(f"{self.ollama_url}/api/tags", timeout=5)
+            if resp.status_code != 200:
+                self.logger.warning(
+                    f"Ollama server at {self.ollama_url} returned "
+                    f"status {resp.status_code} — LLM features disabled. "
+                    f"Make sure Ollama is running: ollama serve"
+                )
+                return False
+
+            models = [
+                m.get("name", "").split(":")[0]
+                for m in resp.json().get("models", [])
+            ]
+            # Also keep full name:tag for exact match
+            models_full = [m.get("name", "") for m in resp.json().get("models", [])]
+
+            for model_name in set([self.coordinator_model, self.agent_model]):
+                if (model_name not in models
+                        and model_name not in models_full):
+                    self.logger.warning(
+                        f"Ollama model '{model_name}' not found locally. "
+                        f"Pull it with: ollama pull {model_name}\n"
+                        f"Available models: {', '.join(models_full) or '(none)'}"
+                    )
+                    return False
+
+            self.logger.info(
+                f"LLM client initialized [ollama @ {self.ollama_url}] "
+                f"(coordinator={self.coordinator_model}, "
+                f"agent={self.agent_model})"
+            )
+            return True
+
+        except _requests.ConnectionError:
+            self.logger.warning(
+                f"Cannot connect to Ollama at {self.ollama_url} — "
+                f"LLM features disabled. Start Ollama with: ollama serve"
+            )
+            return False
+        except Exception as e:
+            self.logger.warning(f"Ollama health check failed: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Availability
+    # ------------------------------------------------------------------
 
     @property
     def available(self) -> bool:
         """Whether the LLM client is ready to make API calls."""
-        return self._client is not None
+        if self.backend == "anthropic":
+            return self._anthropic_client is not None
+        if self.backend == "ollama":
+            return self._ollama_ok
+        return False
 
     # ------------------------------------------------------------------
     # Core completion methods
@@ -88,18 +212,15 @@ class LLMClient:
         if not self.available:
             return None
 
-        try:
-            response = self._client.messages.create(
-                model=model or self.coordinator_model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system=system,
-                messages=messages,
+        if self.backend == "anthropic":
+            return self._complete_anthropic(
+                messages, system, model, temperature, max_tokens
             )
-            return response.content[0].text
-        except Exception as e:
-            self.logger.error(f"LLM completion failed: {e}")
-            return None
+        if self.backend == "ollama":
+            return self._complete_ollama(
+                messages, system, model, temperature, max_tokens
+            )
+        return None
 
     def complete_json(
         self,
@@ -115,6 +236,13 @@ class LLMClient:
         Parses the response text as JSON with fallback extraction.
         Returns None on failure.
         """
+        # For Ollama, append a JSON instruction to the system prompt
+        if self.backend == "ollama" and system:
+            system = (
+                system + "\n\nIMPORTANT: You MUST respond with valid JSON only. "
+                "No markdown fences, no explanatory text — just the JSON object."
+            )
+
         text = self.complete(messages, system, model, temperature, max_tokens)
         if text is None:
             return None
@@ -125,7 +253,7 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def coordinator_complete(self, messages, system="", **kwargs) -> Optional[str]:
-        """Completion using the coordinator model (Sonnet)."""
+        """Completion using the coordinator model."""
         return self.complete(
             messages, system, model=self.coordinator_model, **kwargs
         )
@@ -137,7 +265,7 @@ class LLMClient:
         )
 
     def agent_complete(self, messages, system="", **kwargs) -> Optional[str]:
-        """Completion using the agent model (Haiku)."""
+        """Completion using the agent model."""
         return self.complete(
             messages, system, model=self.agent_model, **kwargs
         )
@@ -147,6 +275,86 @@ class LLMClient:
         return self.complete_json(
             messages, system, model=self.agent_model, **kwargs
         )
+
+    # ------------------------------------------------------------------
+    # Backend: Anthropic
+    # ------------------------------------------------------------------
+
+    def _complete_anthropic(
+        self, messages, system, model, temperature, max_tokens,
+    ) -> Optional[str]:
+        try:
+            response = self._anthropic_client.messages.create(
+                model=model or self.coordinator_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system,
+                messages=messages,
+            )
+            return response.content[0].text
+        except Exception as e:
+            self.logger.error(f"Anthropic completion failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Backend: Ollama
+    # ------------------------------------------------------------------
+
+    def _complete_ollama(
+        self, messages, system, model, temperature, max_tokens,
+    ) -> Optional[str]:
+        """Call the Ollama /api/chat endpoint."""
+        ollama_messages = []
+        if system:
+            ollama_messages.append({"role": "system", "content": system})
+        for m in messages:
+            ollama_messages.append({
+                "role": m.get("role", "user"),
+                "content": m.get("content", ""),
+            })
+
+        payload = {
+            "model": model or self.coordinator_model,
+            "messages": ollama_messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        try:
+            resp = _requests.post(
+                f"{self.ollama_url}/api/chat",
+                json=payload,
+                timeout=300,  # Local models can be slow
+            )
+            if resp.status_code != 200:
+                self.logger.error(
+                    f"Ollama returned status {resp.status_code}: "
+                    f"{resp.text[:200]}"
+                )
+                return None
+
+            data = resp.json()
+            content = data.get("message", {}).get("content", "")
+            if not content:
+                self.logger.warning("Ollama returned empty response")
+                return None
+            return content
+
+        except _requests.Timeout:
+            self.logger.error("Ollama request timed out (300s)")
+            return None
+        except _requests.ConnectionError:
+            self.logger.error(
+                f"Lost connection to Ollama at {self.ollama_url}"
+            )
+            self._ollama_ok = False
+            return None
+        except Exception as e:
+            self.logger.error(f"Ollama completion failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Internal helpers

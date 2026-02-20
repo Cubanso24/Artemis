@@ -52,9 +52,10 @@ class MetaLearnerCoordinator:
         enable_parallel_execution: bool = True,
         max_workers: int = 4,
         llm_api_key: Optional[str] = None,
-        llm_coordinator_model: str = "claude-sonnet-4-5-20250929",
-        llm_agent_model: str = "claude-haiku-4-5-20251001",
+        llm_coordinator_model: Optional[str] = None,
+        llm_agent_model: Optional[str] = None,
         llm_enabled: bool = True,
+        llm_backend: str = "auto",
     ):
         """
         Initialize Meta-Learner Coordinator.
@@ -63,10 +64,11 @@ class MetaLearnerCoordinator:
             deployment_mode: Agent deployment strategy
             enable_parallel_execution: Whether to run agents in parallel
             max_workers: Maximum parallel agent executions
-            llm_api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
-            llm_coordinator_model: Model for coordinator tier (Sonnet)
-            llm_agent_model: Model for agent tier (Haiku)
+            llm_api_key: Anthropic API key (only for anthropic backend)
+            llm_coordinator_model: Model for coordinator tier
+            llm_agent_model: Model for agent tier
             llm_enabled: Set False to disable all LLM features
+            llm_backend: "anthropic", "ollama", or "auto"
         """
         self.logger = ArtemisLogger.setup_logger("artemis.meta_learner.coordinator")
 
@@ -87,7 +89,8 @@ class MetaLearnerCoordinator:
         self.agent_llms: Dict[str, AgentLLM] = {}
         if llm_enabled:
             self._initialize_llm(
-                llm_api_key, llm_coordinator_model, llm_agent_model
+                llm_api_key, llm_coordinator_model, llm_agent_model,
+                llm_backend,
             )
 
         # Initialize all hunting agents
@@ -119,11 +122,13 @@ class MetaLearnerCoordinator:
     def _initialize_llm(
         self,
         api_key: Optional[str],
-        coordinator_model: str,
-        agent_model: str,
+        coordinator_model: Optional[str],
+        agent_model: Optional[str],
+        backend: str = "auto",
     ):
         """Initialize the two-tier LLM layer."""
         self.llm_client = LLMClient(
+            backend=backend,
             api_key=api_key,
             coordinator_model=coordinator_model,
             agent_model=agent_model,

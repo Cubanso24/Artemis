@@ -428,10 +428,13 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         nm.initialize()
 
         # Initialize hunting agent coordinator
+        # LLM backend: set LLM_BACKEND env var to "ollama" or "anthropic"
+        # For Ollama: also set OLLAMA_URL and OLLAMA_MODEL if non-default
         coordinator = MetaLearnerCoordinator(
             deployment_mode='adaptive',
             enable_parallel_execution=True,
             max_workers=4,
+            llm_backend=os.environ.get('LLM_BACKEND', 'auto'),
         )
         log.info(f'Initialized {len(coordinator.agents)} hunting agents')
 
