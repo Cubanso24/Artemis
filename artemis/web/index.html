@@ -973,13 +973,16 @@
                 <!-- Right: stats -->
                 <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; z-index:2;">
                     <div style="font-family:'Courier New',monospace; font-size:10px; color:#3fb950;">
-                        <span id="hunt-packets">0</span> PACKETS ANALYZED
+                        <span id="hunt-devices">--</span> DEVICES TRACKED
                     </div>
                     <div style="font-family:'Courier New',monospace; font-size:10px; color:#d29922;">
-                        <span id="hunt-threats">0</span> ANOMALIES FLAGGED
+                        <span id="hunt-findings">--</span> FINDINGS
                     </div>
                     <div style="font-family:'Courier New',monospace; font-size:10px; color:#f85149;">
-                        <span id="hunt-malware">0</span> MALWARE SIGNATURES
+                        <span id="hunt-sigma">--</span> SIGMA MATCHES
+                    </div>
+                    <div style="font-family:'Courier New',monospace; font-size:10px; color:#58a6ff;">
+                        <span id="hunt-enriched">--</span> IPs ENRICHED
                     </div>
                 </div>
             </div>
@@ -5322,10 +5325,55 @@
                 });
             }
 
-            // --- HUD counters ---
-            let packetCount = 0;
-            let threatCount = 0;
-            let malwareCount = 0;
+            // --- Real HUD counters from backend ---
+            async function refreshHuntStats() {
+                try {
+                    const [summaryResp, findingsResp, sigmaResp, tiResp, ingestResp] = await Promise.all([
+                        fetch('/api/network-summary').catch(() => null),
+                        fetch('/api/findings/summary').catch(() => null),
+                        fetch('/api/sigma/results').catch(() => null),
+                        fetch('/api/threat-intel/worker-status').catch(() => null),
+                        fetch('/api/network-graph/continuous/status').catch(() => null),
+                    ]);
+
+                    if (summaryResp && summaryResp.ok) {
+                        const s = await summaryResp.json();
+                        const el = document.getElementById('hunt-devices');
+                        if (el && !s.error) el.textContent = (s.total_nodes || s.internal_nodes || 0).toLocaleString();
+                    }
+                    if (findingsResp && findingsResp.ok) {
+                        const f = await findingsResp.json();
+                        const el = document.getElementById('hunt-findings');
+                        if (el) el.textContent = (f.total || 0).toLocaleString();
+                    }
+                    if (sigmaResp && sigmaResp.ok) {
+                        const sig = await sigmaResp.json();
+                        const el = document.getElementById('hunt-sigma');
+                        if (el && !sig.error) el.textContent = (sig.total_matches || 0).toLocaleString();
+                    }
+                    if (tiResp && tiResp.ok) {
+                        const ti = await tiResp.json();
+                        const el = document.getElementById('hunt-enriched');
+                        if (el) el.textContent = (ti.total_enriched || 0).toLocaleString();
+                    }
+                    if (ingestResp && ingestResp.ok) {
+                        const ing = await ingestResp.json();
+                        const statusEl = document.getElementById('hunt-status-text');
+                        if (statusEl && ing.running) {
+                            statusEl.textContent = `LIVE INGESTION — CYCLE ${ing.cycle || 0}`;
+                            statusEl.style.color = '#3fb950';
+                        }
+                        const logEl = document.getElementById('hunt-log-line');
+                        if (logEl && ing.running && ing.message) {
+                            logEl.textContent = ing.message;
+                        }
+                    }
+                } catch (e) {
+                    console.debug('Hunt stats refresh:', e);
+                }
+            }
+            refreshHuntStats();
+            setInterval(refreshHuntStats, 10000);
 
             // --- Hunt log messages ---
             const huntMessages = [
@@ -5383,27 +5431,6 @@
                 if (el) el.textContent = statusMessages[statusIdx % statusMessages.length];
                 statusIdx++;
             }, 5000);
-
-            // Increment counters
-            setInterval(() => {
-                packetCount += Math.floor(Math.random() * 47) + 12;
-                const el = document.getElementById('hunt-packets');
-                if (el) el.textContent = packetCount.toLocaleString();
-            }, 300);
-            setInterval(() => {
-                if (Math.random() > 0.6) {
-                    threatCount += 1;
-                    const el = document.getElementById('hunt-threats');
-                    if (el) el.textContent = threatCount.toLocaleString();
-                }
-            }, 4000);
-            setInterval(() => {
-                if (Math.random() > 0.8) {
-                    malwareCount += 1;
-                    const el = document.getElementById('hunt-malware');
-                    if (el) el.textContent = malwareCount.toLocaleString();
-                }
-            }, 7000);
 
             // --- Main render loop ---
             function draw() {
