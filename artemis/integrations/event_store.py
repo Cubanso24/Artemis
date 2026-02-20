@@ -12,7 +12,16 @@ import logging
 import os
 import sqlite3
 import tempfile
+from datetime import datetime, date
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """Handle datetime objects that slip through from agents/pipeline."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 logger = logging.getLogger("artemis.integrations.event_store")
 
@@ -101,7 +110,7 @@ class SqliteEventStore:
             return
         self._conn.executemany(
             "INSERT INTO events (data_type, event_json) VALUES (?, ?)",
-            [(key, json.dumps(e)) for e in events],
+            [(key, json.dumps(e, cls=_SafeEncoder)) for e in events],
         )
         self._conn.commit()
         self._counts[key] = self._counts.get(key, 0) + len(events)

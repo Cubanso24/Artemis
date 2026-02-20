@@ -9,10 +9,18 @@ Supports multi-sensor environments with per-sensor network segmentation.
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from typing import Dict, List, Set, Any, Optional, Tuple
 from collections import defaultdict
 from pathlib import Path
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """Handle datetime objects in node data."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 from artemis.plugins import ArtemisPlugin
 
@@ -3961,11 +3969,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 'total_nodes': len(self.nodes),
                 'sensors': list(self.sensors),
             }
-            f.write(json.dumps(header) + '\n')
+            f.write(json.dumps(header, cls=_SafeEncoder) + '\n')
 
             # One node per line — no need to hold full JSON tree in memory
             for node in self.nodes.values():
-                f.write(json.dumps(node.to_dict()) + '\n')
+                f.write(json.dumps(node.to_dict(), cls=_SafeEncoder) + '\n')
 
         # Atomic replace — readers always see a complete file
         tmp_file.replace(map_file)

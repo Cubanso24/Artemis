@@ -18,7 +18,7 @@ except ImportError:
 from artemis.utils.logging_config import ArtemisLogger
 
 
-def parse_splunk_timestamp(time_value: Any) -> datetime:
+def parse_splunk_timestamp(time_value: Any) -> str:
     """
     Parse Splunk timestamp which can be in multiple formats.
 
@@ -26,14 +26,14 @@ def parse_splunk_timestamp(time_value: Any) -> datetime:
         time_value: Timestamp from Splunk (epoch float or ISO string)
 
     Returns:
-        datetime object
+        ISO-formatted timestamp string (safe for JSON serialization)
     """
     if not time_value:
-        return datetime.utcnow()
+        return datetime.utcnow().isoformat()
 
     try:
         # Try parsing as epoch timestamp (float)
-        return datetime.fromtimestamp(float(time_value))
+        return datetime.fromtimestamp(float(time_value)).isoformat()
     except (ValueError, TypeError):
         pass
 
@@ -48,13 +48,13 @@ def parse_splunk_timestamp(time_value: Any) -> datetime:
         elif time_str.endswith('Z'):
             time_str = time_str[:-1]
 
-        # Parse the timestamp
-        return datetime.fromisoformat(time_str)
+        # Parse and re-format to normalise
+        return datetime.fromisoformat(time_str).isoformat()
     except (ValueError, TypeError):
         pass
 
     # Fallback to current time
-    return datetime.utcnow()
+    return datetime.utcnow().isoformat()
 
 
 class SplunkConnector:
