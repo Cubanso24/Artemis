@@ -70,6 +70,13 @@ class NetworkNode:
         # Host identification (combined Zeek Workbench-style)
         'host_id',              # dict with unified host identification summary
         'known_services_names', # service names from zeek_known_services
+        'tunnel_info',          # list of tunnel types observed (GRE, IPsec, Teredo, etc.)
+        'ntp_server',           # bool: True if this IP serves NTP
+        'radius_server',        # bool: True if this IP serves RADIUS
+        'mqtt_info',            # dict: MQTT broker/client info
+        'ics_protocols',        # list of ICS protocols observed (Modbus, DNP3)
+        'notices',              # list of Zeek notice strings
+        'traceroute_hops',      # list of traceroute hop IPs observed
     )
 
     def __init__(self, ip: str, sensor_id: str = "default", vlan: str = "0"):
@@ -104,6 +111,13 @@ class NetworkNode:
         self.gateway_evidence: List[str] = []  # Evidence strings for router/firewall detection
         self.host_id: Dict = {}  # Unified host identification: {os, os_source, confidence, signals}
         self.known_services_names: List[str] = []  # Named services from zeek_known_services
+        self.tunnel_info: List[str] = []
+        self.ntp_server: bool = False
+        self.radius_server: bool = False
+        self.mqtt_info: Dict = {}
+        self.ics_protocols: List[str] = []
+        self.notices: List[str] = []
+        self.traceroute_hops: List[str] = []
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
         self.total_connections = 0
@@ -189,6 +203,13 @@ class NetworkNode:
             'gateway_evidence': self.gateway_evidence[:10],
             'host_id': self.host_id,
             'known_services_names': self.known_services_names[:30],
+            'tunnel_info': self.tunnel_info[:10],
+            'ntp_server': self.ntp_server,
+            'radius_server': self.radius_server,
+            'mqtt_info': self.mqtt_info,
+            'ics_protocols': self.ics_protocols[:10],
+            'notices': self.notices[:20],
+            'traceroute_hops': self.traceroute_hops[:20],
         }
 
 
@@ -330,6 +351,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Host identification
         node.host_id = node_data.get('host_id', {})
         node.known_services_names = node_data.get('known_services_names', [])
+
+        # New Zeek log fields
+        node.tunnel_info = node_data.get('tunnel_info', [])
+        node.ntp_server = node_data.get('ntp_server', False)
+        node.radius_server = node_data.get('radius_server', False)
+        node.mqtt_info = node_data.get('mqtt_info', {})
+        node.ics_protocols = node_data.get('ics_protocols', [])
+        node.notices = node_data.get('notices', [])
+        node.traceroute_hops = node_data.get('traceroute_hops', [])
 
         # Restore connection maps (edges)
         for dst_ip, count in node_data.get('connections_to', {}).items():
@@ -1079,6 +1109,34 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'bonus': set(),
             'min_match': 1,
         },
+        {
+            'type': 'ntp_server',
+            'label': 'NTP Server',
+            'required': {123},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'radius_server',
+            'label': 'RADIUS Server',
+            'required': {1812, 1813},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'mqtt_broker',
+            'label': 'MQTT Broker',
+            'required': {1883, 8883},
+            'bonus': set(),
+            'min_match': 1,
+        },
+        {
+            'type': 'ics_device',
+            'label': 'ICS Device',
+            'required': {502, 20000},
+            'bonus': set(),
+            'min_match': 1,
+        },
     ]
 
     def _classify_device(self, ports_served: set, unique_clients: int,
@@ -1664,6 +1722,90 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by "id.resp_h"
             | rename "id.resp_h" as ip
             ''',
+            # --- New Zeek log queries for enhanced network mapping ---
+            'tunnel': '''
+            search index=zeek_tunnel
+            | spath
+            | where isnotnull(tunnel_type)
+            | stats values(tunnel_type) as tunnel_types,
+                    values(action) as actions,
+                    count as tunnel_count
+              by "id.orig_h"
+            | rename "id.orig_h" as ip
+            | where tunnel_count >= 1
+            ''',
+            'ntp': '''
+            search index=zeek_ntp
+            | spath
+            | where isnotnull("id.resp_h")
+            | stats dc("id.orig_h") as unique_clients,
+                    count as ntp_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where ntp_count >= 2
+            ''',
+            'radius': '''
+            search index=zeek_radius
+            | spath
+            | where isnotnull("id.resp_h")
+            | stats dc("id.orig_h") as unique_clients,
+                    values(result) as results,
+                    count as radius_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where radius_count >= 1
+            ''',
+            'mqtt': '''
+            search index=zeek_mqtt
+            | spath
+            | where isnotnull("id.resp_h")
+            | stats dc("id.orig_h") as unique_clients,
+                    values(action) as actions,
+                    count as mqtt_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where mqtt_count >= 1
+            ''',
+            'modbus': '''
+            search index=zeek_modbus OR index=zeek_dnp3
+            | spath
+            | where isnotnull("id.resp_h")
+            | eval protocol=if(sourcetype=="zeek_modbus" OR index=="zeek_modbus", "Modbus", "DNP3")
+            | stats values(protocol) as protocols,
+                    dc("id.orig_h") as unique_clients,
+                    count as ics_count
+              by "id.resp_h"
+            | rename "id.resp_h" as ip
+            | where ics_count >= 1
+            ''',
+            'notice': '''
+            search index=zeek_notice
+            | spath
+            | where isnotnull(src) OR isnotnull("id.orig_h")
+            | eval ip=coalesce(src, "id.orig_h")
+            | stats values(note) as notice_types,
+                    values(msg) as notice_msgs,
+                    count as notice_count
+              by ip
+            | where notice_count >= 1
+            ''',
+            'traceroute': '''
+            search index=zeek_traceroute
+            | spath
+            | where isnotnull(src) AND isnotnull(dst)
+            | stats values(dst) as destinations,
+                    count as traceroute_count
+              by src
+            | rename src as ip
+            ''',
+            'known_hosts': '''
+            search index=zeek_known_hosts
+            | spath
+            | where isnotnull(host)
+            | stats count as seen_count
+              by host
+            | rename host as ip
+            ''',
         }
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
@@ -1792,6 +1934,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
             f"{len(dns_profile_results)} DNS profile, {len(rdp_results)} RDP, "
             f"{len(dhcp_extended_results)} DHCP ext, {len(files_results)} files, "
             f"{len(x509_extended_results)} x509 ext"
+            f", {len(accumulated.get('tunnel', []))} tunnel, "
+            f"{len(accumulated.get('ntp', []))} NTP, "
+            f"{len(accumulated.get('radius', []))} RADIUS, "
+            f"{len(accumulated.get('mqtt', []))} MQTT, "
+            f"{len(accumulated.get('modbus', []))} ICS, "
+            f"{len(accumulated.get('notice', []))} notice"
         )
         _progress('profile',
                   f'All {total_windows} window(s) done: {query_counts}. '
@@ -2376,6 +2524,101 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     elif 'vsftpd' in banner_lower or 'proftpd' in banner_lower:
                         node.os_info = 'Linux'
                 ftp_enriched += 1
+
+        # ---- New Zeek log enrichment (tunnel, NTP, RADIUS, MQTT, ICS, notice, traceroute) ----
+
+        # Tunnel info enrichment
+        for row in accumulated.get('tunnel', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            tunnel_types = row.get('tunnel_types', [])
+            if isinstance(tunnel_types, str):
+                tunnel_types = [tunnel_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for tt in tunnel_types:
+                    if tt and tt != '-' and tt not in node.tunnel_info:
+                        node.tunnel_info.append(tt)
+                if 'vpn' not in node.roles:
+                    node.roles.add('vpn_endpoint')
+
+        # NTP server detection
+        for row in accumulated.get('ntp', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.ntp_server = True
+                node.roles.add('ntp_server')
+
+        # RADIUS server detection
+        for row in accumulated.get('radius', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.radius_server = True
+                node.roles.add('radius_server')
+
+        # MQTT broker detection
+        for row in accumulated.get('mqtt', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            clients = int(row.get('unique_clients', 0)) if row.get('unique_clients') else 0
+            actions = row.get('actions', [])
+            if isinstance(actions, str):
+                actions = [actions]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.mqtt_info = {'unique_clients': clients, 'actions': actions}
+                node.roles.add('mqtt_broker')
+
+        # ICS/SCADA protocol detection (Modbus, DNP3)
+        for row in accumulated.get('modbus', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            protocols = row.get('protocols', [])
+            if isinstance(protocols, str):
+                protocols = [protocols]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for proto in protocols:
+                    if proto and proto not in node.ics_protocols:
+                        node.ics_protocols.append(proto)
+                node.roles.add('ics_device')
+
+        # Notice enrichment
+        for row in accumulated.get('notice', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            notice_types = row.get('notice_types', [])
+            if isinstance(notice_types, str):
+                notice_types = [notice_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for nt in notice_types:
+                    if nt and nt not in node.notices:
+                        node.notices.append(nt)
+
+        # Traceroute hops enrichment
+        for row in accumulated.get('traceroute', []):
+            ip = _sv(row.get('ip'))
+            if not ip:
+                continue
+            destinations = row.get('destinations', [])
+            if isinstance(destinations, str):
+                destinations = [destinations]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for dst in destinations:
+                    if dst and dst not in node.traceroute_hops:
+                        node.traceroute_hops.append(dst)
 
         # ---- Build unified host_id for every internal node ----
         # Combines ALL identification signals into a single summary dict.
@@ -2993,6 +3236,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
         idx['smtp_banner_by_ip'] = _index_by_field(accumulated.get('smtp_banner', []))
         idx['ftp_banner_by_ip'] = _index_by_field(accumulated.get('ftp_banner', []))
         idx['snmp_oid_by_ip'] = _index_by_field(accumulated.get('snmp_oid', []))
+        # New Zeek log indexes
+        idx['tunnel_by_ip'] = _index_by_field(accumulated.get('tunnel', []))
+        idx['ntp_by_ip'] = _index_by_field(accumulated.get('ntp', []))
+        idx['radius_by_ip'] = _index_by_field(accumulated.get('radius', []))
+        idx['mqtt_by_ip'] = _index_by_field(accumulated.get('mqtt', []))
+        idx['modbus_by_ip'] = _index_by_field(accumulated.get('modbus', []))
+        idx['notice_by_ip'] = _index_by_field(accumulated.get('notice', []))
+        idx['traceroute_by_ip'] = _index_by_field(accumulated.get('traceroute', []))
+        idx['known_hosts_by_ip'] = _index_by_field(accumulated.get('known_hosts', []))
 
         # DHCP gateway IPs (set)
         idx['dhcp_gateway_ips'] = set()
@@ -3308,6 +3560,78 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     entry = f"FTP: {ftp_banner[:120]}"
                     if entry not in node.software:
                         node.software.append(entry)
+
+        # Tunnel info
+        for row in idx.get('tunnel_by_ip', {}).get(ip, []):
+            tunnel_types = row.get('tunnel_types', [])
+            if isinstance(tunnel_types, str):
+                tunnel_types = [tunnel_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for tt in tunnel_types:
+                    if tt and tt != '-' and tt not in node.tunnel_info:
+                        node.tunnel_info.append(tt)
+                if 'vpn' not in node.roles:
+                    node.roles.add('vpn_endpoint')
+
+        # NTP server detection
+        for row in idx.get('ntp_by_ip', {}).get(ip, []):
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.ntp_server = True
+                node.roles.add('ntp_server')
+
+        # RADIUS server detection
+        for row in idx.get('radius_by_ip', {}).get(ip, []):
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.radius_server = True
+                node.roles.add('radius_server')
+
+        # MQTT broker detection
+        for row in idx.get('mqtt_by_ip', {}).get(ip, []):
+            clients = int(row.get('unique_clients', 0)) if row.get('unique_clients') else 0
+            actions = row.get('actions', [])
+            if isinstance(actions, str):
+                actions = [actions]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                node.mqtt_info = {'unique_clients': clients, 'actions': actions}
+                node.roles.add('mqtt_broker')
+
+        # ICS/SCADA protocol detection (Modbus, DNP3)
+        for row in idx.get('modbus_by_ip', {}).get(ip, []):
+            protocols = row.get('protocols', [])
+            if isinstance(protocols, str):
+                protocols = [protocols]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for proto in protocols:
+                    if proto and proto not in node.ics_protocols:
+                        node.ics_protocols.append(proto)
+                node.roles.add('ics_device')
+
+        # Notice enrichment
+        for row in idx.get('notice_by_ip', {}).get(ip, []):
+            notice_types = row.get('notice_types', [])
+            if isinstance(notice_types, str):
+                notice_types = [notice_types]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for nt in notice_types:
+                    if nt and nt not in node.notices:
+                        node.notices.append(nt)
+
+        # Traceroute hops
+        for row in idx.get('traceroute_by_ip', {}).get(ip, []):
+            destinations = row.get('destinations', [])
+            if isinstance(destinations, str):
+                destinations = [destinations]
+            for key in ip_to_keys.get(ip, []):
+                node = self.nodes[key]
+                for dst in destinations:
+                    if dst and dst not in node.traceroute_hops:
+                        node.traceroute_hops.append(dst)
 
         # ---- Classify this device ----
         # Add ports from node.services

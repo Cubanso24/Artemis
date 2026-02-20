@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Artemis Network Mapping Platform</title>
-    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
@@ -453,6 +455,7 @@
             background: var(--bg-primary);
             border: 1px solid var(--border-color);
             border-radius: 4px;
+            position: relative;
         }
 
         .graph-controls {
@@ -1529,111 +1532,190 @@
             return null;
         }
 
-        function buildSubnetView(graphData) {
+        function buildCytoscapeElements(graphData) {
+            // Build Cytoscape elements with compound nodes for subnet grouping
+            const elements = [];
             const subnets = {};
-            const individualNodes = [];
-            const nodeToSubnet = {};
+            const COLLAPSE_THRESHOLD = 4;
+
+            // Device icon unicode and color map
+            const deviceIcons = {
+                'domain_controller': { icon: '\uf0e8', color: '#E91E63' },
+                'dns_server':        { icon: '\uf0ac', color: '#00BCD4' },
+                'web_server':        { icon: '\uf233', color: '#FF5722' },
+                'database_server':   { icon: '\uf1c0', color: '#9C27B0' },
+                'mail_server':       { icon: '\uf0e0', color: '#3F51B5' },
+                'file_server':       { icon: '\uf07b', color: '#3F51B5' },
+                'dhcp_server':       { icon: '\uf6ff', color: '#009688' },
+                'ssh_server':        { icon: '\uf120', color: '#795548' },
+                'vpn_gateway':       { icon: '\uf3ed', color: '#FF9800' },
+                'router':            { icon: '\uf362', color: '#FF6F00' },
+                'firewall':          { icon: '\uf06d', color: '#D32F2F' },
+                'print_server':      { icon: '\uf02f', color: '#607D8B' },
+                'syslog_server':     { icon: '\uf15c', color: '#8BC34A' },
+                'monitoring':        { icon: '\uf201', color: '#CDDC39' },
+                'workstation':       { icon: '\uf108', color: '#607D8B' },
+                'gateway':           { icon: '\uf132', color: '#FF9800' },
+                'iot_device':        { icon: '\uf2db', color: '#9E9E9E' },
+                'ntp_server':        { icon: '\uf017', color: '#8BC34A' },
+                'radius_server':     { icon: '\uf084', color: '#FF9800' },
+                'mqtt_broker':       { icon: '\uf1eb', color: '#009688' },
+                'ics_device':        { icon: '\uf085', color: '#FF5722' },
+            };
 
             // Group internal nodes by subnet
             graphData.nodes.forEach(n => {
-                if (n.group === 'internet') {
-                    individualNodes.push(n);
-                    return;
-                }
+                if (n.group === 'internet') return;
                 const subnet = n.subnet || getSubnetFromId(n.id);
-                if (!subnet) {
-                    individualNodes.push(n);
-                    return;
-                }
-                nodeToSubnet[n.id] = subnet;
-                if (!subnets[subnet]) {
-                    subnets[subnet] = { nodes: [], types: {}, tiers: {}, vlans: {}, totalConns: 0 };
-                }
-                const info = subnets[subnet];
-                info.nodes.push(n);
+                if (!subnet) return;
+                if (!subnets[subnet]) subnets[subnet] = { nodes: [], types: {} };
+                subnets[subnet].nodes.push(n);
                 const dt = n.device_type || 'unknown';
-                info.types[dt] = (info.types[dt] || 0) + 1;
-                const tier = n.tier !== undefined ? n.tier : 3;
-                info.tiers[tier] = (info.tiers[tier] || 0) + 1;
-                info.vlans[n.vlan || '0'] = (info.vlans[n.vlan || '0'] || 0) + 1;
+                subnets[subnet].types[dt] = (subnets[subnet].types[dt] || 0) + 1;
             });
 
-            const result = { nodes: [...individualNodes], edges: [] };
-            const COLLAPSE_THRESHOLD = 4;
-
+            // Create compound parent nodes for subnets (4+ devices)
+            const subnetParentIds = new Set();
             Object.entries(subnets).forEach(([subnet, info]) => {
-                if (_expandedSubnets.has(subnet) || info.nodes.length < COLLAPSE_THRESHOLD) {
-                    // Expanded or too small to collapse: show individual nodes
-                    info.nodes.forEach(n => result.nodes.push(n));
-                } else {
-                    // Collapsed: create aggregate subnet node
-                    const predominantTier = parseInt(
-                        Object.entries(info.tiers).sort((a, b) => b[1] - a[1])[0][0]
-                    );
-                    const predominantVlan = Object.entries(info.vlans)
-                        .sort((a, b) => b[1] - a[1])[0][0];
-
-                    // Build a type summary string (e.g. "8 workstations, 3 servers")
+                if (info.nodes.length >= COLLAPSE_THRESHOLD) {
+                    const collapsed = !_expandedSubnets.has(subnet);
                     const typeSummary = Object.entries(info.types)
                         .filter(([t]) => t !== 'unknown')
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 3)
-                        .map(([t, c]) => `${c} ${t.replace('_', ' ')}`)
+                        .map(([t, c]) => `${c} ${t.replace(/_/g, ' ')}`)
                         .join(', ');
-
-                    const label = subnet + '\n' + info.nodes.length + ' devices'
-                        + (typeSummary ? '\n' + typeSummary : '');
-
-                    result.nodes.push({
-                        id: 'subnet:' + subnet,
-                        label: label,
-                        group: 'subnet',
-                        subnet: subnet,
-                        tier: predominantTier,
-                        vlan: predominantVlan,
-                        _memberCount: info.nodes.length,
-                        _types: info.types,
-                        _vlans: info.vlans,
-                        _memberIds: info.nodes.map(n => n.id),
+                    subnetParentIds.add('subnet:' + subnet);
+                    elements.push({
+                        group: 'nodes',
+                        data: {
+                            id: 'subnet:' + subnet,
+                            label: subnet + '\n' + info.nodes.length + ' devices' + (typeSummary ? '\n' + typeSummary : ''),
+                            _isSubnet: true,
+                            _collapsed: collapsed,
+                            _memberCount: info.nodes.length,
+                            _types: info.types,
+                            subnet: subnet,
+                        },
+                        classes: 'subnet-group' + (collapsed ? ' collapsed' : ''),
                     });
                 }
             });
 
-            // Map each original node ID to its rendered target (itself or its subnet node)
-            const nodeTarget = {};
+            // Add individual nodes
             graphData.nodes.forEach(n => {
                 if (n.group === 'internet') {
-                    nodeTarget[n.id] = n.id;
+                    // Internet cloud node
+                    elements.push({
+                        group: 'nodes',
+                        data: {
+                            id: n.id,
+                            label: n.label,
+                            _raw: n,
+                            _nodeGroup: 'internet',
+                            unique_ips: n.unique_ips || 0,
+                            total_connections: n.total_connections || 0,
+                        },
+                        classes: 'internet-cloud',
+                    });
                     return;
                 }
-                const subnet = nodeToSubnet[n.id];
-                if (subnet && !_expandedSubnets.has(subnet) && subnets[subnet] && subnets[subnet].nodes.length >= COLLAPSE_THRESHOLD) {
-                    nodeTarget[n.id] = 'subnet:' + subnet;
-                } else {
-                    nodeTarget[n.id] = n.id;
+
+                const subnet = n.subnet || getSubnetFromId(n.id);
+                const parentId = subnet && subnetParentIds.has('subnet:' + subnet) ? 'subnet:' + subnet : undefined;
+                const collapsed = parentId && !_expandedSubnets.has(subnet);
+
+                // Skip collapsed children (they're hidden by the parent)
+                if (collapsed) return;
+
+                const nodeFlag = _deviceFlags[n.id];
+                const iconDef = deviceIcons[n.device_type];
+                const nodeColor = nodeFlag
+                    ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff')
+                    : (iconDef ? iconDef.color : '#4CAF50');
+
+                const deviceStr = n.device_label || n.device_type || '';
+                let label = n.label || '';
+                if (deviceStr && n.group !== 'internet') {
+                    label = label + '\n' + deviceStr;
                 }
+
+                const tier = n.tier !== undefined ? n.tier : 3;
+                const classes = ['device'];
+                if (n.device_type) classes.push('type-' + n.device_type);
+                if (nodeFlag) classes.push('flagged-' + nodeFlag.flag_type);
+                if (n.is_virtual) classes.push('virtual');
+                classes.push('tier-' + tier);
+
+                elements.push({
+                    group: 'nodes',
+                    data: {
+                        id: n.id,
+                        label: label,
+                        parent: parentId,
+                        _raw: n,
+                        _nodeGroup: n.group || 'internal',
+                        _color: nodeColor,
+                        _tier: tier,
+                        device_type: n.device_type || '',
+                        total_connections: n.total_connections || 0,
+                    },
+                    classes: classes.join(' '),
+                });
             });
 
-            // Aggregate edges: remap endpoints to subnet nodes where collapsed
-            const edgeMap = {};
+            // Add edges
+            const edgeSet = new Set();
             graphData.edges.forEach(e => {
-                const from = nodeTarget[e.from] || e.from;
-                const to = nodeTarget[e.to] || e.to;
-                if (from === to) return; // skip intra-subnet edges
-                const key = from < to ? from + '|' + to : to + '|' + from;
-                if (!edgeMap[key]) {
-                    edgeMap[key] = { from, to, value: 0 };
-                }
-                edgeMap[key].value += (e.value || 1);
-            });
-            result.edges = Object.values(edgeMap).map(e => ({
-                from: e.from,
-                to: e.to,
-                value: e.value,
-                title: e.value + ' connections',
-            }));
+                const srcId = e.from;
+                const tgtId = e.to;
 
-            return result;
+                // Check if source/target exist in elements
+                const srcExists = elements.some(el => el.group === 'nodes' && el.data.id === srcId);
+                const tgtExists = elements.some(el => el.group === 'nodes' && el.data.id === tgtId);
+
+                // If a node is collapsed, remap to its subnet parent
+                let src = srcId, tgt = tgtId;
+                if (!srcExists) {
+                    const subnet = getSubnetFromId(srcId);
+                    if (subnet && subnetParentIds.has('subnet:' + subnet) && !_expandedSubnets.has(subnet)) {
+                        src = 'subnet:' + subnet;
+                    } else return;
+                }
+                if (!tgtExists) {
+                    const subnet = getSubnetFromId(tgtId);
+                    if (subnet && subnetParentIds.has('subnet:' + subnet) && !_expandedSubnets.has(subnet)) {
+                        tgt = 'subnet:' + subnet;
+                    } else return;
+                }
+
+                if (src === tgt) return;
+                const key = src < tgt ? src + '|' + tgt : tgt + '|' + src;
+                if (edgeSet.has(key)) return;
+                edgeSet.add(key);
+
+                const fromFlag = _deviceFlags[srcId];
+                const toFlag = _deviceFlags[tgtId];
+                let edgeClass = '';
+                if ((fromFlag && fromFlag.flag_type === 'malicious') || (toFlag && toFlag.flag_type === 'malicious')) {
+                    edgeClass = 'flagged-malicious';
+                } else if ((fromFlag && fromFlag.flag_type === 'suspicious') || (toFlag && toFlag.flag_type === 'suspicious')) {
+                    edgeClass = 'flagged-suspicious';
+                }
+
+                elements.push({
+                    group: 'edges',
+                    data: {
+                        id: 'e-' + src + '-' + tgt,
+                        source: src,
+                        target: tgt,
+                        weight: e.value || 1,
+                    },
+                    classes: edgeClass,
+                });
+            });
+
+            return elements;
         }
 
         function collapseAllSubnets() {
@@ -1654,237 +1736,12 @@
                 return;
             }
 
-            // Build subnet-aggregated view (collapses large subnets)
-            const viewData = buildSubnetView(graphData);
+            // Build Cytoscape elements with compound subnet nodes
+            const elements = buildCytoscapeElements(graphData);
+            const nodeCount = elements.filter(e => e.group === 'nodes').length;
+            const edgeCount = elements.filter(e => e.group === 'edges').length;
 
-            addLog(`Rendering graph: ${viewData.nodes.length} nodes (${graphData.nodes.length} total), ${viewData.edges.length} edges`, 'info');
-
-            const nodeCount = viewData.nodes.length;
-
-            // Font Awesome icon map per device type
-            const deviceIcons = {
-                'domain_controller': { code: '\uf0e8', color: '#E91E63' },  // fa-sitemap
-                'dns_server':        { code: '\uf0ac', color: '#00BCD4' },  // fa-globe
-                'web_server':        { code: '\uf233', color: '#FF5722' },  // fa-server
-                'database_server':   { code: '\uf1c0', color: '#9C27B0' },  // fa-database
-                'mail_server':       { code: '\uf0e0', color: '#3F51B5' },  // fa-envelope
-                'file_server':       { code: '\uf07b', color: '#3F51B5' },  // fa-folder
-                'dhcp_server':       { code: '\uf6ff', color: '#009688' },  // fa-network-wired
-                'ssh_server':        { code: '\uf120', color: '#795548' },  // fa-terminal
-                'vpn_gateway':       { code: '\uf3ed', color: '#FF9800' },  // fa-shield-alt
-                'router':            { code: '\uf362', color: '#FF6F00' },  // fa-route
-                'firewall':          { code: '\uf06d', color: '#D32F2F' },  // fa-fire
-                'print_server':      { code: '\uf02f', color: '#607D8B' },  // fa-print
-                'syslog_server':     { code: '\uf15c', color: '#8BC34A' },  // fa-file-alt
-                'monitoring':        { code: '\uf201', color: '#CDDC39' },  // fa-chart-line
-                'workstation':       { code: '\uf108', color: '#607D8B' },  // fa-desktop
-                'gateway':           { code: '\uf132', color: '#FF9800' },  // fa-shield
-                'iot_device':        { code: '\uf2db', color: '#9E9E9E' },  // fa-microchip
-            };
-
-            // Tier labels for the horizontal separator lines
-            const tierLabels = {
-                0: 'WAN / External',
-                1: 'Gateway / Firewall',
-                2: 'Core Infrastructure',
-                3: 'Servers',
-                4: 'Endpoints',
-            };
-
-            const nodes = viewData.nodes.map(node => {
-                const tier = node.tier !== undefined ? node.tier : (node.group === 'external' ? 0 : 3);
-
-                // Subnet aggregate node
-                if (node.group === 'subnet') {
-                    const types = node._types || {};
-                    const typeList = Object.entries(types)
-                        .sort((a, b) => b[1] - a[1])
-                        .slice(0, 4)
-                        .map(([t, c]) => `${c} ${t.replace(/_/g, ' ')}`)
-                        .join('\n');
-                    const tooltip = `Subnet: ${node.subnet}\n${node._memberCount} devices\n${typeList}\nClick to expand`;
-
-                    // Pick border color based on predominant device type
-                    const topType = Object.entries(types).sort((a, b) => b[1] - a[1])[0];
-                    const typeColorMap = {
-                        'domain_controller': '#E91E63', 'dns_server': '#00BCD4',
-                        'web_server': '#FF5722', 'database_server': '#9C27B0',
-                        'gateway': '#FF9800', 'vpn_gateway': '#FF9800',
-                        'router': '#FF6F00', 'firewall': '#D32F2F',
-                        'workstation': '#607D8B', 'iot_device': '#9E9E9E',
-                    };
-                    const borderColor = (topType && typeColorMap[topType[0]]) || '#667eea';
-
-                    return {
-                        id: node.id,
-                        label: node.label,
-                        title: tooltip,
-                        level: tier,
-                        shape: 'box',
-                        borderWidth: 2,
-                        margin: 10,
-                        color: {
-                            background: '#1e293b',
-                            border: borderColor,
-                            highlight: { background: '#334155', border: borderColor },
-                            hover: { background: '#334155', border: borderColor },
-                        },
-                        font: { size: 11, color: '#e2e8f0', multi: false, align: 'center' },
-                    };
-                }
-
-                const deviceStr = node.device_label || node.device_type || '';
-                const rolesStr = node.roles ? node.roles.join(', ') : 'none';
-                const servicesStr = typeof node.services === 'number' ? `${node.services} services` : String(node.services);
-                const nbNames = (node.netbios_names || []).join(', ');
-                const domainStr = node.domain || '';
-
-                // Check if this node is flagged
-                const nodeFlag = _deviceFlags[node.id];
-
-                let label = node.label;
-                if (deviceStr && node.group !== 'internet') {
-                    label = `${node.label}\n${deviceStr}`;
-                }
-
-                let tooltip = node.label;
-                if (nodeFlag) tooltip += `\n*** ${nodeFlag.flag_type.toUpperCase()} ***${nodeFlag.reason ? ' — ' + nodeFlag.reason : ''}`;
-                if (node.is_virtual) tooltip += `\n[VM: ${node.virtual_platform}]`;
-                if (nbNames) tooltip += `\nNetBIOS: ${nbNames}`;
-                if (domainStr) tooltip += `\nDomain: ${domainStr}`;
-                if (deviceStr) tooltip += `\nDevice: ${deviceStr}`;
-                const gwFor = node.is_gateway_for || [];
-                if (gwFor.length > 0) tooltip += `\nGateway for: ${gwFor.join(', ')}`;
-                tooltip += `\nTier: ${tierLabels[tier] || 'Unknown'}`;
-                tooltip += `\nServices: ${servicesStr}`;
-                tooltip += `\nRoles: ${rolesStr}`;
-
-                // Aggregated Internet cloud node
-                if (node.group === 'internet') {
-                    return {
-                        id: node.id,
-                        label: node.label,
-                        title: `Internet\n${node.unique_ips || 0} unique external IPs\n${(node.total_connections || 0).toLocaleString()} total connections`,
-                        level: 0,
-                        shape: 'icon',
-                        icon: {
-                            face: '"Font Awesome 6 Free"',
-                            code: '\uf0c2',   // fa-cloud
-                            size: 50,
-                            color: '#f44336',
-                            weight: 900,
-                        },
-                        font: { size: 13, color: '#f44336', multi: false, vadjust: 14 },
-                    };
-                }
-
-                // Flag visual: prepend warning icon to label
-                const flagPrefix = nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '\u26a0 ' : '\u26a1 ') : '';
-                const flagLabelColor = nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : '#ccc';
-
-                // Use Font Awesome icon if device type is known
-                const iconDef = deviceIcons[node.device_type];
-                if (iconDef) {
-                    return {
-                        id: node.id,
-                        label: flagPrefix + label,
-                        title: tooltip,
-                        level: tier,
-                        shape: 'icon',
-                        icon: {
-                            face: '"Font Awesome 6 Free"',
-                            code: iconDef.code,
-                            size: 30,
-                            color: nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : iconDef.color,
-                            weight: 900,
-                        },
-                        font: { size: 11, color: flagLabelColor, multi: false, vadjust: 12 },
-                    };
-                }
-
-                // Unclassified internal nodes: green dot (or red/purple if flagged)
-                return {
-                    id: node.id,
-                    label: flagPrefix + label,
-                    title: tooltip,
-                    level: tier,
-                    shape: 'dot',
-                    size: 12,
-                    color: nodeFlag ? (nodeFlag.flag_type === 'malicious' ? '#ff1744' : '#aa00ff') : '#4CAF50',
-                    font: { size: 11, color: flagLabelColor, multi: false, vadjust: 10 },
-                };
-            });
-
-            // Prepare edges for vis.js — color by device flags
-            const edges = viewData.edges.map(edge => {
-                const fromFlag = _deviceFlags[edge.from];
-                const toFlag = _deviceFlags[edge.to];
-
-                // If either end is flagged, color the edge accordingly
-                // Malicious (red) takes priority over suspicious (purple)
-                let edgeColor = null;
-                let edgeWidth = undefined;
-                if ((fromFlag && fromFlag.flag_type === 'malicious') ||
-                    (toFlag && toFlag.flag_type === 'malicious')) {
-                    edgeColor = { color: '#ff1744', highlight: '#ff1744', hover: '#ff5252' };
-                    edgeWidth = 3;
-                } else if ((fromFlag && fromFlag.flag_type === 'suspicious') ||
-                           (toFlag && toFlag.flag_type === 'suspicious')) {
-                    edgeColor = { color: '#aa00ff', highlight: '#aa00ff', hover: '#d500f9' };
-                    edgeWidth = 2;
-                }
-
-                const e = {
-                    from: edge.from,
-                    to: edge.to,
-                    value: edge.value,
-                    title: edge.title || `${edge.value} connections`,
-                };
-                if (edgeColor) {
-                    e.color = edgeColor;
-                    e.width = edgeWidth;
-                }
-                return e;
-            });
-
-            const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
-
-            const options = {
-                nodes: {
-                    font: { size: 11, color: '#ccc' },
-                },
-                edges: {
-                    color: { color: '#555', highlight: '#667eea', hover: '#888' },
-                    smooth: { type: 'cubicBezier', roundness: 0.4 },
-                    width: 1,
-                    scaling: { min: 1, max: 4 },
-                    arrows: { to: { enabled: true, scaleFactor: 0.4 } },
-                },
-                layout: {
-                    hierarchical: {
-                        enabled: true,
-                        direction: 'UD',
-                        sortMethod: 'directed',
-                        levelSeparation: 140,
-                        nodeSpacing: 150,
-                        treeSpacing: 80,
-                        blockShifting: true,
-                        edgeMinimization: true,
-                        parentCentralization: true,
-                    },
-                },
-                physics: {
-                    enabled: false,
-                },
-                interaction: {
-                    hover: true,
-                    tooltipDelay: 200,
-                    zoomView: true,
-                    dragNodes: true,
-                    navigationButtons: false,
-                    keyboard: { enabled: true },
-                },
-            };
+            addLog(`Rendering graph: ${nodeCount} nodes (${graphData.nodes.length} total), ${edgeCount} edges`, 'info');
 
             // Destroy previous graph if it exists
             if (networkGraph) {
@@ -1892,142 +1749,325 @@
                 networkGraph = null;
             }
 
-            networkGraph = new vis.Network(container, data, options);
+            // Clear container
+            container.innerHTML = '';
 
-            // Post-layout overlap resolver: adjusts x-positions based on actual node widths
-            networkGraph.once('afterDrawing', function() {
-                const positions = networkGraph.getPositions();
-                const nodeMap = {};
-                nodes.forEach(function(n) { nodeMap[n.id] = n; });
-
-                // Estimate rendered width of a node from its label and shape.
-                // For icon nodes the label renders BELOW the icon, so the
-                // effective width = max(icon_size, widest_label_line).
-                // We use a canvas to measure text for accuracy.
-                var _measureCanvas = document.createElement('canvas');
-                var _measureCtx = _measureCanvas.getContext('2d');
-                _measureCtx.font = '11px sans-serif';
-
-                function estimateWidth(n) {
-                    var label = n.label || '';
-                    var lines = label.split('\n');
-                    var maxPx = 0;
-                    for (var i = 0; i < lines.length; i++) {
-                        var w = _measureCtx.measureText(lines[i]).width;
-                        if (w > maxPx) maxPx = w;
+            // Cytoscape stylesheet
+            const cyStyle = [
+                // Default node
+                {
+                    selector: 'node.device',
+                    style: {
+                        'label': 'data(label)',
+                        'text-wrap': 'wrap',
+                        'text-max-width': '140px',
+                        'font-size': '11px',
+                        'color': '#ccc',
+                        'text-valign': 'bottom',
+                        'text-halign': 'center',
+                        'text-margin-y': 6,
+                        'background-color': 'data(_color)',
+                        'border-color': 'data(_color)',
+                        'border-width': 2,
+                        'width': 28,
+                        'height': 28,
+                        'shape': 'ellipse',
+                        'overlay-opacity': 0,
                     }
-                    if (n.shape === 'box') {
-                        // box: text width + margin (10 each side) + border
-                        return maxPx + 24;
+                },
+                // Typed device nodes - larger
+                {
+                    selector: 'node.device[device_type]',
+                    style: {
+                        'width': 32,
+                        'height': 32,
                     }
-                    if (n.shape === 'icon') {
-                        // icon nodes: label sits below the icon, so the
-                        // clickable/visible area is the wider of icon or label
-                        var iconSize = (n.icon && n.icon.size) || 30;
-                        return Math.max(maxPx + 8, iconSize);
+                },
+                // Infrastructure nodes (routers, firewalls) - diamond shape
+                {
+                    selector: 'node.type-router, node.type-firewall, node.type-gateway, node.type-vpn_gateway',
+                    style: {
+                        'shape': 'diamond',
+                        'width': 36,
+                        'height': 36,
                     }
-                    // dot/ellipse/other
-                    return Math.max(maxPx + 8, 30);
-                }
-
-                // Group nodes by tier level (y-position rounded)
-                var tiers = {};
-                var ids = Object.keys(positions);
-                for (var i = 0; i < ids.length; i++) {
-                    var id = ids[i];
-                    var pos = positions[id];
-                    var node = nodeMap[id];
-                    if (!pos || !node) continue;
-                    var tierKey = Math.round(pos.y / 20) * 20;
-                    if (!tiers[tierKey]) tiers[tierKey] = [];
-                    tiers[tierKey].push({ id: id, x: pos.x, y: pos.y, w: estimateWidth(node) });
-                }
-
-                var anyMoved = false;
-                var tierKeys = Object.keys(tiers);
-                for (var t = 0; t < tierKeys.length; t++) {
-                    var tierNodes = tiers[tierKeys[t]];
-                    if (tierNodes.length < 2) continue;
-
-                    tierNodes.sort(function(a, b) { return a.x - b.x; });
-
-                    var origCenter = (tierNodes[0].x + tierNodes[tierNodes.length - 1].x) / 2;
-
-                    // Push nodes right where they overlap
-                    for (var i = 1; i < tierNodes.length; i++) {
-                        var prev = tierNodes[i - 1];
-                        var curr = tierNodes[i];
-                        var minDist = (prev.w + curr.w) / 2 + 18;
-                        if (curr.x - prev.x < minDist) {
-                            curr.x = prev.x + minDist;
-                            anyMoved = true;
-                        }
+                },
+                // Server nodes - round rectangle
+                {
+                    selector: 'node.type-domain_controller, node.type-dns_server, node.type-web_server, node.type-database_server, node.type-mail_server, node.type-file_server, node.type-dhcp_server, node.type-ssh_server, node.type-ntp_server, node.type-radius_server, node.type-mqtt_broker',
+                    style: {
+                        'shape': 'round-rectangle',
+                        'width': 34,
+                        'height': 28,
                     }
-
-                    // Re-center the tier around its original midpoint
-                    var newCenter = (tierNodes[0].x + tierNodes[tierNodes.length - 1].x) / 2;
-                    var shift = origCenter - newCenter;
-                    for (var i = 0; i < tierNodes.length; i++) {
-                        tierNodes[i].x += shift;
-                        networkGraph.moveNode(tierNodes[i].id, tierNodes[i].x, tierNodes[i].y);
+                },
+                // IoT / ICS nodes - hexagon
+                {
+                    selector: 'node.type-iot_device, node.type-ics_device',
+                    style: {
+                        'shape': 'hexagon',
+                        'width': 30,
+                        'height': 30,
                     }
-                }
+                },
+                // Internet cloud node
+                {
+                    selector: 'node.internet-cloud',
+                    style: {
+                        'label': 'data(label)',
+                        'text-wrap': 'wrap',
+                        'font-size': '13px',
+                        'color': '#f44336',
+                        'text-valign': 'bottom',
+                        'text-halign': 'center',
+                        'text-margin-y': 8,
+                        'background-color': '#f44336',
+                        'border-color': '#f44336',
+                        'border-width': 2,
+                        'width': 50,
+                        'height': 50,
+                        'shape': 'octagon',
+                        'overlay-opacity': 0,
+                    }
+                },
+                // Subnet compound nodes
+                {
+                    selector: 'node.subnet-group',
+                    style: {
+                        'label': 'data(label)',
+                        'text-wrap': 'wrap',
+                        'font-size': '11px',
+                        'color': '#94a3b8',
+                        'text-valign': 'top',
+                        'text-halign': 'center',
+                        'text-margin-y': -8,
+                        'background-color': '#1e293b',
+                        'background-opacity': 0.6,
+                        'border-color': '#667eea',
+                        'border-width': 2,
+                        'border-style': 'dashed',
+                        'shape': 'round-rectangle',
+                        'padding': '20px',
+                        'compound-sizing-wrt-labels': 'include',
+                    }
+                },
+                // Collapsed subnet (no children visible)
+                {
+                    selector: 'node.subnet-group.collapsed',
+                    style: {
+                        'background-opacity': 0.8,
+                        'padding': '12px',
+                        'min-width': '120px',
+                        'min-height': '40px',
+                        'text-valign': 'center',
+                        'text-margin-y': 0,
+                        'border-style': 'solid',
+                    }
+                },
+                // Flagged nodes
+                {
+                    selector: 'node.flagged-malicious',
+                    style: {
+                        'border-color': '#ff1744',
+                        'border-width': 3,
+                        'background-color': '#ff1744',
+                    }
+                },
+                {
+                    selector: 'node.flagged-suspicious',
+                    style: {
+                        'border-color': '#aa00ff',
+                        'border-width': 3,
+                        'background-color': '#aa00ff',
+                    }
+                },
+                // Virtual machine nodes
+                {
+                    selector: 'node.virtual',
+                    style: {
+                        'border-style': 'dashed',
+                    }
+                },
+                // Selected node
+                {
+                    selector: 'node:selected',
+                    style: {
+                        'border-color': '#667eea',
+                        'border-width': 3,
+                        'overlay-color': '#667eea',
+                        'overlay-opacity': 0.15,
+                    }
+                },
+                // Default edge
+                {
+                    selector: 'edge',
+                    style: {
+                        'width': function(ele) {
+                            const w = ele.data('weight') || 1;
+                            return Math.min(1 + Math.log2(w + 1) * 0.5, 6);
+                        },
+                        'line-color': '#444',
+                        'target-arrow-color': '#444',
+                        'target-arrow-shape': 'triangle',
+                        'arrow-scale': 0.6,
+                        'curve-style': 'bezier',
+                        'opacity': 0.6,
+                    }
+                },
+                // Flagged edges
+                {
+                    selector: 'edge.flagged-malicious',
+                    style: {
+                        'line-color': '#ff1744',
+                        'target-arrow-color': '#ff1744',
+                        'width': 3,
+                        'opacity': 0.9,
+                    }
+                },
+                {
+                    selector: 'edge.flagged-suspicious',
+                    style: {
+                        'line-color': '#aa00ff',
+                        'target-arrow-color': '#aa00ff',
+                        'width': 2,
+                        'opacity': 0.8,
+                    }
+                },
+                // Edge hover
+                {
+                    selector: 'edge:selected',
+                    style: {
+                        'line-color': '#667eea',
+                        'target-arrow-color': '#667eea',
+                        'width': 3,
+                        'opacity': 1,
+                    }
+                },
+            ];
 
-                if (anyMoved) {
-                    networkGraph.fit({ animation: false });
-                }
+            // Create Cytoscape instance
+            networkGraph = cytoscape({
+                container: container,
+                elements: elements,
+                style: cyStyle,
+                layout: {
+                    name: 'dagre',
+                    rankDir: 'TB',
+                    rankSep: 120,
+                    nodeSep: 60,
+                    edgeSep: 30,
+                    animate: false,
+                    fit: true,
+                    padding: 40,
+                    spacingFactor: 1.2,
+                    // Use tier as rank constraint
+                    rank: function(node) {
+                        if (node.hasClass('internet-cloud')) return 0;
+                        if (node.hasClass('subnet-group')) return undefined;
+                        return node.data('_tier') !== undefined ? node.data('_tier') : 3;
+                    },
+                },
+                minZoom: 0.1,
+                maxZoom: 4,
+                wheelSensitivity: 0.3,
             });
-            // Store raw reference: use _fullGraphData for click lookups when filtering
+
+            // Store raw reference for click lookups
             const rawRef = _fullGraphData || graphData;
-            networkGraphData = { nodes: data.nodes, edges: data.edges, raw: rawRef };
+            networkGraphData = { raw: rawRef, cy: networkGraph };
 
-            // Add click handler
-            networkGraph.on('click', function(params) {
-                if (params.nodes.length > 0) {
-                    const nodeId = params.nodes[0];
+            // Tooltip on hover
+            let _tipEl = document.getElementById('cy-tooltip');
+            if (!_tipEl) {
+                _tipEl = document.createElement('div');
+                _tipEl.id = 'cy-tooltip';
+                _tipEl.style.cssText = 'position:fixed;display:none;background:#1e293b;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:10000;max-width:300px;white-space:pre-wrap;border:1px solid #334155;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+                document.body.appendChild(_tipEl);
+            }
 
-                    // Group selection mode: toggle node in/out of selection
-                    if (_groupSelectMode) {
-                        if (_groupSelectedNodes.has(nodeId)) {
-                            _groupSelectedNodes.delete(nodeId);
-                        } else {
-                            _groupSelectedNodes.add(nodeId);
-                        }
-                        document.getElementById('group-select-count').textContent = _groupSelectedNodes.size;
-                        // Highlight selected nodes
-                        networkGraph.selectNodes([..._groupSelectedNodes]);
+            networkGraph.on('mouseover', 'node', function(evt) {
+                const node = evt.target;
+                const raw = node.data('_raw');
+                if (!raw) {
+                    if (node.data('_isSubnet')) {
+                        _tipEl.textContent = node.data('label') + '\nClick to expand';
+                    } else {
                         return;
                     }
+                } else {
+                    const lines = [raw.label || raw.id];
+                    if (raw.device_label || raw.device_type) lines.push('Device: ' + (raw.device_label || raw.device_type));
+                    if (raw.is_virtual) lines.push('[VM: ' + raw.virtual_platform + ']');
+                    if ((raw.netbios_names || []).length) lines.push('NetBIOS: ' + raw.netbios_names.join(', '));
+                    if (raw.domain) lines.push('Domain: ' + raw.domain);
+                    const gwFor = raw.is_gateway_for || [];
+                    if (gwFor.length) lines.push('Gateway for: ' + gwFor.join(', '));
+                    if (raw.group === 'internet') {
+                        lines.push((raw.unique_ips || 0) + ' unique external IPs');
+                        lines.push((raw.total_connections || 0).toLocaleString() + ' total connections');
+                    }
+                    _tipEl.textContent = lines.join('\n');
+                }
+                const pos = evt.renderedPosition || evt.position;
+                _tipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
+                _tipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+                _tipEl.style.display = 'block';
+            });
 
-                    // Subnet cluster click: expand subnet
-                    if (nodeId.startsWith('subnet:')) {
-                        const subnet = nodeId.replace('subnet:', '');
+            networkGraph.on('mouseout', 'node', function() {
+                _tipEl.style.display = 'none';
+            });
+
+            networkGraph.on('mousemove', 'node', function(evt) {
+                _tipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
+                _tipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+            });
+
+            // Click handler
+            networkGraph.on('tap', 'node', function(evt) {
+                const node = evt.target;
+                const nodeId = node.id();
+
+                // Group selection mode
+                if (_groupSelectMode) {
+                    if (_groupSelectedNodes.has(nodeId)) {
+                        _groupSelectedNodes.delete(nodeId);
+                        node.unselect();
+                    } else {
+                        _groupSelectedNodes.add(nodeId);
+                        node.select();
+                    }
+                    document.getElementById('group-select-count').textContent = _groupSelectedNodes.size;
+                    return;
+                }
+
+                // Subnet click: expand/collapse
+                if (nodeId.startsWith('subnet:')) {
+                    const subnet = nodeId.replace('subnet:', '');
+                    if (_expandedSubnets.has(subnet)) {
+                        _expandedSubnets.delete(subnet);
+                    } else {
                         _expandedSubnets.add(subnet);
-                        document.getElementById('collapse-subnets-btn').style.display = '';
-                        const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
-                        if (currentData) renderNetworkGraph(currentData);
-                        return;
                     }
+                    document.getElementById('collapse-subnets-btn').style.display = _expandedSubnets.size > 0 ? '' : 'none';
+                    const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+                    if (currentData) renderNetworkGraph(currentData);
+                    return;
+                }
 
-                    const node = rawRef.nodes.find(n => n.id === nodeId);
-                    if (node) {
-                        showNodeDetails(node);
-                    }
+                const rawNode = rawRef.nodes.find(n => n.id === nodeId);
+                if (rawNode) {
+                    showNodeDetails(rawNode);
                 }
             });
 
-            // Right-click context menu for flagging
-            networkGraph.on('oncontext', function(params) {
-                params.event.preventDefault();
-                const nodeId = networkGraph.getNodeAt(params.pointer.DOM);
-                if (!nodeId || nodeId === '__internet__' || nodeId.startsWith('subnet:')) return;
-                const node = rawRef.nodes.find(n => n.id === nodeId);
-                showContextMenu(params.event, nodeId, node);
-            });
-
-            // Draw LAN group boxes on the canvas
-            networkGraph.on('afterDrawing', function(ctx) {
-                drawLanGroupBoxes(ctx);
+            // Right-click context menu
+            networkGraph.on('cxttap', 'node', function(evt) {
+                const node = evt.target;
+                const nodeId = node.id();
+                if (nodeId === '__internet__' || nodeId.startsWith('subnet:')) return;
+                const rawNode = rawRef.nodes.find(n => n.id === nodeId);
+                showContextMenu(evt.originalEvent, nodeId, rawNode);
             });
         }
 
@@ -2163,6 +2203,30 @@
                         ${userAgentsList.map(ua => `<div style="font-size:12px; font-family:monospace; padding:4px 6px; border-bottom:1px solid rgba(255,255,255,0.05); word-break:break-all;">${escapeHtml(ua)}</div>`).join('')}
                     </div>
                 </div>` : ''}
+                ${(node.tunnel_info || []).length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-network-wired" style="color:#FF9800;"></i> Tunnel / VPN Protocols</h4>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        ${node.tunnel_info.map(t => `<span style="background:rgba(255,152,0,0.15); border:1px solid rgba(255,152,0,0.3); border-radius:4px; padding:3px 8px; font-size:12px;">${escapeHtml(t)}</span>`).join('')}
+                    </div>
+                </div>` : ''}
+                ${(node.ics_protocols || []).length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-industry" style="color:#FF5722;"></i> ICS/SCADA Protocols</h4>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        ${node.ics_protocols.map(p => `<span style="background:rgba(255,87,34,0.15); border:1px solid rgba(255,87,34,0.3); border-radius:4px; padding:3px 8px; font-size:12px; font-weight:600;">${escapeHtml(p)}</span>`).join('')}
+                    </div>
+                </div>` : ''}
+                ${(node.notices || []).length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-triangle-exclamation" style="color:#FFC107;"></i> Zeek Notices (${node.notices.length})</h4>
+                    <div style="max-height:120px; overflow-y:auto; background:rgba(0,0,0,0.15); border-radius:6px; padding:8px;">
+                        ${node.notices.map(n => `<div style="font-size:12px; padding:3px 6px; border-bottom:1px solid rgba(255,255,255,0.05);">${escapeHtml(n)}</div>`).join('')}
+                    </div>
+                </div>` : ''}
+                ${node.ntp_server ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(139,195,74,0.15); border:1px solid rgba(139,195,74,0.4); border-radius:6px; padding:6px 12px; margin-bottom:12px; font-size:13px;"><i class="fa-solid fa-clock" style="color:#8BC34A;"></i> <strong style="color:#8BC34A;">NTP Server</strong></div>` : ''}
+                ${node.radius_server ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(255,152,0,0.15); border:1px solid rgba(255,152,0,0.4); border-radius:6px; padding:6px 12px; margin-bottom:12px; font-size:13px;"><i class="fa-solid fa-key" style="color:#FF9800;"></i> <strong style="color:#FF9800;">RADIUS Server</strong></div>` : ''}
+                ${node.mqtt_info && node.mqtt_info.unique_clients ? `<div style="display:inline-flex; align-items:center; gap:6px; background:rgba(0,150,136,0.15); border:1px solid rgba(0,150,136,0.4); border-radius:6px; padding:6px 12px; margin-bottom:12px; font-size:13px;"><i class="fa-solid fa-rss" style="color:#009688;"></i> <strong style="color:#009688;">MQTT Broker</strong> <span style="opacity:0.7;">${node.mqtt_info.unique_clients} clients</span></div>` : ''}
                 ${gatewayFor.length > 0 ? `
                 <div style="margin-bottom:16px;">
                     <h4 style="margin:0 0 8px 0; font-size:13px; opacity:0.8;"><i class="fa-solid fa-route" style="color:#FFB74D;"></i> Gateway for Subnets (${gatewayFor.length})</h4>
@@ -2627,21 +2691,20 @@
 
         function resetGraphZoom() {
             if (networkGraph) {
-                networkGraph.fit();
+                networkGraph.fit({ padding: 40, animate: true, animationDuration: 300 });
             }
         }
 
         function exportGraphImage() {
             if (networkGraph) {
-                const canvas = document.querySelector('#network-graph canvas');
-                if (canvas) {
-                    const url = canvas.toDataURL('image/png');
-                    const link = document.createElement('a');
-                    link.download = 'network-graph.png';
-                    link.href = url;
-                    link.click();
-                    addLog('Exported network graph as PNG', 'info');
-                }
+                const png = networkGraph.png({ output: 'blob', bg: '#0f172a', full: true, scale: 2 });
+                const url = URL.createObjectURL(png);
+                const link = document.createElement('a');
+                link.download = 'network-graph.png';
+                link.href = url;
+                link.click();
+                URL.revokeObjectURL(url);
+                addLog('Exported network graph as PNG', 'info');
             }
         }
 
@@ -2711,11 +2774,13 @@
             const doFocus = () => {
                 const ids = matches.map(n => n.id);
                 if (networkGraph) {
-                    networkGraph.selectNodes(ids);
-                    networkGraph.fit({
-                        nodes: ids,
-                        animation: { duration: 600, easingFunction: 'easeInOutQuad' },
-                    });
+                    networkGraph.elements().unselect();
+                    const eles = networkGraph.collection();
+                    ids.forEach(id => { const n = networkGraph.$id(id); if (n.length) eles.merge(n); });
+                    eles.select();
+                    if (eles.length) {
+                        networkGraph.animate({ fit: { eles: eles, padding: 60 } }, { duration: 600 });
+                    }
                 }
                 showSubnetDetails(matches, query);
                 searchInput.style.borderColor = '#43a047';
@@ -2937,7 +3002,7 @@
                     if (matchSubnet && !_expandedSubnets.has(matchSubnet)) {
                         // Check if this subnet is currently collapsed (has a subnet: node)
                         const subnetNodeId = 'subnet:' + matchSubnet;
-                        const isCollapsed = networkGraphData && networkGraphData.nodes.get(subnetNodeId);
+                        const isCollapsed = networkGraph && networkGraph.$id(subnetNodeId).length > 0;
                         if (isCollapsed) {
                             _expandedSubnets.add(matchSubnet);
                             document.getElementById('collapse-subnets-btn').style.display = '';
@@ -2946,11 +3011,12 @@
                             // Focus after a brief delay to let re-render complete
                             setTimeout(() => {
                                 if (networkGraph) {
-                                    networkGraph.selectNodes([match.id]);
-                                    networkGraph.focus(match.id, {
-                                        scale: 1.5,
-                                        animation: { duration: 500, easingFunction: 'easeInOutQuad' }
-                                    });
+                                    const target = networkGraph.$id(match.id);
+                                    if (target.length) {
+                                        networkGraph.elements().unselect();
+                                        target.select();
+                                        networkGraph.animate({ center: { eles: target }, zoom: 1.5 }, { duration: 500 });
+                                    }
                                 }
                             }, 100);
                             // Show details and scroll AFTER graph animation completes
@@ -2961,11 +3027,12 @@
                         }
                     }
 
-                    networkGraph.selectNodes([match.id]);
-                    networkGraph.focus(match.id, {
-                        scale: 1.5,
-                        animation: { duration: 500, easingFunction: 'easeInOutQuad' }
-                    });
+                    const target = networkGraph.$id(match.id);
+                    if (target.length) {
+                        networkGraph.elements().unselect();
+                        target.select();
+                        networkGraph.animate({ center: { eles: target }, zoom: 1.5 }, { duration: 500 });
+                    }
                     // Show details and scroll AFTER graph animation completes
                     showNodeDetails(match, true);
                 } else {
@@ -2975,7 +3042,7 @@
                         const s = m.subnet || getSubnetFromId(m.id);
                         if (s && !_expandedSubnets.has(s)) {
                             const subnetNodeId = 'subnet:' + s;
-                            if (networkGraphData && networkGraphData.nodes.get(subnetNodeId)) {
+                            if (networkGraph && networkGraph.$id(subnetNodeId).length > 0) {
                                 _expandedSubnets.add(s);
                                 needsRerender = true;
                             }
@@ -3785,7 +3852,7 @@
             _groupSelectedNodes = new Set();
             document.getElementById('group-select-bar').style.display = 'none';
             document.getElementById('group-select-btn').disabled = false;
-            if (networkGraph) networkGraph.unselectAll();
+            if (networkGraph) networkGraph.elements().unselect();
         }
 
         function finishGroupSelect() {
@@ -3894,73 +3961,41 @@
         }
 
         // =================================================================
-        // Draw LAN group boxes on the vis.js canvas
+        // Draw LAN group boxes as HTML overlays
         // =================================================================
 
-        function drawLanGroupBoxes(ctx) {
+        function drawLanGroupBoxes() {
+            // Remove old overlays
+            document.querySelectorAll('.lan-group-overlay').forEach(el => el.remove());
             if (!_lanGroups || _lanGroups.length === 0 || !networkGraph) return;
+
+            const container = document.getElementById('network-graph');
+            const containerRect = container.getBoundingClientRect();
 
             _lanGroups.forEach(group => {
                 if (!group.members || group.members.length === 0) return;
 
-                // Get bounding box of all member nodes
-                const positions = [];
+                // Collect Cytoscape nodes for this group
+                const eles = networkGraph.collection();
                 group.members.forEach(nid => {
-                    try {
-                        const pos = networkGraph.getPosition(nid);
-                        if (pos && pos.x !== undefined) positions.push(pos);
-                    } catch(e) {}
+                    const n = networkGraph.$id(nid);
+                    if (n.length) eles.merge(n);
                 });
 
-                if (positions.length === 0) return;
+                if (eles.length === 0) return;
 
-                const padding = 40;
-                const minX = Math.min(...positions.map(p => p.x)) - padding;
-                const maxX = Math.max(...positions.map(p => p.x)) + padding;
-                const minY = Math.min(...positions.map(p => p.y)) - padding;
-                const maxY = Math.max(...positions.map(p => p.y)) + padding;
+                const bb = eles.renderedBoundingBox({ includeLabels: false });
+                const padding = 20;
 
-                const w = maxX - minX;
-                const h = maxY - minY;
-
-                // Draw rounded rectangle with group color
                 const color = group.color || '#667eea';
-                ctx.save();
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 2;
-                ctx.setLineDash([8, 4]);
-                ctx.globalAlpha = 0.6;
-
-                // Rounded rect
-                const r = 12;
-                ctx.beginPath();
-                ctx.moveTo(minX + r, minY);
-                ctx.lineTo(maxX - r, minY);
-                ctx.arcTo(maxX, minY, maxX, minY + r, r);
-                ctx.lineTo(maxX, maxY - r);
-                ctx.arcTo(maxX, maxY, maxX - r, maxY, r);
-                ctx.lineTo(minX + r, maxY);
-                ctx.arcTo(minX, maxY, minX, maxY - r, r);
-                ctx.lineTo(minX, minY + r);
-                ctx.arcTo(minX, minY, minX + r, minY, r);
-                ctx.closePath();
-                ctx.stroke();
-
-                // Light fill
-                ctx.globalAlpha = 0.05;
-                ctx.fillStyle = color;
-                ctx.fill();
-
-                // Label
-                ctx.globalAlpha = 0.8;
-                ctx.font = 'bold 14px sans-serif';
-                ctx.fillStyle = color;
-                ctx.textAlign = 'left';
-                ctx.textBaseline = 'bottom';
-                ctx.setLineDash([]);
-                ctx.fillText(group.name, minX + 8, minY - 4);
-
-                ctx.restore();
+                const overlay = document.createElement('div');
+                overlay.className = 'lan-group-overlay';
+                overlay.style.cssText = `position:absolute; left:${bb.x1 - padding}px; top:${bb.y1 - padding}px; width:${bb.w + padding * 2}px; height:${bb.h + padding * 2}px; border:2px dashed ${color}; border-radius:12px; background:${color}0d; pointer-events:none; z-index:0;`;
+                const label = document.createElement('span');
+                label.style.cssText = `position:absolute; top:-18px; left:8px; font-size:12px; font-weight:600; color:${color}; opacity:0.8;`;
+                label.textContent = group.name;
+                overlay.appendChild(label);
+                container.appendChild(overlay);
             });
         }
 
