@@ -105,7 +105,7 @@ class ReconnaissanceHunter(BaseAgent):
             info["ports"].add(conn.get("destination_port"))
             info["hosts"].add(conn.get("destination_ip"))
             info["total"] += 1
-            ts = conn.get("timestamp")
+            ts = self._parse_timestamp(conn.get("timestamp"))
             if ts:
                 info["timestamps"].append(ts)
             # Zeek conn_state: REJ = rejected, S0 = SYN with no reply

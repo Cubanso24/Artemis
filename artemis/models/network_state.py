@@ -276,15 +276,24 @@ class NetworkState:
         if network_connections:
             traffic_metrics.connection_count = _counts.get(
                 'network_connections', len(network_connections))
+            # The data pipeline normalizes Zeek field names:
+            #   orig_bytes -> bytes_in, resp_bytes -> bytes_out,
+            #   id.resp_h -> destination_ip, proto -> protocol.
+            # Support both raw and normalized names for safety.
             traffic_metrics.total_bytes_in = sum(
-                conn.get('orig_bytes', 0) for conn in network_connections
+                int(conn.get('bytes_in', conn.get('orig_bytes', 0)) or 0)
+                for conn in network_connections
             )
             traffic_metrics.total_bytes_out = sum(
-                conn.get('resp_bytes', 0) for conn in network_connections
+                int(conn.get('bytes_out', conn.get('resp_bytes', 0)) or 0)
+                for conn in network_connections
             )
 
             # Count unique destinations
-            destinations = set(conn.get('id.resp_h', '') for conn in network_connections)
+            destinations = set(
+                conn.get('destination_ip', conn.get('id.resp_h', ''))
+                for conn in network_connections
+            )
             traffic_metrics.unique_destinations = len(destinations)
 
             # Count failed connections
@@ -296,7 +305,7 @@ class NetworkState:
             # Protocol distribution
             protocols = {}
             for conn in network_connections:
-                proto = conn.get('proto', 'unknown')
+                proto = conn.get('protocol', conn.get('proto', 'unknown'))
                 protocols[proto] = protocols.get(proto, 0) + 1
             traffic_metrics.protocol_distribution = protocols
 

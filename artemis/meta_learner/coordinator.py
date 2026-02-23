@@ -334,10 +334,29 @@ class MetaLearnerCoordinator:
             # Sequential execution
             outputs = self._execute_agents_sequential(selected_agents, data, context)
 
+        # Log per-agent results before filtering
+        total_before = len(outputs)
+        for o in outputs:
+            error = (o.metadata or {}).get("error") if hasattr(o, 'metadata') and o.metadata else None
+            if error:
+                self.logger.warning(
+                    f"Agent {o.agent_name} CRASHED: {error}"
+                )
+            elif o.confidence == 0.0 and len(o.findings) == 0:
+                self.logger.debug(f"Agent {o.agent_name}: no findings")
+            else:
+                self.logger.info(
+                    f"Agent {o.agent_name}: {len(o.findings)} findings, "
+                    f"confidence={o.confidence:.2f}"
+                )
+
         # Filter out empty outputs
         outputs = [o for o in outputs if o.confidence > 0.0 or len(o.findings) > 0]
 
-        self.logger.info(f"Agent execution complete: {len(outputs)} outputs with findings")
+        self.logger.info(
+            f"Agent execution complete: {len(outputs)}/{total_before} "
+            f"agents produced findings"
+        )
         return outputs
 
     def _execute_agents_parallel(

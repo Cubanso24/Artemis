@@ -113,6 +113,34 @@ class BaseAgent(ABC):
         "172.30.", "172.31.", "192.168.",
     )
 
+    @staticmethod
+    def _parse_timestamp(ts) -> Optional[datetime]:
+        """Convert a timestamp value to a datetime object.
+
+        Handles datetime objects (pass-through), ISO-format strings
+        (as returned by ``parse_splunk_timestamp``), epoch floats/ints,
+        and ``None``.
+        """
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts
+        if isinstance(ts, (int, float)):
+            try:
+                return datetime.fromtimestamp(ts)
+            except (OSError, OverflowError, ValueError):
+                return None
+        if isinstance(ts, str):
+            try:
+                return datetime.fromisoformat(ts)
+            except ValueError:
+                pass
+            try:
+                return datetime.fromtimestamp(float(ts))
+            except (ValueError, TypeError, OSError):
+                pass
+        return None
+
     def _is_internal(self, ip: str, context: NetworkState = None) -> bool:
         """Check whether *ip* belongs to the monitored network.
 

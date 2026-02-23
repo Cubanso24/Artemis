@@ -123,7 +123,7 @@ class C2Hunter(BaseAgent):
             src = conn.get("source_ip")
             dst = conn.get("destination_ip")
             port = conn.get("destination_port")
-            ts = conn.get("timestamp")
+            ts = self._parse_timestamp(conn.get("timestamp"))
             if not (src and dst and ts):
                 continue
             key = f"{dst}:{port}"
@@ -363,7 +363,7 @@ class C2Hunter(BaseAgent):
             src = conn.get("source_ip")
             dst = conn.get("destination_ip")
             port = conn.get("destination_port")
-            ts = conn.get("timestamp")
+            ts = self._parse_timestamp(conn.get("timestamp"))
             if not (src and dst and ts):
                 continue
 

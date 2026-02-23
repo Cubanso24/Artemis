@@ -194,7 +194,7 @@ class ImpactHunter(BaseAgent):
             info = src_targets[src]
             info["targets"].add(dst)
             info["count"] += 1
-            ts = conn.get("timestamp")
+            ts = self._parse_timestamp(conn.get("timestamp"))
             if ts:
                 info["timestamps"].append(ts)
 
