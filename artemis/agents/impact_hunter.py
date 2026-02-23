@@ -45,20 +45,10 @@ class ImpactHunter(BaseAgent):
             "ddos_connection_threshold": 1000,
             "ddos_target_concentration": 0.8,
             "service_dropout_threshold": 5,
-            "internal_prefixes": [
-                "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                "172.30.", "172.31.", "192.168.",
-            ],
         }
 
-    def _is_internal(self, ip: str) -> bool:
-        if not ip:
-            return False
-        return any(ip.startswith(p) for p in self.config["internal_prefixes"])
-
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
+        self._ctx = context  # stash for sub-methods
         findings: List[Finding] = []
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
@@ -126,7 +116,7 @@ class ImpactHunter(BaseAgent):
             if port in stratum_ports:
                 src = conn.get("source_ip", "")
                 dst = conn.get("destination_ip", "")
-                if src and not self._is_internal(dst):
+                if src and not self._is_internal(dst, self._ctx):
                     stratum_users[src].add(f"{dst}:{port}")
 
         # Merge evidence
@@ -199,7 +189,7 @@ class ImpactHunter(BaseAgent):
                 continue
             src = conn.get("source_ip", "")
             dst = conn.get("destination_ip", "")
-            if not (self._is_internal(src) and self._is_internal(dst) and src != dst):
+            if not (self._is_internal(src, self._ctx) and self._is_internal(dst, self._ctx) and src != dst):
                 continue
             info = src_targets[src]
             info["targets"].add(dst)
@@ -281,7 +271,7 @@ class ImpactHunter(BaseAgent):
         for conn in connections:
             src = conn.get("source_ip", "")
             dst = conn.get("destination_ip", "")
-            if not (self._is_internal(src) and not self._is_internal(dst)):
+            if not (self._is_internal(src, self._ctx) and not self._is_internal(dst, self._ctx)):
                 continue
             src_conns[src]["destinations"][dst] += 1
             src_conns[src]["total"] += 1

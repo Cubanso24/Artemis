@@ -44,19 +44,8 @@ class LateralMovementHunter(BaseAgent):
             "smb_fan_out_threshold": 5,
             "ssh_fan_out_threshold": 4,
             "winrm_fan_out_threshold": 3,
-            "internal_prefixes": [
-                "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                "172.30.", "172.31.", "192.168.",
-            ],
             "ntlm_relay_threshold": 3,
         }
-
-    def _is_internal(self, ip: str) -> bool:
-        if not ip:
-            return False
-        return any(ip.startswith(p) for p in self.config["internal_prefixes"])
 
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
         findings: List[Finding] = []
@@ -69,8 +58,8 @@ class LateralMovementHunter(BaseAgent):
         # Only internal-to-internal connections for lateral movement
         internal_conns = [
             c for c in connections
-            if self._is_internal(c.get("source_ip", ""))
-            and self._is_internal(c.get("destination_ip", ""))
+            if self._is_internal(c.get("source_ip", ""), context)
+            and self._is_internal(c.get("destination_ip", ""), context)
         ]
 
         # 1. RDP fan-out

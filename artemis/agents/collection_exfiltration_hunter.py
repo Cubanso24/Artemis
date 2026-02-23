@@ -47,20 +47,10 @@ class CollectionExfiltrationHunter(BaseAgent):
                 "pastebin.com", "hastebin.com",
                 "anonfiles.com", "gofile.io",
             ],
-            "internal_prefixes": [
-                "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
-                "172.30.", "172.31.", "192.168.",
-            ],
         }
 
-    def _is_internal(self, ip: str) -> bool:
-        if not ip:
-            return False
-        return any(ip.startswith(p) for p in self.config["internal_prefixes"])
-
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
+        self._ctx = context  # stash for sub-methods
         findings: List[Finding] = []
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
@@ -127,7 +117,7 @@ class CollectionExfiltrationHunter(BaseAgent):
             dst = conn.get("destination_ip", "")
             if not (src and dst):
                 continue
-            if not self._is_internal(src) or self._is_internal(dst):
+            if not self._is_internal(src, self._ctx) or self._is_internal(dst, self._ctx):
                 continue  # Only internal -> external
 
             key = f"{src}|{dst}"
@@ -197,7 +187,7 @@ class CollectionExfiltrationHunter(BaseAgent):
         for conn in connections:
             src = conn.get("source_ip", "")
             dst = conn.get("destination_ip", "")
-            if not self._is_internal(src) or self._is_internal(dst):
+            if not self._is_internal(src, self._ctx) or self._is_internal(dst, self._ctx):
                 continue
             info = host_traffic[src]
             info["bytes_out"] += int(conn.get("bytes_out", 0))
