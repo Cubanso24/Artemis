@@ -83,3 +83,4 @@ playbooks/
 *.sqlite
 data/
 cache/
+network_maps/
