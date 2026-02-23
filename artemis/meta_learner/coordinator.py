@@ -323,7 +323,14 @@ class MetaLearnerCoordinator:
         context: NetworkState
     ) -> List[AgentOutput]:
         """Stage 4: Execute selected agents."""
-        self.logger.info("Stage 4: Executing agents")
+        # Log data volume for diagnostics
+        conn_count = len(data.get('network_connections', []))
+        dns_count = len(data.get('dns_queries', []))
+        ntlm_count = len(data.get('ntlm_logs', []))
+        self.logger.info(
+            f"Stage 4: Executing {len(selected_agents)} agents on "
+            f"{conn_count} connections, {dns_count} DNS, {ntlm_count} NTLM"
+        )
 
         outputs = []
 
@@ -334,7 +341,7 @@ class MetaLearnerCoordinator:
             # Sequential execution
             outputs = self._execute_agents_sequential(selected_agents, data, context)
 
-        # Log per-agent results before filtering
+        # Log per-agent results before filtering (INFO level for visibility)
         total_before = len(outputs)
         for o in outputs:
             error = (o.metadata or {}).get("error") if hasattr(o, 'metadata') and o.metadata else None
@@ -343,7 +350,15 @@ class MetaLearnerCoordinator:
                     f"Agent {o.agent_name} CRASHED: {error}"
                 )
             elif o.confidence == 0.0 and len(o.findings) == 0:
-                self.logger.debug(f"Agent {o.agent_name}: no findings")
+                # Near-miss info from metadata
+                near_miss = (o.metadata or {}).get("near_misses", [])
+                if near_miss:
+                    self.logger.info(
+                        f"Agent {o.agent_name}: no findings "
+                        f"(near misses: {'; '.join(near_miss[:3])})"
+                    )
+                else:
+                    self.logger.info(f"Agent {o.agent_name}: no findings")
             else:
                 self.logger.info(
                     f"Agent {o.agent_name}: {len(o.findings)} findings, "

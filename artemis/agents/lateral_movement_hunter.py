@@ -113,6 +113,11 @@ class LateralMovementHunter(BaseAgent):
             all_evidence.extend(result["evidence"])
             confidence_scores.append(result["confidence"])
 
+        # Collect near-miss diagnostics when no findings produced
+        near_misses = []
+        if not findings:
+            near_misses = self._collect_near_misses(internal_conns, connections)
+
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
         severity = Severity.HIGH if overall_confidence > 0.6 else Severity.MEDIUM
 
@@ -125,6 +130,7 @@ class LateralMovementHunter(BaseAgent):
             mitre_tactics=[t.value for t in self.tactics],
             mitre_techniques=self._collect_techniques(findings),
             recommended_actions=self._generate_recommendations(findings),
+            metadata={"near_misses": near_misses} if near_misses else {},
         )
 
     # ------------------------------------------------------------------
@@ -256,6 +262,37 @@ class LateralMovementHunter(BaseAgent):
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
+
+    def _collect_near_misses(
+        self, internal_conns: List[Dict], all_conns: List[Dict]
+    ) -> List[str]:
+        """Summarize closest-to-threshold lateral movement for diagnostics."""
+        misses = [f"{len(internal_conns)}/{len(all_conns)} conns are internal-to-internal"]
+
+        for label, ports, thresh_key in [
+            ("RDP", _RDP_PORTS, "rdp_fan_out_threshold"),
+            ("SMB", _SMB_PORTS, "smb_fan_out_threshold"),
+            ("SSH", _SSH_PORTS, "ssh_fan_out_threshold"),
+        ]:
+            src_targets: Dict[str, set] = defaultdict(set)
+            for conn in internal_conns:
+                if conn.get("destination_port") in ports:
+                    src = conn.get("source_ip", "")
+                    dst = conn.get("destination_ip", "")
+                    if src and dst and src != dst:
+                        src_targets[src].add(dst)
+            if src_targets:
+                top_src = max(src_targets, key=lambda s: len(src_targets[s]))
+                top_count = len(src_targets[top_src])
+                thresh = self.config[thresh_key]
+                misses.append(
+                    f"{label}: max {top_count} targets from {top_src} "
+                    f"(need {thresh})"
+                )
+            else:
+                misses.append(f"{label}: 0 connections")
+
+        return misses
 
     @staticmethod
     def _collect_techniques(findings: List[Finding]) -> List[str]:

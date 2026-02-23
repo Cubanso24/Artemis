@@ -55,6 +55,7 @@ class C2Hunter(BaseAgent):
         findings: List[Finding] = []
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
+        near_misses: List[str] = []
 
         connections = data.get("network_connections", [])
         dns_queries = data.get("dns_queries", [])
@@ -89,6 +90,10 @@ class C2Hunter(BaseAgent):
             all_evidence.extend(result["evidence"])
             confidence_scores.append(result["confidence"])
 
+        # Collect near-miss diagnostics when no findings produced
+        if not findings:
+            near_misses = self._collect_near_misses(connections, dns_queries)
+
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
         severity = (Severity.CRITICAL if overall_confidence > 0.8
                     else Severity.HIGH if overall_confidence > 0.6
@@ -103,6 +108,7 @@ class C2Hunter(BaseAgent):
             mitre_tactics=[t.value for t in self.tactics],
             mitre_techniques=self._collect_techniques(findings),
             recommended_actions=self._generate_recommendations(findings),
+            metadata={"near_misses": near_misses} if near_misses else {},
         )
 
     # ------------------------------------------------------------------
@@ -495,6 +501,46 @@ class C2Hunter(BaseAgent):
         counter = Counter(text.lower())
         length = len(text)
         return -sum((c / length) * math.log2(c / length) for c in counter.values())
+
+    def _collect_near_misses(
+        self, connections: List[Dict], dns_queries: List[Dict]
+    ) -> List[str]:
+        """Summarize the closest-to-threshold activity for diagnostics."""
+        misses = []
+        min_count = self.config["min_beacon_connections"]
+
+        # Beaconing: find the (src, dst:port) group with the most connections
+        groups: Dict[str, int] = defaultdict(int)
+        for conn in connections:
+            src = conn.get("source_ip")
+            dst = conn.get("destination_ip")
+            port = conn.get("destination_port")
+            if src and dst:
+                groups[f"{src}->{dst}:{port}"] += 1
+        if groups:
+            top_key, top_count = max(groups.items(), key=lambda x: x[1])
+            misses.append(
+                f"beacon: max {top_count} conns to same dest "
+                f"(need {min_count})"
+            )
+
+        # DNS tunneling: top parent domain query count
+        tunnel_thresh = self.config["dns_tunnel_query_threshold"]
+        parent_counts: Dict[str, int] = defaultdict(int)
+        for q in dns_queries:
+            domain = (q.get("domain") or "").lower()
+            parts = domain.split(".")
+            if len(parts) >= 2:
+                parent = ".".join(parts[-2:])
+                parent_counts[parent] += 1
+        if parent_counts:
+            top_parent, top_pcount = max(parent_counts.items(), key=lambda x: x[1])
+            misses.append(
+                f"dns_tunnel: max {top_pcount} queries to {top_parent} "
+                f"(need {tunnel_thresh})"
+            )
+
+        return misses
 
     @staticmethod
     def _collect_techniques(findings: List[Finding]) -> List[str]:

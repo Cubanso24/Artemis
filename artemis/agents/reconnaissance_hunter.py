@@ -66,6 +66,11 @@ class ReconnaissanceHunter(BaseAgent):
             all_evidence.extend(result["evidence"])
             confidence_scores.append(result["confidence"])
 
+        # Collect near-miss diagnostics when no findings produced
+        near_misses = []
+        if not findings:
+            near_misses = self._collect_near_misses(connections, dns_queries)
+
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
         severity = self._determine_severity(overall_confidence, findings)
 
@@ -78,6 +83,7 @@ class ReconnaissanceHunter(BaseAgent):
             mitre_tactics=[t.value for t in self.tactics],
             mitre_techniques=self._collect_techniques(findings),
             recommended_actions=self._generate_recommendations(findings),
+            metadata={"near_misses": near_misses} if near_misses else {},
         )
 
     # ------------------------------------------------------------------
@@ -342,6 +348,58 @@ class ReconnaissanceHunter(BaseAgent):
         elif confidence >= 0.6 or len(findings) >= 2:
             return Severity.MEDIUM
         return Severity.LOW
+
+    def _collect_near_misses(
+        self, connections: List[Dict], dns_queries: List[Dict]
+    ) -> List[str]:
+        """Summarize closest-to-threshold recon activity for diagnostics."""
+        misses = []
+        port_thresh = self.config["port_scan_unique_ports"]
+        host_thresh = self.config["host_sweep_unique_hosts"]
+
+        # Port scan: find source with the most unique destination ports
+        src_ports: Dict[str, set] = defaultdict(set)
+        for conn in connections:
+            src = conn.get("source_ip")
+            if src:
+                src_ports[src].add(conn.get("destination_port"))
+        if src_ports:
+            top_src = max(src_ports, key=lambda s: len(src_ports[s]))
+            top_port_count = len(src_ports[top_src])
+            misses.append(
+                f"port_scan: max {top_port_count} unique ports from {top_src} "
+                f"(need {port_thresh})"
+            )
+
+        # Host sweep: find source with the most unique destination hosts
+        src_hosts: Dict[str, set] = defaultdict(set)
+        for conn in connections:
+            src = conn.get("source_ip")
+            if src:
+                src_hosts[src].add(conn.get("destination_ip"))
+        if src_hosts:
+            top_src = max(src_hosts, key=lambda s: len(src_hosts[s]))
+            top_host_count = len(src_hosts[top_src])
+            misses.append(
+                f"host_sweep: max {top_host_count} unique hosts from {top_src} "
+                f"(need {host_thresh})"
+            )
+
+        # DNS recon: top query volume per source
+        dns_thresh = self.config["dns_query_volume_threshold"]
+        src_dns: Dict[str, int] = defaultdict(int)
+        for q in dns_queries:
+            src = q.get("source_ip")
+            if src:
+                src_dns[src] += 1
+        if src_dns:
+            top_src = max(src_dns, key=src_dns.get)
+            misses.append(
+                f"dns_recon: max {src_dns[top_src]} queries from {top_src} "
+                f"(need {dns_thresh})"
+            )
+
+        return misses
 
     @staticmethod
     def _collect_techniques(findings: List[Finding]) -> List[str]:
