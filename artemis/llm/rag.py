@@ -33,19 +33,21 @@ logger = logging.getLogger("artemis.llm.rag")
 # ---------------------------------------------------------------------------
 
 _OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-# Use the same model already running for LLM inference — no need for a
-# separate embedding model when running locally.
-_EMBED_MODEL = os.getenv(
-    "RAG_EMBED_MODEL",
-    os.getenv("OLLAMA_MODEL", "glm-4.7-flash:latest"),
-)
+# Embedding model — must be an actual embedding model, NOT a chat model.
+# Falls back to sentence-transformers if Ollama embeddings fail.
+_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
 
 # Lazy-loaded fallback
 _FALLBACK_ENCODER = None
+# Circuit breaker: once Ollama embeddings fail, skip straight to fallback
+_OLLAMA_EMBED_FAILED = False
 
 
 def _embed_ollama(texts: List[str]) -> Optional[List[List[float]]]:
     """Get embeddings from the Ollama server."""
+    global _OLLAMA_EMBED_FAILED
+    if _OLLAMA_EMBED_FAILED:
+        return None
     try:
         results = []
         for text in texts:
@@ -55,14 +57,22 @@ def _embed_ollama(texts: List[str]) -> Optional[List[List[float]]]:
                 timeout=30,
             )
             if resp.status_code != 200:
+                logger.warning(
+                    f"Ollama embedding failed (status {resp.status_code}) "
+                    f"for model '{_EMBED_MODEL}' — switching to "
+                    f"sentence-transformers fallback"
+                )
+                _OLLAMA_EMBED_FAILED = True
                 return None
             vec = resp.json().get("embedding")
             if vec is None:
+                _OLLAMA_EMBED_FAILED = True
                 return None
             results.append(vec)
         return results
     except Exception as e:
         logger.debug(f"Ollama embedding failed: {e}")
+        _OLLAMA_EMBED_FAILED = True
         return None
 
 
