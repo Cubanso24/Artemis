@@ -385,6 +385,7 @@ class CrewOrchestrator:
         llm_model: str = "ollama/llama3.1",
         process: str = "sequential",
         verbose: bool = True,
+        num_ctx: Optional[int] = None,
     ):
         """
         Args:
@@ -395,6 +396,8 @@ class CrewOrchestrator:
                        ``"ollama/<model>"`` (e.g. ``"ollama/llama3.1"``).
             process: CrewAI process type — "sequential" or "hierarchical".
             verbose: Enable verbose CrewAI logging.
+            num_ctx: Ollama context window size (default from OLLAMA_NUM_CTX
+                     env var or 131072).
         """
         if not _CREWAI_AVAILABLE:
             raise ImportError(
@@ -412,7 +415,14 @@ class CrewOrchestrator:
             "OLLAMA_API_BASE",
             os.environ.get("OLLAMA_URL", "http://localhost:11434"),
         )
-        self.llm = LLM(model=llm_model, base_url=ollama_base)
+        self.num_ctx = num_ctx or int(
+            os.environ.get("OLLAMA_NUM_CTX", "131072")
+        )
+        self.llm = LLM(
+            model=llm_model,
+            base_url=ollama_base,
+            num_ctx=self.num_ctx,
+        )
 
         self.process = (
             Process.hierarchical if process == "hierarchical"
@@ -422,6 +432,7 @@ class CrewOrchestrator:
         logger.info(
             f"CrewOrchestrator initialised (model={llm_model}, "
             f"base_url={ollama_base}, process={process}, "
+            f"num_ctx={self.num_ctx}, "
             f"rag={'enabled' if rag_store else 'disabled'})"
         )
 

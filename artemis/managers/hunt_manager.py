@@ -485,6 +485,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                         rag_store=getattr(coordinator, 'rag_store', None),
                         llm_model=f"ollama/{_ollama_model}",
                         process=_llm_cfg.get('crewai_process', 'sequential'),
+                        num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '131072')),
                     )
                     log.info('CrewAI orchestrator initialised — will use CrewAI for hunt cycles')
                 else:
