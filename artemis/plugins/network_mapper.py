@@ -3430,10 +3430,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
                     vendor = self._lookup_oui(mac)
                     if vendor:
                         node.vendor = vendor
-                    is_vm, platform = self._detect_virtual(mac)
-                    if is_vm:
+                    virt_platform = self._detect_virtual(mac)
+                    if virt_platform:
                         node.is_virtual = True
-                        node.virtual_platform = platform
+                        node.virtual_platform = virt_platform
                 if dhcp_hostname and dhcp_hostname != '-':
                     node.hostnames.add(dhcp_hostname.lower())
 
@@ -3798,7 +3798,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 pass  # Don't downgrade
             elif device_type:
                 node.device_type = device_type
-                node.roles.add(self._infer_node_role(ports_served))
+                self._infer_node_role(node)
 
         # Build host_id
         self._build_host_id_for_node(ip, ip_to_keys)
