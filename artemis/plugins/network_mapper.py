@@ -4331,12 +4331,12 @@ class NetworkMapperPlugin(ArtemisPlugin):
             'device_inventory': device_inventory_ordered,
             'sensor_inventory': sensor_inventory_out,
             'device_counts': device_type_real_counts,
-            'profiled': sum(1 for n in nodes if n.is_internal and n.device_type),
-            'unprofiled': sum(1 for n in nodes if n.is_internal and not n.device_type),
-            'virtual_machines': sum(1 for n in nodes if n.is_internal and n.is_virtual),
-            'routers': sum(1 for n in nodes if n.is_internal and n.device_type == 'router'),
-            'firewalls': sum(1 for n in nodes if n.is_internal and n.device_type == 'firewall'),
-            'gateways': sum(1 for n in nodes if n.is_internal and n.device_type in ('gateway', 'router', 'firewall') and n.is_gateway_for),
+            'profiled': sum(1 for n in self._profilable_nodes() if n.device_type),
+            'unprofiled': sum(1 for n in self._profilable_nodes() if not n.device_type),
+            'virtual_machines': sum(1 for n in nodes if n.is_virtual),
+            'routers': sum(1 for n in nodes if n.device_type == 'router'),
+            'firewalls': sum(1 for n in nodes if n.device_type == 'firewall'),
+            'gateways': sum(1 for n in nodes if n.device_type in ('gateway', 'router', 'firewall') and n.is_gateway_for),
             'mac_tracking': {
                 'total_macs': len(self.mac_history),
                 'multi_ip_count': sum(
