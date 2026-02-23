@@ -1773,6 +1773,28 @@
             }
         }
 
+        async function _refreshGraphData() {
+            // Background data refresh: updates data stores and search index
+            // without destroying the graph, preserving zoom/pan/VLAN.
+            try {
+                const response = await fetch('/api/network-graph');
+                const graphData = await response.json();
+                if (graphData.error) return;
+
+                _fullGraphData = graphData;
+                _deviceFlags = graphData.device_flags || {};
+                _lanGroups = graphData.lan_groups || [];
+                buildVlanTabs(graphData);
+                renderLanGroupChips();
+                // Update search index so newly profiled nodes are searchable
+                if (networkGraph) {
+                    networkGraphData = { raw: graphData, cy: networkGraph };
+                }
+            } catch(e) {
+                // Silently ignore background refresh errors
+            }
+        }
+
         function buildVlanTabs(graphData) {
             const tabBar = document.getElementById('vlan-tabs');
 
@@ -3352,7 +3374,9 @@
 
                     if (match.group !== 'internet') {
                         const nodeVlan = match.vlan || '0';
-                        if (_activeVlan !== null && nodeVlan !== _activeVlan) switchVlanTab(nodeVlan);
+                        // Always switch to the device's VLAN for a focused zoom
+                        const vlanTabsVisible = document.getElementById('vlan-tabs').style.display !== 'none';
+                        if (vlanTabsVisible && _activeVlan !== nodeVlan) switchVlanTab(nodeVlan);
                     }
 
                     // If the node is inside a collapsed subnet, expand it first
@@ -3823,12 +3847,13 @@
                 const llmBadge = document.getElementById('continuous-llm-badge');
                 llmBadge.style.display = result.stage_detail === 'llm_analysis' ? 'inline' : 'none';
 
-                // Refresh the graph periodically when new data comes in
+                // Refresh graph data periodically so new nodes are
+                // searchable, but don't re-render (preserves zoom/pan/VLAN).
                 if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
                 const now = Date.now();
                 if (result.total_nodes && now - handleContinuousProgress._lastRefresh > 30000) {
                     handleContinuousProgress._lastRefresh = now;
-                    loadNetworkGraph(true);
+                    _refreshGraphData();
                     loadNetworkSummary();
                 }
 
