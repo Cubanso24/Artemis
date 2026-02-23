@@ -30,6 +30,7 @@ from artemis.utils.logging_config import ArtemisLogger
 # Default Ollama models — good general-purpose choices
 _DEFAULT_OLLAMA_MODEL = "llama3.1"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
+_DEFAULT_OLLAMA_NUM_CTX = 131072  # llama3.1 supports 128k context
 
 
 class LLMClient:
@@ -50,6 +51,7 @@ class LLMClient:
         coordinator_model: Optional[str] = None,
         agent_model: Optional[str] = None,
         ollama_url: Optional[str] = None,
+        ollama_num_ctx: Optional[int] = None,
     ):
         """
         Initialize the LLM client.
@@ -61,6 +63,7 @@ class LLMClient:
             coordinator_model: Model for coordinator tier
             agent_model: Model for agent tier
             ollama_url: Ollama server URL (default http://localhost:11434)
+            ollama_num_ctx: Context window size for Ollama (default 131072)
         """
         self.logger = ArtemisLogger.setup_logger("artemis.llm.client")
         self.backend = backend.lower()
@@ -71,6 +74,10 @@ class LLMClient:
 
         self._anthropic_client: Optional[Any] = None
         self._ollama_ok = False
+        self.ollama_num_ctx = (
+            ollama_num_ctx
+            or int(os.getenv("OLLAMA_NUM_CTX", str(_DEFAULT_OLLAMA_NUM_CTX)))
+        )
 
         # ----------------------------------------------------------
         # Resolve backend
@@ -164,7 +171,8 @@ class LLMClient:
             self.logger.info(
                 f"LLM client initialized [ollama @ {self.ollama_url}] "
                 f"(coordinator={self.coordinator_model}, "
-                f"agent={self.agent_model})"
+                f"agent={self.agent_model}, "
+                f"num_ctx={self.ollama_num_ctx})"
             )
             return True
 
@@ -320,6 +328,7 @@ class LLMClient:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": self.ollama_num_ctx,
             },
         }
 

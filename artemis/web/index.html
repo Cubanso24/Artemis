@@ -2028,6 +2028,11 @@
                 });
             });
 
+            // Build a set of visible node IDs for O(1) edge endpoint lookups
+            const visibleNodeIds = new Set(
+                elements.filter(el => el.group === 'nodes').map(el => el.data.id)
+            );
+
             // Add edges
             const edgeSet = new Set();
             graphData.edges.forEach(e => {
@@ -2035,8 +2040,8 @@
                 const tgtId = e.to;
 
                 // Check if source/target exist in elements
-                const srcExists = elements.some(el => el.group === 'nodes' && el.data.id === srcId);
-                const tgtExists = elements.some(el => el.group === 'nodes' && el.data.id === tgtId);
+                const srcExists = visibleNodeIds.has(srcId);
+                const tgtExists = visibleNodeIds.has(tgtId);
 
                 // If a node is collapsed, remap to its subnet parent
                 let src = srcId, tgt = tgtId;

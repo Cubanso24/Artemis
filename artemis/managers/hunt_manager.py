@@ -620,8 +620,10 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                             if llm_synth:
                                 try:
                                     db.save_synthesis(cycle, llm_synth)
-                                except Exception:
-                                    pass
+                                    log.info(f'Backfill run #{run_id}: saved LLM synthesis '
+                                             f'(severity={llm_synth.get("overall_severity", "?")})')
+                                except Exception as se:
+                                    log.error(f'Backfill run #{run_id}: failed to save LLM synthesis: {se}')
                             log.info(f'Backfill agent run #{run_id} done')
                         except Exception as ae:
                             log.warning(f'Backfill agent run #{run_id} error: {ae}')
