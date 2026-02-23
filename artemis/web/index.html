@@ -1748,7 +1748,7 @@
 
                 // Store full data for VLAN filtering
                 _fullGraphData = graphData;
-                _activeVlan = null;
+                const previousVlan = _activeVlan;
 
                 // Store flags and groups from server
                 _deviceFlags = graphData.device_flags || {};
@@ -1757,7 +1757,21 @@
                 // Build VLAN sub-tabs
                 buildVlanTabs(graphData);
 
-                renderNetworkGraph(graphData);
+                // Preserve the user's current VLAN selection across reloads
+                if (previousVlan !== null) {
+                    _activeVlan = previousVlan;
+                    renderNetworkGraph(_getVlanFilteredData(previousVlan));
+                    // Re-highlight the active VLAN tab
+                    document.querySelectorAll('#vlan-tabs .vlan-tab').forEach(btn => {
+                        btn.classList.remove('active');
+                        if (btn.textContent.includes(previousVlan === '0' ? 'Untagged' : `VLAN ${previousVlan}`)) {
+                            btn.classList.add('active');
+                        }
+                    });
+                } else {
+                    _activeVlan = null;
+                    renderNetworkGraph(graphData);
+                }
                 renderLanGroupChips();
                 loadNetworkSummary();
 
@@ -3660,12 +3674,13 @@
                         'linear-gradient(90deg, #1E88E5, #42A5F5)';
                 }
 
-                // Periodically refresh the graph to show newly profiled devices
+                // Periodically refresh graph data so newly profiled devices
+                // are searchable, but don't re-render (preserves zoom/pan/VLAN).
                 if (!handleBgProfileProgress._lastRefresh) handleBgProfileProgress._lastRefresh = 0;
                 const now = Date.now();
                 if (now - handleBgProfileProgress._lastRefresh > 30000) {
                     handleBgProfileProgress._lastRefresh = now;
-                    loadNetworkGraph();
+                    _refreshGraphData();
                     loadNetworkSummary();
                 }
             }
