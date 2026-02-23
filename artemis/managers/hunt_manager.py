@@ -336,8 +336,9 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
                 except Exception as e:
                     log.error(f"Worker thread error: {e}")
 
-        # Final save
-        nm.save_map()
+        # Merge enrichment into latest map from disk (continuous
+        # ingest may have updated it while we were profiling).
+        nm.merge_enrichment_and_save()
 
         final_stats = nm.get_profiling_stats()
         send('complete',

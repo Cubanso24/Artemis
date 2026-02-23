@@ -9,6 +9,7 @@ pyyaml>=6.0                    # Sigma rule parsing
 
 # LLM integration
 anthropic>=0.39.0              # Claude API for LLM-powered hunting
+litellm>=1.0.0                 # LLM routing (required for CrewAI + Ollama)
 
 # RAG (Retrieval-Augmented Generation)
 chromadb>=0.4.0                # Vector store for historical findings & threat intel

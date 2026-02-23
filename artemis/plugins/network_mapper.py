@@ -6,6 +6,7 @@ Tracks hosts, connections, services, and communication patterns.
 Supports multi-sensor environments with per-sensor network segmentation.
 """
 
+import fcntl
 import json
 import logging
 import re
@@ -3965,27 +3966,35 @@ class NetworkMapperPlugin(ArtemisPlugin):
     def save_map(self) -> str:
         """Save current network map to disk using NDJSON (one node per line).
 
-        Uses atomic write (temp file + rename) to prevent the API process
-        from loading a half-written file if it restarts mid-save.
+        Uses a file lock to prevent concurrent writes from multiple
+        processes (e.g. continuous ingest + background profiler), and
+        atomic write (temp file + rename) so readers never see a
+        half-written file.
         """
         map_file = self.output_dir / "current_map.json"
         tmp_file = self.output_dir / "current_map.json.tmp"
+        lock_file = self.output_dir / "current_map.json.lock"
 
-        with open(tmp_file, 'w') as f:
-            # Header line
-            header = {
-                'timestamp': datetime.now().isoformat(),
-                'total_nodes': len(self.nodes),
-                'sensors': list(self.sensors),
-            }
-            f.write(json.dumps(header, cls=_SafeEncoder) + '\n')
+        with open(lock_file, 'w') as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                with open(tmp_file, 'w') as f:
+                    # Header line
+                    header = {
+                        'timestamp': datetime.now().isoformat(),
+                        'total_nodes': len(self.nodes),
+                        'sensors': list(self.sensors),
+                    }
+                    f.write(json.dumps(header, cls=_SafeEncoder) + '\n')
 
-            # One node per line — no need to hold full JSON tree in memory
-            for node in self.nodes.values():
-                f.write(json.dumps(node.to_dict(), cls=_SafeEncoder) + '\n')
+                    # One node per line — no need to hold full JSON tree in memory
+                    for node in self.nodes.values():
+                        f.write(json.dumps(node.to_dict(), cls=_SafeEncoder) + '\n')
 
-        # Atomic replace — readers always see a complete file
-        tmp_file.replace(map_file)
+                # Atomic replace — readers always see a complete file
+                tmp_file.replace(map_file)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
 
         self.last_save = datetime.now()
         logger.info(
@@ -3997,6 +4006,74 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
         self._generate_summary()
         return str(map_file)
+
+    # Enrichment fields that the bg profiler updates on each node.
+    # Everything else (connections, bytes, ext_conn_detail) belongs to
+    # the continuous-ingest process and must not be overwritten.
+    _ENRICHMENT_FIELDS = (
+        'device_type', 'roles', 'os_info', 'vendor', 'device_model',
+        'is_virtual', 'virtual_platform', 'domain',
+        'hostnames', 'netbios_names', 'mac_address',
+        'software', 'user_agents',
+        'dhcp_client_fqdn', 'dhcp_vendor_class',
+        'ja3_fingerprints', 'ja3s_fingerprints',
+        'tls_server_names', 'tls_versions_seen',
+        'dns_profile', 'rdp_info',
+        'cert_subjects', 'cert_issuers', 'file_mime_types',
+        'known_services_names',
+        'tunnel_info', 'ntp_server', 'radius_server',
+        'mqtt_info', 'ics_protocols', 'notices', 'traceroute_hops',
+        'host_id',
+    )
+
+    def merge_enrichment_and_save(self) -> str:
+        """Reload the latest map from disk, merge enrichment data, and save.
+
+        Used by the background profiler so it doesn't clobber connection
+        data that the concurrent continuous-ingest process has been
+        accumulating.  Only enrichment-related fields (device_type, OS,
+        roles, vendor, etc.) are copied from the in-memory nodes onto
+        the disk-loaded nodes.
+        """
+        enriched = dict(self.nodes)  # snapshot of enriched nodes
+
+        # Reload the authoritative map (written by continuous ingest)
+        self.initialize()
+        disk_count = len(self.nodes)
+
+        merged = 0
+        for key, enriched_node in enriched.items():
+            target = self.nodes.get(key)
+            if target is None:
+                # Node existed when bg profiler started but was removed
+                # from disk — re-add it so we don't lose devices.
+                self.nodes[key] = enriched_node
+                merged += 1
+                continue
+            # Copy enrichment fields onto the disk-loaded node
+            for attr in self._ENRICHMENT_FIELDS:
+                val = getattr(enriched_node, attr, None)
+                if val is None:
+                    continue
+                # Only overwrite if the enriched value is non-empty
+                if isinstance(val, (set, list, dict)):
+                    if val:
+                        setattr(target, attr, val)
+                elif isinstance(val, str):
+                    if val:
+                        setattr(target, attr, val)
+                elif isinstance(val, bool):
+                    if val:
+                        setattr(target, attr, val)
+                else:
+                    setattr(target, attr, val)
+            merged += 1
+
+        logger.info(
+            f"Merge: {disk_count} nodes from disk, "
+            f"{len(enriched)} enriched, {merged} merged"
+        )
+        return self.save_map()
 
     def _generate_summary(self):
         """Generate human-readable network summary."""
