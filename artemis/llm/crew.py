@@ -29,6 +29,7 @@ Design decisions
 """
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -51,7 +52,7 @@ logger = logging.getLogger("artemis.llm.crew")
 _CREWAI_AVAILABLE = False
 
 try:
-    from crewai import Agent, Task, Crew, Process
+    from crewai import Agent, Task, Crew, Process, LLM
     from crewai.tools import tool as crewai_tool
     _CREWAI_AVAILABLE = True
 except ImportError:
@@ -187,8 +188,12 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
 # CrewAI Agent definitions
 # ---------------------------------------------------------------------------
 
-def _build_agents(llm_model: str, tools: list) -> Dict[str, Any]:
+def _build_agents(llm, tools: list) -> Dict[str, Any]:
     """Create the CrewAI Agent instances.
+
+    Args:
+        llm: A CrewAI ``LLM`` instance (not a raw string).
+        tools: List of CrewAI tool callables.
 
     Returns a dict mapping agent_name -> CrewAI Agent.
     """
@@ -209,7 +214,7 @@ def _build_agents(llm_model: str, tools: list) -> Dict[str, Any]:
             "hunters and produce actionable intelligence for incident response."
         ),
         tools=tools,
-        llm=llm_model,
+        llm=llm,
         verbose=True,
         allow_delegation=True,
     )
@@ -260,7 +265,7 @@ def _build_agents(llm_model: str, tools: list) -> Dict[str, Any]:
             goal=cfg["goal"],
             backstory=backstory,
             tools=tools,
-            llm=llm_model,
+            llm=llm,
             verbose=True,
             allow_delegation=False,
         )
@@ -400,6 +405,15 @@ class CrewOrchestrator:
         self.detectors = detectors
         self.rag_store = rag_store
         self.llm_model = llm_model
+
+        # Build a proper CrewAI LLM instance so LiteLLM knows the
+        # Ollama base URL (passing a bare string fails silently).
+        ollama_base = os.environ.get(
+            "OLLAMA_API_BASE",
+            os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+        )
+        self.llm = LLM(model=llm_model, base_url=ollama_base)
+
         self.process = (
             Process.hierarchical if process == "hierarchical"
             else Process.sequential
@@ -407,7 +421,8 @@ class CrewOrchestrator:
         self.verbose = verbose
         logger.info(
             f"CrewOrchestrator initialised (model={llm_model}, "
-            f"process={process}, rag={'enabled' if rag_store else 'disabled'})"
+            f"base_url={ollama_base}, process={process}, "
+            f"rag={'enabled' if rag_store else 'disabled'})"
         )
 
     def hunt(
@@ -430,13 +445,13 @@ class CrewOrchestrator:
         )
 
         # Build agents and tasks
-        crew_agents = _build_agents(self.llm_model, tools)
+        crew_agents = _build_agents(self.llm, tools)
         tasks = _build_tasks(crew_agents, data, network_state)
 
         # Assemble and run the crew
         manager_llm = None
         if self.process == Process.hierarchical:
-            manager_llm = self.llm_model
+            manager_llm = self.llm
 
         crew = Crew(
             agents=list(crew_agents.values()),
