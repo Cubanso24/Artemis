@@ -448,9 +448,13 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                 log.warning(f'Could not read LLM config: {_e}')
 
         _llm_backend = _llm_cfg.get('backend') or os.environ.get('LLM_BACKEND', 'auto')
-        # Push config values into env so LLMClient picks them up
+        # Push config values into env so LLMClient picks them up.
+        # Also set OLLAMA_API_BASE which CrewAI's internal litellm expects.
         if _llm_cfg.get('ollama_url'):
             os.environ['OLLAMA_URL'] = _llm_cfg['ollama_url']
+            os.environ['OLLAMA_API_BASE'] = _llm_cfg['ollama_url']
+        elif os.environ.get('OLLAMA_URL') and not os.environ.get('OLLAMA_API_BASE'):
+            os.environ['OLLAMA_API_BASE'] = os.environ['OLLAMA_URL']
         if _llm_cfg.get('ollama_model'):
             os.environ['OLLAMA_MODEL'] = _llm_cfg['ollama_model']
         if _llm_cfg.get('anthropic_api_key'):
