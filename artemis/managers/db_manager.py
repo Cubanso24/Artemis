@@ -596,21 +596,33 @@ class DatabaseManager:
 
     def write_progress(self, hunt_id: str, pid: int, stage: str,
                        message: str, progress: int, data: dict = None):
-        """Write job progress from the subprocess."""
-        conn = self._connect()
-        try:
-            conn.execute("""
-                INSERT OR REPLACE INTO hunt_progress
-                    (hunt_id, pid, stage, message, progress, data, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                hunt_id, pid, stage, message, progress,
-                _dumps(data) if data else None,
-                datetime.now().isoformat(),
-            ))
-            conn.commit()
-        finally:
-            conn.close()
+        """Write job progress from the subprocess.
+
+        Retries on ``OperationalError`` (database-locked) to tolerate
+        concurrent writes from the three pipeline processes.
+        """
+        for attempt in range(4):
+            conn = self._connect()
+            try:
+                conn.execute("""
+                    INSERT OR REPLACE INTO hunt_progress
+                        (hunt_id, pid, stage, message, progress, data, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    hunt_id, pid, stage, message, progress,
+                    _dumps(data) if data else None,
+                    datetime.now().isoformat(),
+                ))
+                conn.commit()
+                return
+            except sqlite3.OperationalError:
+                if attempt < 3:
+                    import time
+                    time.sleep(0.2 * (2 ** attempt))  # 0.2s, 0.4s, 0.8s
+                else:
+                    raise
+            finally:
+                conn.close()
 
     def read_progress(self, hunt_id: str) -> dict | None:
         """Read current progress for a job."""
