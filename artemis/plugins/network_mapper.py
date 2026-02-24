@@ -415,6 +415,18 @@ class NetworkMapperPlugin(ArtemisPlugin):
             for src_ip, count in node_data.get('top_sources', {}).items():
                 node.connections_from[src_ip] = int(count)
 
+        # Restore timestamps (serialized as ISO strings, stored as datetime)
+        if 'first_seen' in node_data:
+            try:
+                node.first_seen = datetime.fromisoformat(node_data['first_seen'])
+            except (ValueError, TypeError):
+                pass
+        if 'last_seen' in node_data:
+            try:
+                node.last_seen = datetime.fromisoformat(node_data['last_seen'])
+            except (ValueError, TypeError):
+                pass
+
         self.nodes[key] = node
         self.sensors.add(sensor_id)
 

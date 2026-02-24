@@ -583,18 +583,69 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                           'new_dns': dns_count, 'new_ntlm': ntlm_count,
                           'total_nodes': total_nodes})
 
-                    # Auto-profile unprofiled devices
+                    # Auto-profile unprofiled devices (deep profiling)
+                    # Uses the full windowed query approach (23 parallel
+                    # Splunk queries per window) and goes back to when each
+                    # device was first seen on the network.
                     try:
                         stats = nm.get_profiling_stats()
                         unprofiled = stats.get('unprofiled', 0)
                         if unprofiled > 0:
-                            log.info(f'Cycle {cycle}: auto-profiling '
-                                     f'{unprofiled} devices')
+                            # Determine time range from earliest first_seen
+                            # of unprofiled devices
+                            unprofiled_nodes = [
+                                n for n in nm.nodes.values()
+                                if not n.device_type and n.is_internal
+                            ]
+                            if unprofiled_nodes:
+                                earliest = min(
+                                    n.first_seen for n in unprofiled_nodes
+                                )
+                                age_secs = (
+                                    datetime.now() - earliest
+                                ).total_seconds()
+                                age_hours = max(1, int(age_secs / 3600) + 1)
+                                if age_hours >= 24:
+                                    age_days = (age_hours + 23) // 24
+                                    profile_time_range = f'-{age_days}d'
+                                else:
+                                    profile_time_range = f'-{age_hours}h'
+                            else:
+                                profile_time_range = f'-{lookback_minutes}m'
+
+                            log.info(
+                                f'Cycle {cycle}: deep profiling '
+                                f'{unprofiled} devices '
+                                f'(time_range={profile_time_range})'
+                            )
+                            send('running',
+                                 f'Cycle {cycle}: profiling {unprofiled} '
+                                 f'devices ({profile_time_range})...',
+                                 55, {'cycle': cycle, 'pipeline': 'data',
+                                      'stage_detail': 'auto_profiling',
+                                      'total_nodes': total_nodes})
+
+                            def _profile_progress(stage, message, pct):
+                                send('running',
+                                     f'Cycle {cycle}: profiling — '
+                                     f'{message}',
+                                     50 + pct // 10,
+                                     {'cycle': cycle, 'pipeline': 'data',
+                                      'stage_detail': 'auto_profiling',
+                                      'total_nodes': total_nodes,
+                                      'unprofiled': unprofiled})
+
                             profile_result = nm.profile_devices(
                                 pipeline.splunk,
-                                time_range=f'-{lookback_minutes}m',
+                                time_range=profile_time_range,
+                                progress_callback=_profile_progress,
                             )
                             nm.save_map()
+                            log.info(
+                                f'Cycle {cycle}: profiling complete — '
+                                f'{profile_result.get("classified", 0)} '
+                                f'classified'
+                            )
                     except Exception as pe:
                         log.warning(f'Cycle {cycle}: auto-profile error: {pe}')
 
