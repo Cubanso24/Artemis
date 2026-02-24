@@ -1788,9 +1788,16 @@ class HuntManager:
             else:
                 logger.warning(
                     f'Job {hunt_id} subprocess (pid {pid}) is no longer '
-                    f'alive — marking as failed'
+                    f'alive — marking as stopped'
                 )
-                self.db.clear_progress(hunt_id)
+                # Mark as complete instead of deleting so the frontend
+                # can still display the last known stats (classified count, etc.)
+                self.db.write_progress(
+                    hunt_id, pid, 'complete',
+                    'Pipeline stopped (process exited)',
+                    row.get('progress', 0),
+                    row.get('data'),
+                )
 
         if reconnected:
             logger.info(f'Reconnected to {reconnected} running job(s)')
