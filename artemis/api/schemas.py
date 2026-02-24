@@ -103,3 +103,24 @@ class LLMSettingsRequest(BaseModel):
     anthropic_api_key: Optional[str] = None
     orchestration: Optional[str] = None  # "standard" or "crewai"
     crewai_process: Optional[str] = None  # "sequential" or "hierarchical"
+
+
+# --- Interactive map: layout & annotations --------------------------------
+
+class MapLayoutSave(BaseModel):
+    """Save node positions on the interactive map."""
+    positions: Dict  # {node_id: {x: float, y: float, pinned: bool}}
+
+
+class AnnotationCreate(BaseModel):
+    """Create a map annotation."""
+    node_id: Optional[str] = None
+    annotation_type: str = "note"   # 'note', 'label', 'zone_boundary'
+    content: str
+    metadata: Optional[Dict] = None  # {color, x, y for freestanding, etc.}
+
+
+class AnnotationUpdate(BaseModel):
+    """Update an annotation."""
+    content: Optional[str] = None
+    metadata: Optional[Dict] = None

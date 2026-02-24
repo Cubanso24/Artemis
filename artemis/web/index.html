@@ -234,6 +234,21 @@
             margin-right: 4px;
         }
 
+        .graph-tool-btn {
+            border: 1px solid transparent !important;
+            opacity: 0.6;
+            transition: opacity 0.15s, border-color 0.15s;
+        }
+        .graph-tool-btn:hover {
+            opacity: 0.9;
+        }
+        .graph-tool-btn.active {
+            opacity: 1;
+            border-color: var(--accent-primary) !important;
+            background: var(--accent-primary) !important;
+            color: #fff !important;
+        }
+
         .progress-container {
             background: var(--bg-primary);
             border-radius: 6px;
@@ -1150,12 +1165,25 @@
                         </div>
                     </div>
                     <div id="continuous-detail" style="display:none; margin-top:8px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:8px;">
-                        <span id="continuous-cycle">Cycle: —</span>
-                        <span style="margin:0 8px;">|</span>
-                        <span id="continuous-nodes">Nodes: —</span>
-                        <span style="margin:0 8px;">|</span>
-                        <span id="continuous-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:11px; margin-right:6px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
-                        <span id="continuous-msg">Waiting...</span>
+                        <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+                            <span style="display:inline-flex; align-items:center; gap:4px;">
+                                <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:10px;"></i>
+                                <span style="font-weight:600;">Data:</span>
+                                <span id="continuous-data-msg">—</span>
+                            </span>
+                            <span style="color:var(--border-color);">|</span>
+                            <span style="display:inline-flex; align-items:center; gap:4px;">
+                                <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:10px;"></i>
+                                <span style="font-weight:600;">Analysis:</span>
+                                <span id="continuous-analysis-msg">—</span>
+                                <span id="continuous-queue-badge" style="display:none; background:#ff9800; color:#fff; padding:0 6px; border-radius:8px; font-size:10px; margin-left:4px;"></span>
+                            </span>
+                            <span style="color:var(--border-color);">|</span>
+                            <span id="continuous-cycle">Cycle: —</span>
+                            <span id="continuous-nodes">Nodes: —</span>
+                            <span id="continuous-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:11px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
+                        </div>
+                        <div id="continuous-msg" style="margin-top:4px; opacity:0.7;"></div>
                     </div>
                 </div>
 
@@ -1170,6 +1198,37 @@
                 </div>
 
                 <div id="vlan-tabs" class="vlan-tabs" style="display:none;"></div>
+
+                <!-- Interactive map toolbar -->
+                <div id="graph-toolbar" style="display:flex; align-items:center; gap:6px; padding:6px 10px; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:6px 6px 0 0; border-bottom:none; flex-wrap:wrap;">
+                    <div style="display:flex; align-items:center; gap:2px; background:var(--bg-tertiary); border-radius:4px; padding:2px;">
+                        <button class="btn btn-secondary graph-tool-btn active" id="tool-select" onclick="setGraphTool('select')" title="Select &amp; View" style="font-size:11px; padding:3px 8px; border-radius:3px;">
+                            <i class="fa-solid fa-arrow-pointer"></i>
+                        </button>
+                        <button class="btn btn-secondary graph-tool-btn" id="tool-move" onclick="setGraphTool('move')" title="Move Nodes" style="font-size:11px; padding:3px 8px; border-radius:3px;">
+                            <i class="fa-solid fa-up-down-left-right"></i>
+                        </button>
+                        <button class="btn btn-secondary graph-tool-btn" id="tool-annotate" onclick="setGraphTool('annotate')" title="Annotate" style="font-size:11px; padding:3px 8px; border-radius:3px;">
+                            <i class="fa-solid fa-note-sticky"></i>
+                        </button>
+                    </div>
+                    <span style="color:var(--border-color);">|</span>
+                    <label style="font-size:11px; color:var(--text-secondary);">Layout:</label>
+                    <select id="layout-algo" onchange="changeLayout(this.value)" style="padding:3px 6px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-secondary); color:var(--text-primary); font-size:11px;">
+                        <option value="dagre">Hierarchical</option>
+                        <option value="cose">Force-directed</option>
+                        <option value="circle">Circular</option>
+                        <option value="grid">Grid</option>
+                    </select>
+                    <button class="btn btn-secondary" onclick="resetLayout()" title="Reset to auto-layout" style="font-size:11px; padding:3px 8px;">
+                        <i class="fa-solid fa-arrows-rotate"></i> Reset Layout
+                    </button>
+                    <button class="btn btn-secondary" id="pin-all-btn" onclick="togglePinAll()" title="Lock all node positions" style="font-size:11px; padding:3px 8px;">
+                        <i class="fa-solid fa-lock-open"></i> Unlocked
+                    </button>
+                    <span style="flex:1;"></span>
+                    <span id="graph-tool-hint" style="font-size:11px; color:var(--text-secondary); font-style:italic;"></span>
+                </div>
 
                 <div id="network-graph"></div>
 
@@ -2314,36 +2373,55 @@
                 },
             ];
 
+            // Determine layout: use saved positions if available, else Dagre
+            const savedLayout = graphData.saved_layout || {};
+            const hasSavedPositions = Object.keys(savedLayout).length > 0;
+
+            const dagreLayoutConfig = {
+                name: 'dagre',
+                rankDir: 'TB',
+                rankSep: 120,
+                nodeSep: 60,
+                edgeSep: 30,
+                animate: false,
+                fit: true,
+                padding: 40,
+                spacingFactor: 1.2,
+                rank: function(node) {
+                    if (node.hasClass('internet-cloud')) return 0;
+                    if (node.hasClass('subnet-group')) {
+                        const children = node.children();
+                        if (children.length > 0) {
+                            const tiers = children.map(c => c.data('_tier') !== undefined ? c.data('_tier') : 3);
+                            return Math.min(...tiers);
+                        }
+                        return 3;
+                    }
+                    return node.data('_tier') !== undefined ? node.data('_tier') : 3;
+                },
+            };
+
+            // If we have saved positions, use preset layout
+            let layoutConfig = dagreLayoutConfig;
+            if (hasSavedPositions) {
+                layoutConfig = {
+                    name: 'preset',
+                    positions: function(node) {
+                        const pos = savedLayout[node.id()];
+                        if (pos) return { x: pos.x, y: pos.y };
+                        return undefined; // fallback to random
+                    },
+                    fit: true,
+                    padding: 40,
+                };
+            }
+
             // Create Cytoscape instance
             networkGraph = cytoscape({
                 container: container,
                 elements: elements,
                 style: cyStyle,
-                layout: {
-                    name: 'dagre',
-                    rankDir: 'TB',
-                    rankSep: 120,
-                    nodeSep: 60,
-                    edgeSep: 30,
-                    animate: false,
-                    fit: true,
-                    padding: 40,
-                    spacingFactor: 1.2,
-                    // Use tier as rank constraint
-                    rank: function(node) {
-                        if (node.hasClass('internet-cloud')) return 0;
-                        if (node.hasClass('subnet-group')) {
-                            // Use the minimum tier of children so the group ranks properly
-                            const children = node.children();
-                            if (children.length > 0) {
-                                const tiers = children.map(c => c.data('_tier') !== undefined ? c.data('_tier') : 3);
-                                return Math.min(...tiers);
-                            }
-                            return 3;
-                        }
-                        return node.data('_tier') !== undefined ? node.data('_tier') : 3;
-                    },
-                },
+                layout: layoutConfig,
                 minZoom: 0.1,
                 maxZoom: 4,
                 wheelSensitivity: 0.3,
@@ -2432,6 +2510,13 @@
                     return;
                 }
 
+                // Annotate mode: prompt for note on this node
+                if (_currentGraphTool === 'annotate') {
+                    const content = prompt('Add note for ' + nodeId + ':');
+                    if (content) _createAnnotation(nodeId, content);
+                    return;
+                }
+
                 const rawNode = rawRef.nodes.find(n => n.id === nodeId);
                 if (rawNode) {
                     showNodeDetails(rawNode);
@@ -2446,6 +2531,40 @@
                 const rawNode = rawRef.nodes.find(n => n.id === nodeId);
                 showContextMenu(evt.originalEvent, nodeId, rawNode);
             });
+
+            // --- Drag-and-drop position saving ---
+            networkGraph.on('dragfree', 'node', function(evt) {
+                if (_currentGraphTool !== 'move') return;
+                const node = evt.target;
+                const nodeId = node.id();
+                if (nodeId.startsWith('subnet:')) return;
+                const pos = node.position();
+                // Save position to backend
+                _pendingLayoutSaves[nodeId] = { x: pos.x, y: pos.y, pinned: _allPinned };
+                _debounceSaveLayout();
+            });
+
+            // Disable node dragging unless in move mode
+            networkGraph.nodes().ungrabify();
+
+            // --- Double-click for freestanding annotation ---
+            networkGraph.on('dbltap', function(evt) {
+                if (_currentGraphTool !== 'annotate') return;
+                if (evt.target !== networkGraph) return; // only on background
+                const pos = evt.position;
+                const content = prompt('Enter annotation text:');
+                if (!content) return;
+                _createAnnotation(null, content, { x: pos.x, y: pos.y });
+            });
+
+            // --- Click node in annotate mode → add note ---
+            const origTapHandler = networkGraph._private.emitter;
+            // We intercept via the existing tap handler above;
+            // annotation mode is handled in the tap handler's
+            // annotate-mode check below.
+
+            // Render existing annotations from the graph data
+            _renderAnnotationOverlays(graphData.annotations || []);
         }
 
         function showNodeDetails(node, delayScroll) {
@@ -3825,79 +3944,117 @@
 
         function handleContinuousProgress(data) {
             const result = data.result || {};
+            const pipeline = data.pipeline || '';  // 'data' or 'analysis'
 
             if (data.stage === 'complete') {
-                // Graceful stop
-                _stopRequested = false;
-                setContinuousRunning(false);
-                document.getElementById('continuous-msg').textContent = data.message || 'Ingestion stopped';
-                addLog(`Live ingestion stopped: ${data.message}`, 'info');
-                // Refresh graph one final time
-                loadNetworkGraph();
-                loadNetworkSummary();
-                setTimeout(() => {
-                    document.getElementById('continuous-detail').style.display = 'none';
-                }, 5000);
+                // Only mark as fully stopped if no pipeline identifier
+                // (i.e. the composite stop message)
+                if (!pipeline) {
+                    _stopRequested = false;
+                    setContinuousRunning(false);
+                    document.getElementById('continuous-msg').textContent = data.message || 'Pipelines stopped';
+                    addLog(`Live ingestion stopped: ${data.message}`, 'info');
+                    loadNetworkGraph();
+                    loadNetworkSummary();
+                    setTimeout(() => {
+                        document.getElementById('continuous-detail').style.display = 'none';
+                    }, 5000);
+                }
+                return;
 
             } else if (data.stage === 'error') {
-                _stopRequested = false;
-                setContinuousRunning(false);
-                document.getElementById('continuous-msg').textContent = data.message || 'Error';
-                addLog(`Live ingestion error: ${data.message}`, 'error');
-                setTimeout(() => {
-                    document.getElementById('continuous-detail').style.display = 'none';
-                }, 5000);
+                const label = pipeline === 'analysis' ? 'Analysis' : 'Data';
+                document.getElementById('continuous-msg').textContent = `${label} error: ${data.message}`;
+                addLog(`${label} pipeline error: ${data.message}`, 'error');
+                return;
 
             } else if (_stopRequested) {
-                // Stop was requested — ignore stale 'running' updates
-                // that were already in flight from the poll loop.
                 return;
 
             } else {
-                // Running — update status display
+                // Running — update appropriate pipeline display
                 setContinuousRunning(true);
-                const cycle = result.cycle || '—';
-                const totalNodes = result.total_nodes || '—';
-                const findingsCount = result.findings || 0;
-                document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
-                document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
-                document.getElementById('continuous-msg').textContent = data.message || '';
 
-                // Show/hide the LLM badge based on current stage
-                const llmBadge = document.getElementById('continuous-llm-badge');
-                llmBadge.style.display = result.stage_detail === 'llm_analysis' ? 'inline' : 'none';
+                if (pipeline === 'data') {
+                    const dataMsg = document.getElementById('continuous-data-msg');
+                    const cycle = result.cycle || '—';
+                    const totalNodes = result.total_nodes || '—';
+                    dataMsg.textContent = data.message || `Cycle ${cycle}`;
+                    document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
+                    document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
 
-                // Refresh graph data periodically so new nodes are
-                // searchable, but don't re-render (preserves zoom/pan/VLAN).
-                if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
-                const now = Date.now();
-                if (result.total_nodes && now - handleContinuousProgress._lastRefresh > 30000) {
-                    handleContinuousProgress._lastRefresh = now;
-                    _refreshGraphData();
-                    loadNetworkSummary();
-                }
+                    // Refresh graph data periodically
+                    if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
+                    const now = Date.now();
+                    if (result.total_nodes && now - handleContinuousProgress._lastRefresh > 30000) {
+                        handleContinuousProgress._lastRefresh = now;
+                        _refreshGraphData();
+                        loadNetworkSummary();
+                    }
 
-                // Refresh findings badge when agents produce detections
-                if (findingsCount > 0) {
-                    _refreshFindingsBadge();
+                } else if (pipeline === 'analysis') {
+                    const analysisMsg = document.getElementById('continuous-analysis-msg');
+                    analysisMsg.textContent = data.message || 'Working...';
+                    const llmBadge = document.getElementById('continuous-llm-badge');
+                    llmBadge.style.display = result.stage_detail === 'llm_analysis' ? 'inline' : 'none';
+
+                    // Show queue depth badge
+                    if (result.status === 'idle') {
+                        analysisMsg.textContent = `Idle (${result.analyses_completed || 0} analyzed)`;
+                    }
+
+                    // Refresh findings when agents produce detections
+                    const findingsCount = result.findings || 0;
+                    if (findingsCount > 0) {
+                        _refreshFindingsBadge();
+                    }
+
+                } else {
+                    // Legacy / composite message — update everything
+                    document.getElementById('continuous-msg').textContent = data.message || '';
+                    const cycle = result.cycle || '—';
+                    const totalNodes = result.total_nodes || '—';
+                    document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
+                    document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
                 }
             }
         }
 
         async function checkContinuousStatus() {
-            if (_stopRequested) return;  // user just hit stop, don't re-show
+            if (_stopRequested) return;
             try {
                 const resp = await fetch('/api/network-graph/continuous/status');
                 const status = await resp.json();
                 if (status.running && !_stopRequested) {
                     setContinuousRunning(true);
-                    document.getElementById('continuous-cycle').textContent = `Cycle: ${status.cycle || '—'}`;
-                    document.getElementById('continuous-nodes').textContent = `Nodes: ${status.total_nodes || '—'}`;
-                    document.getElementById('continuous-msg').textContent = status.message || 'Running...';
-                    // Set dropdowns to match running config
+
+                    // Dual pipeline status
+                    const dp = status.data_pipeline || {};
+                    const ap = status.analysis_pipeline || {};
+                    const queue = status.analysis_queue || {};
+
+                    document.getElementById('continuous-data-msg').textContent =
+                        dp.message || (dp.running ? 'Running' : 'Stopped');
+                    document.getElementById('continuous-analysis-msg').textContent =
+                        ap.message || (ap.running ? 'Running' : 'Stopped');
+                    document.getElementById('continuous-cycle').textContent =
+                        `Cycle: ${status.cycle || dp.cycle || '—'}`;
+                    document.getElementById('continuous-nodes').textContent =
+                        `Nodes: ${status.total_nodes || dp.total_nodes || '—'}`;
+
+                    // Queue badge
+                    const queueBadge = document.getElementById('continuous-queue-badge');
+                    const pending = queue.pending || 0;
+                    if (pending > 0) {
+                        queueBadge.textContent = `${pending} queued`;
+                        queueBadge.style.display = 'inline';
+                    } else {
+                        queueBadge.style.display = 'none';
+                    }
+
                     document.getElementById('continuous-interval').value = status.interval_minutes || 15;
                     document.getElementById('continuous-lookback').value = status.lookback_minutes || 20;
-                    addLog(`Reconnected to live ingestion (cycle ${status.cycle || 0})`, 'info');
+                    addLog(`Reconnected to live ingestion (data: ${dp.running ? 'running' : 'stopped'}, analysis: ${ap.running ? 'running' : 'stopped'})`, 'info');
                 }
             } catch(e) {}
         }
@@ -4927,6 +5084,242 @@
                 label.textContent = group.name;
                 overlay.appendChild(label);
                 container.appendChild(overlay);
+            });
+        }
+
+        // =================================================================
+        // Interactive Map: Tool modes, layout, annotations
+        // =================================================================
+
+        let _currentGraphTool = 'select';  // 'select', 'move', 'annotate'
+        let _allPinned = false;
+        let _pendingLayoutSaves = {};
+        let _layoutSaveTimer = null;
+
+        function setGraphTool(tool) {
+            _currentGraphTool = tool;
+            document.querySelectorAll('.graph-tool-btn').forEach(b => b.classList.remove('active'));
+            const btn = document.getElementById('tool-' + tool);
+            if (btn) btn.classList.add('active');
+
+            const hint = document.getElementById('graph-tool-hint');
+            if (!networkGraph) return;
+
+            if (tool === 'move') {
+                networkGraph.nodes().grabify();
+                hint.textContent = 'Drag nodes to reposition them';
+            } else if (tool === 'annotate') {
+                networkGraph.nodes().ungrabify();
+                hint.textContent = 'Click a node to add a note, double-click empty space for freestanding label';
+            } else {
+                networkGraph.nodes().ungrabify();
+                hint.textContent = '';
+            }
+        }
+
+        function _debounceSaveLayout() {
+            if (_layoutSaveTimer) clearTimeout(_layoutSaveTimer);
+            _layoutSaveTimer = setTimeout(async () => {
+                const positions = Object.assign({}, _pendingLayoutSaves);
+                _pendingLayoutSaves = {};
+                if (Object.keys(positions).length === 0) return;
+                try {
+                    await fetch('/api/network-graph/layout', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ positions }),
+                    });
+                } catch (e) {
+                    console.warn('Failed to save layout:', e);
+                }
+            }, 500);
+        }
+
+        function changeLayout(algo) {
+            if (!networkGraph) return;
+            const opts = { animate: true, animationDuration: 500, fit: true, padding: 40 };
+            if (algo === 'dagre') {
+                Object.assign(opts, {
+                    name: 'dagre', rankDir: 'TB', rankSep: 120, nodeSep: 60, edgeSep: 30, spacingFactor: 1.2,
+                    rank: function(node) {
+                        if (node.hasClass('internet-cloud')) return 0;
+                        if (node.hasClass('subnet-group')) {
+                            const children = node.children();
+                            if (children.length > 0) {
+                                const tiers = children.map(c => c.data('_tier') !== undefined ? c.data('_tier') : 3);
+                                return Math.min(...tiers);
+                            }
+                            return 3;
+                        }
+                        return node.data('_tier') !== undefined ? node.data('_tier') : 3;
+                    },
+                });
+            } else if (algo === 'cose') {
+                Object.assign(opts, { name: 'cose', nodeRepulsion: 8000, idealEdgeLength: 100, edgeElasticity: 100 });
+            } else if (algo === 'circle') {
+                Object.assign(opts, { name: 'circle' });
+            } else if (algo === 'grid') {
+                Object.assign(opts, { name: 'grid' });
+            }
+            networkGraph.layout(opts).run();
+        }
+
+        async function resetLayout() {
+            if (!networkGraph) return;
+            try {
+                await fetch('/api/network-graph/layout', { method: 'DELETE' });
+            } catch (e) { /* ignore */ }
+            // Re-render with Dagre
+            document.getElementById('layout-algo').value = 'dagre';
+            const currentData = _activeVlan !== null ? _getVlanFilteredData(_activeVlan) : _fullGraphData;
+            if (currentData) {
+                // Remove saved layout so Dagre runs
+                delete currentData.saved_layout;
+                renderNetworkGraph(currentData);
+            }
+            addLog('Layout reset to auto', 'info');
+        }
+
+        function togglePinAll() {
+            _allPinned = !_allPinned;
+            const btn = document.getElementById('pin-all-btn');
+            if (_allPinned) {
+                btn.innerHTML = '<i class="fa-solid fa-lock"></i> Locked';
+                if (networkGraph) {
+                    // Save all current positions
+                    const positions = {};
+                    networkGraph.nodes().forEach(n => {
+                        const pos = n.position();
+                        positions[n.id()] = { x: pos.x, y: pos.y, pinned: true };
+                    });
+                    fetch('/api/network-graph/layout', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ positions }),
+                    }).catch(() => {});
+                }
+            } else {
+                btn.innerHTML = '<i class="fa-solid fa-lock-open"></i> Unlocked';
+            }
+        }
+
+        // --- Annotation system ---
+
+        async function _createAnnotation(nodeId, content, metadata) {
+            try {
+                const resp = await fetch('/api/network-graph/annotations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: nodeId,
+                        annotation_type: nodeId ? 'note' : 'label',
+                        content: content,
+                        metadata: metadata || {},
+                    }),
+                });
+                const ann = await resp.json();
+                _renderAnnotationOverlays([ann], true);
+                addLog(`Annotation added${nodeId ? ' to ' + nodeId : ''}`, 'info');
+            } catch (e) {
+                console.warn('Failed to create annotation:', e);
+            }
+        }
+
+        function _renderAnnotationOverlays(annotations, append) {
+            if (!networkGraph) return;
+            const container = document.getElementById('network-graph');
+            if (!append) {
+                container.querySelectorAll('.annotation-overlay').forEach(el => el.remove());
+            }
+
+            annotations.forEach(ann => {
+                if (!ann || !ann.content) return;
+
+                if (ann.node_id) {
+                    // Node-attached annotation: render as a small badge on the node
+                    const cyNode = networkGraph.$id(ann.node_id);
+                    if (!cyNode.length) return;
+                    const rPos = cyNode.renderedPosition();
+                    const badge = document.createElement('div');
+                    badge.className = 'annotation-overlay';
+                    badge.dataset.annId = ann.id;
+                    badge.style.cssText = `position:absolute; left:${rPos.x + 14}px; top:${rPos.y - 20}px; background:#ffb300; color:#000; padding:2px 6px; border-radius:4px; font-size:10px; cursor:pointer; z-index:5; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:auto;`;
+                    badge.textContent = ann.content;
+                    badge.title = ann.content + '\n\n(Click to edit, right-click to delete)';
+                    badge.onclick = async () => {
+                        const newContent = prompt('Edit annotation:', ann.content);
+                        if (newContent !== null && newContent !== ann.content) {
+                            await fetch(`/api/network-graph/annotations/${ann.id}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ content: newContent }),
+                            });
+                            badge.textContent = newContent;
+                            badge.title = newContent + '\n\n(Click to edit, right-click to delete)';
+                            ann.content = newContent;
+                        }
+                    };
+                    badge.oncontextmenu = async (e) => {
+                        e.preventDefault();
+                        if (confirm('Delete this annotation?')) {
+                            await fetch(`/api/network-graph/annotations/${ann.id}`, { method: 'DELETE' });
+                            badge.remove();
+                        }
+                    };
+                    container.appendChild(badge);
+                } else {
+                    // Freestanding annotation (positioned in model coordinates)
+                    const meta = ann.metadata || {};
+                    const mPos = { x: meta.x || 0, y: meta.y || 0 };
+                    const rPos = networkGraph.pan();
+                    const zoom = networkGraph.zoom();
+                    const rx = mPos.x * zoom + rPos.x;
+                    const ry = mPos.y * zoom + rPos.y;
+                    const label = document.createElement('div');
+                    label.className = 'annotation-overlay';
+                    label.dataset.annId = ann.id;
+                    label.style.cssText = `position:absolute; left:${rx}px; top:${ry}px; background:#1a237e; color:#bbdefb; padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer; z-index:5; border:1px dashed #5c6bc0; pointer-events:auto;`;
+                    label.textContent = ann.content;
+                    label.title = ann.content + '\n\n(Click to edit, right-click to delete)';
+                    label.onclick = async () => {
+                        const newContent = prompt('Edit annotation:', ann.content);
+                        if (newContent !== null && newContent !== ann.content) {
+                            await fetch(`/api/network-graph/annotations/${ann.id}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ content: newContent }),
+                            });
+                            label.textContent = newContent;
+                            ann.content = newContent;
+                        }
+                    };
+                    label.oncontextmenu = async (e) => {
+                        e.preventDefault();
+                        if (confirm('Delete this annotation?')) {
+                            await fetch(`/api/network-graph/annotations/${ann.id}`, { method: 'DELETE' });
+                            label.remove();
+                        }
+                    };
+                    container.appendChild(label);
+                }
+            });
+
+            // Refresh annotation positions on pan/zoom
+            if (!_annotationPanListener && networkGraph) {
+                _annotationPanListener = true;
+                networkGraph.on('pan zoom', _refreshAnnotationPositions);
+            }
+        }
+
+        let _annotationPanListener = false;
+
+        function _refreshAnnotationPositions() {
+            if (!networkGraph) return;
+            const container = document.getElementById('network-graph');
+            container.querySelectorAll('.annotation-overlay').forEach(badge => {
+                const annId = badge.dataset.annId;
+                // For node-attached annotations, update position based on node
+                // For simplicity, just re-render all on next graph load
             });
         }
 

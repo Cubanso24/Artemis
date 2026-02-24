@@ -16,6 +16,7 @@ from artemis.api.schemas import (
     LanGroupCreate, LanGroupUpdate,
     DeviceFlagRequest, ThreatIntelConfigRequest, ThreatIntelLookupRequest,
     ThreatIntelBatchRequest, LLMSettingsRequest,
+    MapLayoutSave, AnnotationCreate, AnnotationUpdate,
 )
 from artemis.managers import db_manager, hunt_manager, plugin_manager
 from artemis.integrations.threat_intel import threat_intel_manager
@@ -199,9 +200,11 @@ async def get_network_graph(
         graph_data = plugin.get_network_graph(
             sensor_id=sensor_id, max_nodes=max_nodes,
         )
-        # Attach device flags and LAN groups so the frontend can render them
+        # Attach device flags, LAN groups, layout, and annotations
         graph_data['device_flags'] = db_manager.get_device_flags()
         graph_data['lan_groups'] = db_manager.get_lan_groups()
+        graph_data['saved_layout'] = db_manager.get_layout()
+        graph_data['annotations'] = db_manager.get_annotations()
         return graph_data
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
@@ -715,6 +718,70 @@ async def get_latest_synthesis():
         return JSONResponse(status_code=404,
                             content={"error": "No synthesis reports yet"})
     return result
+
+
+# --- Map layout (interactive positioning) ---------------------------------
+
+@router.get("/api/network-graph/layout")
+async def get_map_layout():
+    """Get all saved node positions."""
+    return db_manager.get_layout()
+
+
+@router.put("/api/network-graph/layout")
+async def save_map_layout(req: MapLayoutSave):
+    """Save node positions (drag-and-drop)."""
+    count = db_manager.save_layout(req.positions)
+    return {'status': 'saved', 'count': count}
+
+
+@router.delete("/api/network-graph/layout")
+async def reset_map_layout():
+    """Clear all saved positions (reset to auto-layout)."""
+    count = db_manager.clear_layout()
+    return {'status': 'reset', 'cleared': count}
+
+
+# --- Map annotations ------------------------------------------------------
+
+@router.get("/api/network-graph/annotations")
+async def get_annotations(node_id: Optional[str] = None):
+    """Get map annotations, optionally filtered by node_id."""
+    return db_manager.get_annotations(node_id=node_id)
+
+
+@router.post("/api/network-graph/annotations")
+async def create_annotation(req: AnnotationCreate):
+    """Create a map annotation."""
+    return db_manager.create_annotation(
+        node_id=req.node_id,
+        annotation_type=req.annotation_type,
+        content=req.content,
+        metadata=req.metadata,
+    )
+
+
+@router.put("/api/network-graph/annotations/{ann_id}")
+async def update_annotation(ann_id: int, req: AnnotationUpdate):
+    """Update an annotation."""
+    db_manager.update_annotation(ann_id, content=req.content,
+                                 metadata=req.metadata)
+    return {'status': 'updated', 'id': ann_id}
+
+
+@router.delete("/api/network-graph/annotations/{ann_id}")
+async def delete_annotation(ann_id: int):
+    """Delete an annotation."""
+    db_manager.delete_annotation(ann_id)
+    return {'status': 'deleted', 'id': ann_id}
+
+
+# --- Analysis queue status ------------------------------------------------
+
+@router.get("/api/analysis-queue/status")
+async def analysis_queue_status():
+    """Get the analysis queue status (pending, in_progress, complete counts)."""
+    return db_manager.get_analysis_queue_status()
 
 
 @router.get("/api/llm-synthesis/report/pdf")

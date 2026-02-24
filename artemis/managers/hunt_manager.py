@@ -361,40 +361,33 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
 
 
 # ---------------------------------------------------------------------------
-# Continuous ingestion worker — runs in its own process, loops forever
+# Data Pipeline Process — fast collection + map building, no LLM
 # ---------------------------------------------------------------------------
 
-def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
-                               db_path, backfill_from=None):
-    """Continuously collect network data and update the map.
+def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
+                           db_path, backfill_from=None):
+    """Continuously collect network data, build the map, and store events.
+
+    This process does NOT run agents or LLM analysis — it only:
+    1. Pulls events from Splunk
+    2. Feeds them into the network mapper
+    3. Stores raw events in the persistent event store (hunt_events table)
+    4. Queues each cycle for the analysis pipeline
 
     Runs in a non-daemon subprocess that survives server restarts.
-    Every *interval_minutes* it queries Splunk for the last
-    *lookback_minutes* of data and feeds it into the network mapper's
-    ``execute()`` method, which builds/updates the live network map.
-
-    If *backfill_from* is set (ISO 8601 date string), the first cycle
-    pulls all data from that date to now using absolute time ranges
-    (the data pipeline auto-splits into 1-hour windows and uses
-    SQLite storage to avoid memory exhaustion).
-
-    The process writes its state to the ``hunt_progress`` table so the
-    server can track it and broadcast updates via WebSocket.
     """
     import os, logging, traceback, json, time, signal as _signal
     from datetime import datetime
     from artemis.managers.db_manager import DatabaseManager
     from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
     from artemis.plugins.network_mapper import NetworkMapperPlugin
-    from artemis.meta_learner.coordinator import MetaLearnerCoordinator
-    from artemis.models.network_state import NetworkState
 
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         force=True,
     )
-    log = logging.getLogger('artemis.continuous_ingest')
+    log = logging.getLogger('artemis.data_pipeline')
 
     db = DatabaseManager(db_path)
     pid = os.getpid()
@@ -413,7 +406,7 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         except Exception:
             pass
 
-    send('running', 'Starting continuous ingestion...', 0)
+    send('running', 'Starting data pipeline...', 0)
 
     try:
         # Build Splunk connector
@@ -433,8 +426,270 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
-        # Initialize hunting agent coordinator.
-        # Read LLM settings: GUI config file > environment variables > auto.
+        # Get the latest cycle number from DB to continue sequentially
+        cycle = db.get_latest_event_cycle()
+        time_range = f'-{lookback_minutes}m'
+        _backfill_pending = bool(backfill_from)
+
+        while not _stop:
+            cycle += 1
+            cycle_start = datetime.now()
+
+            if _backfill_pending:
+                _backfill_pending = False
+                bf_start = backfill_from
+                bf_end = datetime.now().isoformat()
+                log.info(f'Cycle {cycle}: backfill from {bf_start} to now')
+                send('running',
+                     f'Cycle {cycle}: backfilling from {bf_start}...',
+                     25, {'cycle': cycle, 'pipeline': 'data',
+                          'interval': interval_minutes,
+                          'lookback': lookback_minutes,
+                          'backfill_from': bf_start})
+            else:
+                log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m')
+                send('running',
+                     f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
+                     50, {'cycle': cycle, 'pipeline': 'data',
+                          'interval': interval_minutes,
+                          'lookback': lookback_minutes})
+                bf_start = None
+                bf_end = None
+
+            try:
+                # Progress callback
+                def _splunk_progress(info):
+                    ptype = info.get('type', '')
+                    if ptype == 'window_done':
+                        w = info.get('window', '?')
+                        tw = info.get('total_windows', '?')
+                        rt = info.get('running_total', 0)
+                        send('running',
+                             f'Cycle {cycle}: fetched window {w}/{tw} '
+                             f'({rt:,} events)...',
+                             25 + int(30 * w / max(tw, 1)),
+                             {'cycle': cycle, 'pipeline': 'data',
+                              'stage_detail': 'splunk_fetch',
+                              'window': w, 'total_windows': tw,
+                              'running_total': rt})
+                    elif ptype == 'query_done':
+                        log.info(f'Cycle {cycle}: query {info.get("query_name")} '
+                                 f'returned {info.get("query_events", 0):,} events')
+
+                # Collect from Splunk
+                if bf_start:
+                    _bf_windows_mapped = [0]
+                    _bf_total_events = [0]
+
+                    def _map_window(window_data):
+                        conns = window_data.get('network_connections', [])
+                        dns_q = window_data.get('dns_queries', [])
+                        ntlm_l = window_data.get('ntlm_logs', [])
+                        if conns or dns_q or ntlm_l:
+                            nm.execute(
+                                network_connections=conns,
+                                dns_queries=dns_q,
+                                ntlm_logs=ntlm_l,
+                            )
+                            _bf_windows_mapped[0] += 1
+                            _bf_total_events[0] += len(conns) + len(dns_q) + len(ntlm_l)
+
+                            # Store events in persistent store
+                            if conns:
+                                db.store_events(cycle, 'network_connections', conns)
+                            if dns_q:
+                                db.store_events(cycle, 'dns_queries', dns_q)
+                            if ntlm_l:
+                                db.store_events(cycle, 'ntlm_logs', ntlm_l)
+
+                            # Store other data types
+                            for key in ('authentication_logs', 'process_logs',
+                                        'powershell_logs', 'file_operations',
+                                        'scheduled_tasks', 'registry_changes'):
+                                events = window_data.get(key, [])
+                                if events:
+                                    db.store_events(cycle, key, events)
+
+                            if _bf_windows_mapped[0] % 3 == 0:
+                                nm.save_map()
+                                send('running',
+                                     f'Cycle {cycle}: backfill — mapped '
+                                     f'{_bf_windows_mapped[0]} windows '
+                                     f'({_bf_total_events[0]:,} events, '
+                                     f'{len(nm.nodes)} nodes)...',
+                                     30, {'cycle': cycle, 'pipeline': 'data',
+                                          'stage_detail': 'backfill_mapping',
+                                          'total_nodes': len(nm.nodes),
+                                          'total_events': _bf_total_events[0]})
+
+                    hunting_data = pipeline.collect_hunting_data(
+                        earliest_time=bf_start,
+                        latest_time=bf_end,
+                        storage_mode='sqlite',
+                        progress_callback=_splunk_progress,
+                        per_window_callback=_map_window,
+                    )
+                    if _bf_windows_mapped[0] > 0:
+                        nm.save_map()
+
+                    conn_count = hunting_data.count('network_connections') if hasattr(hunting_data, 'count') else 0
+                    dns_count = hunting_data.count('dns_queries') if hasattr(hunting_data, 'count') else 0
+                    ntlm_count = hunting_data.count('ntlm_logs') if hasattr(hunting_data, 'count') else 0
+                    has_data = (conn_count + dns_count + ntlm_count) > 0
+
+                    if hasattr(hunting_data, 'close'):
+                        try:
+                            hunting_data.close()
+                        except Exception:
+                            pass
+                else:
+                    hunting_data = pipeline.collect_hunting_data(
+                        time_range=time_range)
+
+                    conns = hunting_data.get('network_connections', [])
+                    dns = hunting_data.get('dns_queries', [])
+                    ntlm = hunting_data.get('ntlm_logs', [])
+                    conn_count, dns_count, ntlm_count = len(conns), len(dns), len(ntlm)
+                    has_data = bool(conns or dns or ntlm)
+
+                    if has_data:
+                        # Feed network mapper
+                        result = nm.execute(
+                            network_connections=conns,
+                            dns_queries=dns,
+                            ntlm_logs=ntlm,
+                        )
+                        nm.save_map()
+
+                        # Store events in persistent store
+                        for key, events in hunting_data.items():
+                            if isinstance(events, list) and events:
+                                db.store_events(cycle, key, events)
+
+                if has_data:
+                    # Queue this cycle for agent/LLM analysis
+                    event_counts = db.get_event_counts_for_cycle(cycle)
+                    db.queue_analysis(cycle, event_counts)
+
+                    total_nodes = len(nm.nodes)
+                    msg = (f'Cycle {cycle} collected: {conn_count} conns, '
+                           f'{dns_count} DNS, {ntlm_count} NTLM → '
+                           f'{total_nodes} nodes (queued for analysis)')
+                    log.info(msg)
+                    send('running', msg, 50,
+                         {'cycle': cycle, 'pipeline': 'data',
+                          'new_conns': conn_count,
+                          'new_dns': dns_count, 'new_ntlm': ntlm_count,
+                          'total_nodes': total_nodes})
+
+                    # Auto-profile unprofiled devices
+                    try:
+                        stats = nm.get_profiling_stats()
+                        unprofiled = stats.get('unprofiled', 0)
+                        if unprofiled > 0:
+                            log.info(f'Cycle {cycle}: auto-profiling '
+                                     f'{unprofiled} devices')
+                            profile_result = nm.profile_devices(
+                                pipeline.splunk,
+                                time_range=f'-{lookback_minutes}m',
+                            )
+                            nm.save_map()
+                    except Exception as pe:
+                        log.warning(f'Cycle {cycle}: auto-profile error: {pe}')
+
+                    # Cleanup old events (keep 72 hours)
+                    try:
+                        deleted = db.cleanup_old_events(max_age_hours=72)
+                        if deleted > 0:
+                            log.info(f'Cleaned up {deleted} old events')
+                    except Exception:
+                        pass
+
+                else:
+                    msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
+                    log.info(msg)
+                    send('running', msg, 50,
+                         {'cycle': cycle, 'pipeline': 'data'})
+
+            except Exception as e:
+                log.error(f'Cycle {cycle} error: {e}')
+                log.error(traceback.format_exc())
+                send('running', f'Cycle {cycle} error: {e}', 50,
+                     {'cycle': cycle, 'pipeline': 'data',
+                      'error': str(e)})
+
+            # Sleep in 5-second increments
+            wait_seconds = interval_minutes * 60
+            elapsed = (datetime.now() - cycle_start).total_seconds()
+            remaining = max(0, wait_seconds - elapsed)
+            while remaining > 0 and not _stop:
+                time.sleep(min(5, remaining))
+                remaining -= 5
+
+        send('complete', f'Data pipeline stopped after {cycle} cycles', 100,
+             {'cycles_completed': cycle, 'pipeline': 'data'})
+        log.info(f'Data pipeline stopped after {cycle} cycles')
+
+    except Exception as e:
+        log.error(f'Data pipeline failed: {e}')
+        log.error(traceback.format_exc())
+        send('error', f'Data pipeline failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc(), 'pipeline': 'data'})
+
+
+# ---------------------------------------------------------------------------
+# Analysis Pipeline Process — agents + LLM, consumes queued cycles
+# ---------------------------------------------------------------------------
+
+def _analysis_pipeline_process(job_id, db_path):
+    """Consume queued cycles and run agent/LLM analysis on stored events.
+
+    Runs in a non-daemon subprocess.  Polls the analysis_queue table
+    for pending cycles, loads events from hunt_events, runs the
+    coordinator (agents + LLM), and saves findings/synthesis.
+
+    This process is decoupled from data collection — it can fall behind
+    if analysis is slow, and will catch up by processing cycles in order.
+    """
+    import os, logging, traceback, json, time, signal as _signal
+    from datetime import datetime
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+    from artemis.meta_learner.coordinator import MetaLearnerCoordinator
+    from artemis.models.network_state import NetworkState
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+    log = logging.getLogger('artemis.analysis_pipeline')
+
+    db = DatabaseManager(db_path)
+    pid = os.getpid()
+    _stop = False
+
+    def _handle_term(*_a):
+        nonlocal _stop
+        _stop = True
+        log.info('Received SIGTERM — stopping after current analysis')
+
+    _signal.signal(_signal.SIGTERM, _handle_term)
+
+    def send(stage, message, progress, extra=None):
+        try:
+            db.write_progress(job_id, pid, stage, message, progress, extra)
+        except Exception:
+            pass
+
+    send('running', 'Starting analysis pipeline...', 0)
+
+    try:
+        # Load network mapper (read-only for context)
+        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm.initialize()
+
+        # Initialize coordinator with LLM
         _llm_cfg = {}
         _llm_cfg_path = os.path.join('config', 'llm_settings.json')
         if os.path.exists(_llm_cfg_path):
@@ -442,14 +697,11 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                 import json as _json
                 with open(_llm_cfg_path) as _f:
                     _llm_cfg = _json.load(_f)
-                log.info(f'Loaded LLM config from {_llm_cfg_path}: '
-                         f'backend={_llm_cfg.get("backend", "auto")}')
+                log.info(f'Loaded LLM config: backend={_llm_cfg.get("backend", "auto")}')
             except Exception as _e:
                 log.warning(f'Could not read LLM config: {_e}')
 
         _llm_backend = _llm_cfg.get('backend') or os.environ.get('LLM_BACKEND', 'auto')
-        # Push config values into env so LLMClient and CrewAI/LiteLLM pick
-        # them up.  Default to localhost:11434 so Ollama works out of the box.
         _ollama_url = (
             _llm_cfg.get('ollama_url')
             or os.environ.get('OLLAMA_URL')
@@ -472,10 +724,9 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
         )
         log.info(f'Initialized {len(coordinator.agents)} hunting agents')
 
-        # Try to initialise CrewAI orchestrator (optional overlay)
+        # Try CrewAI orchestrator
         _crew_orchestrator = None
-        _use_crewai = _llm_cfg.get('orchestration') == 'crewai'
-        if _use_crewai:
+        if _llm_cfg.get('orchestration') == 'crewai':
             try:
                 from artemis.llm.crew import CrewOrchestrator, crewai_available
                 if crewai_available():
@@ -487,432 +738,154 @@ def _continuous_ingest_process(job_id, interval_minutes, lookback_minutes,
                         process=_llm_cfg.get('crewai_process', 'sequential'),
                         num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '131072')),
                     )
-                    log.info('CrewAI orchestrator initialised — will use CrewAI for hunt cycles')
-                else:
-                    log.warning('CrewAI requested but crewai package not installed — falling back to standard coordinator')
+                    log.info('CrewAI orchestrator initialised')
             except Exception as _ce:
-                log.warning(f'CrewAI init failed: {_ce} — falling back to standard coordinator')
+                log.warning(f'CrewAI init failed: {_ce}')
 
-        cycle = 0
-        time_range = f'-{lookback_minutes}m'
-        _backfill_pending = bool(backfill_from)
+        analyses_completed = 0
 
         while not _stop:
-            cycle += 1
-            cycle_start = datetime.now()
+            # Poll for pending analysis
+            pending = db.get_pending_analysis()
 
-            # First cycle with backfill: pull all data from the start
-            # date to now using absolute time ranges + sqlite storage.
-            if _backfill_pending:
-                _backfill_pending = False
-                bf_start = backfill_from
-                bf_end = datetime.now().isoformat()
-                log.info(f'Cycle {cycle}: backfill from {bf_start} to now')
+            if not pending:
+                # Nothing to analyze — sleep briefly and check again
                 send('running',
-                     f'Cycle {cycle}: backfilling from {bf_start} '
-                     f'(auto-windowed, may take a while)...',
-                     25, {'cycle': cycle, 'interval': interval_minutes,
-                          'lookback': lookback_minutes,
-                          'backfill_from': bf_start})
-            else:
-                log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m of data')
-                send('running',
-                     f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
-                     50, {'cycle': cycle, 'interval': interval_minutes,
-                          'lookback': lookback_minutes})
-                bf_start = None
-                bf_end = None
+                     f'Waiting for data (analyzed {analyses_completed} cycles)...',
+                     50, {'pipeline': 'analysis',
+                          'analyses_completed': analyses_completed,
+                          'status': 'idle'})
+                for _ in range(6):  # 30 seconds in 5s increments
+                    if _stop:
+                        break
+                    time.sleep(5)
+                continue
 
-            findings_this_cycle = 0
+            analysis_cycle = pending['cycle']
+            event_counts = pending.get('event_counts', {})
+            total_events = sum(event_counts.values())
+
+            log.info(f'Analyzing cycle {analysis_cycle} '
+                     f'({total_events:,} events)')
+            db.mark_analysis_started(analysis_cycle)
+
+            _backend = getattr(coordinator.llm_client, 'backend', 'none')
+            _n_agents = len(coordinator.agents)
+            _orch_label = 'CrewAI' if _crew_orchestrator else _backend
+
+            send('running',
+                 f'Analyzing cycle {analysis_cycle}: {total_events:,} events '
+                 f'with {_n_agents} agents ({_orch_label})...',
+                 60, {'pipeline': 'analysis',
+                      'cycle': analysis_cycle,
+                      'total_events': total_events,
+                      'stage_detail': 'llm_analysis',
+                      'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+
+            findings_count = 0
             try:
-                # Progress callback relays Splunk fetch progress to the UI
-                def _splunk_progress(info):
-                    ptype = info.get('type', '')
-                    if ptype == 'window_done':
-                        w = info.get('window', '?')
-                        tw = info.get('total_windows', '?')
-                        rt = info.get('running_total', 0)
-                        send('running',
-                             f'Cycle {cycle}: fetched window {w}/{tw} '
-                             f'({rt:,} events so far)...',
-                             25 + int(30 * w / max(tw, 1)),
-                             {'cycle': cycle, 'stage_detail': 'splunk_fetch',
-                              'window': w, 'total_windows': tw,
-                              'running_total': rt})
-                    elif ptype == 'query_done':
-                        qn = info.get('query_name', '')
-                        qc = info.get('query_events', 0)
-                        log.info(f'Cycle {cycle}: query {qn} returned {qc:,} events')
+                # Load events from persistent store
+                agent_data = db.get_events_for_cycle(analysis_cycle)
 
-                if bf_start:
-                    # Build network map incrementally as each 1-hour
-                    # window completes, so the map appears in the UI
-                    # while backfill is still running.
-                    # Also run hunting agents every 50k events so
-                    # findings and LLM synthesis appear during backfill.
-                    _bf_windows_mapped = [0]
-                    _bf_total_events = [0]
-                    _bf_agent_runs = [0]
-                    _AGENT_BATCH = 50_000
-                    _bf_buffer = {
-                        'network_connections': [],
-                        'dns_queries': [],
-                        'ntlm_logs': [],
-                    }
+                # Add counts metadata
+                agent_data['_counts'] = event_counts
 
-                    def _run_agents_on_buffer():
-                        """Run hunting agents on the accumulated buffer."""
-                        nonlocal findings_this_cycle
-                        buf_size = sum(len(v) for v in _bf_buffer.values())
-                        if buf_size == 0:
-                            return
-                        _bf_agent_runs[0] += 1
-                        run_id = _bf_agent_runs[0]
-                        _backend = getattr(coordinator.llm_client, 'backend', 'none')
-                        _n_agents = len(coordinator.agents)
-                        _orch_label = 'CrewAI' if _crew_orchestrator else _backend
-                        log.info(f'Backfill agent run #{run_id}: '
-                                 f'{buf_size:,} events, {_n_agents} agents '
-                                 f'({_orch_label})')
-                        # Save map now so the graph renders in the UI
-                        # while agents are analyzing (LLM calls block).
-                        nm.save_map()
-                        send('running',
-                             f'Cycle {cycle}: analyzing batch #{run_id} '
-                             f'({buf_size:,} events, '
-                             f'{_bf_total_events[0]:,} total so far)...',
-                             40, {'cycle': cycle,
-                                  'stage_detail': 'llm_analysis',
-                                  'total_nodes': len(nm.nodes),
-                                  'batch': run_id,
-                                  'batch_events': buf_size,
-                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
-                        try:
-                            context = NetworkState.from_data_with_map(
-                                _bf_buffer, nm.nodes)
-                            if _crew_orchestrator:
-                                assessment = _crew_orchestrator.hunt(
-                                    data=_bf_buffer, network_state=context)
-                            else:
-                                assessment = coordinator.hunt(
-                                    data=_bf_buffer, network_state=context)
+                # Reload map for latest context
+                nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+                nm.initialize()
 
-                            for ao in assessment.get('agent_outputs', []):
-                                ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
-                                for f in ao_dict.get('findings', []):
-                                    findings_this_cycle += 1
-                                    db.save_finding(
-                                        finding_id=f.get('fingerprint',
-                                                         f.get('activity_type', '') + str(cycle) + f'_b{run_id}'),
-                                        agent_name=ao_dict.get('agent_name', 'unknown'),
-                                        activity_type=f.get('activity_type', ''),
-                                        severity=ao_dict.get('severity', 'medium'),
-                                        confidence=ao_dict.get('confidence', 0.0),
-                                        description=f.get('description', ''),
-                                        indicators=f.get('indicators', []),
-                                        affected_assets=f.get('affected_assets', []),
-                                        mitre_tactics=ao_dict.get('mitre_tactics', []),
-                                        mitre_techniques=f.get('mitre_techniques', []),
-                                        evidence_count=len(f.get('evidence', [])),
-                                        recommended_actions=ao_dict.get('recommended_actions', []),
-                                        source_cycle=cycle,
-                                    )
-                            llm_synth = assessment.get('llm_synthesis')
-                            if llm_synth:
-                                try:
-                                    db.save_synthesis(cycle, llm_synth)
-                                    log.info(f'Backfill run #{run_id}: saved LLM synthesis '
-                                             f'(severity={llm_synth.get("overall_severity", "?")})')
-                                except Exception as se:
-                                    log.error(f'Backfill run #{run_id}: failed to save LLM synthesis: {se}')
-                            log.info(f'Backfill agent run #{run_id} done')
-                        except Exception as ae:
-                            log.warning(f'Backfill agent run #{run_id} error: {ae}')
+                # Build network state with map context + annotations
+                annotations = db.get_annotations()
+                context = NetworkState.from_data_with_map(
+                    agent_data, nm.nodes)
 
-                        # Clear buffer for next batch
-                        for k in _bf_buffer:
-                            _bf_buffer[k] = []
+                # Inject analyst annotations into context
+                if annotations:
+                    ann_by_ip = {}
+                    for ann in annotations:
+                        nid = ann.get('node_id')
+                        if nid:
+                            # Extract IP from node_id (format: sensor:vlan:ip)
+                            parts = nid.split(':')
+                            ip = parts[-1] if parts else nid
+                            ann_by_ip.setdefault(ip, []).append(
+                                ann['content'])
+                    if ann_by_ip:
+                        context.network_map.analyst_annotations = ann_by_ip
+                        context.recent_agent_findings['analyst_annotations'] = ann_by_ip
 
-                    def _map_window(window_data):
-                        conns = window_data.get('network_connections', [])
-                        dns_q = window_data.get('dns_queries', [])
-                        ntlm_l = window_data.get('ntlm_logs', [])
-                        window_events = len(conns) + len(dns_q) + len(ntlm_l)
-                        if conns or dns_q or ntlm_l:
-                            nm.execute(
-                                network_connections=conns,
-                                dns_queries=dns_q,
-                                ntlm_logs=ntlm_l,
-                            )
-                            _bf_windows_mapped[0] += 1
-                            _bf_total_events[0] += window_events
-
-                            # Accumulate for agent analysis
-                            _bf_buffer['network_connections'].extend(conns)
-                            _bf_buffer['dns_queries'].extend(dns_q)
-                            _bf_buffer['ntlm_logs'].extend(ntlm_l)
-
-                            # Save map periodically so UI can see progress
-                            if _bf_windows_mapped[0] % 3 == 0:
-                                nm.save_map()
-                                send('running',
-                                     f'Cycle {cycle}: backfill — mapped '
-                                     f'{_bf_windows_mapped[0]} windows '
-                                     f'({_bf_total_events[0]:,} events, '
-                                     f'{len(nm.nodes)} nodes)...',
-                                     30, {'cycle': cycle,
-                                          'stage_detail': 'backfill_mapping',
-                                          'total_nodes': len(nm.nodes),
-                                          'total_events': _bf_total_events[0]})
-
-                            # Run agents every 50k events
-                            buf_size = sum(len(v) for v in _bf_buffer.values())
-                            if buf_size >= _AGENT_BATCH:
-                                _run_agents_on_buffer()
-
-                    hunting_data = pipeline.collect_hunting_data(
-                        earliest_time=bf_start,
-                        latest_time=bf_end,
-                        storage_mode='sqlite',
-                        progress_callback=_splunk_progress,
-                        per_window_callback=_map_window,
-                    )
-                    # Run agents on any remaining buffered events
-                    _run_agents_on_buffer()
-                    # Final save after all windows
-                    if _bf_windows_mapped[0] > 0:
-                        nm.save_map()
-                        log.info(f'Backfill: incrementally mapped '
-                                 f'{_bf_windows_mapped[0]} windows, '
-                                 f'{_bf_total_events[0]:,} events → '
-                                 f'{len(nm.nodes)} nodes, '
-                                 f'{_bf_agent_runs[0]} agent runs')
+                # Run analysis
+                if _crew_orchestrator:
+                    assessment = _crew_orchestrator.hunt(
+                        data=agent_data, network_state=context)
                 else:
-                    hunting_data = pipeline.collect_hunting_data(
-                        time_range=time_range)
+                    assessment = coordinator.hunt(
+                        data=agent_data, network_state=context)
 
-                # ---------------------------------------------------------
-                # For backfill cycles, the network mapper and hunting
-                # agents already ran incrementally (every 50k events)
-                # inside the per-window callback.  Skip the redundant
-                # full-dataset pass and go straight to cycle summary.
-                # ---------------------------------------------------------
-                _is_sqlite = hasattr(hunting_data, 'iter_events')
-                _backfill_already_processed = _is_sqlite and bf_start
-
-                if _backfill_already_processed:
-                    # Backfill: counts for summary only
-                    conn_count = hunting_data.count('network_connections')
-                    dns_count = hunting_data.count('dns_queries')
-                    ntlm_count = hunting_data.count('ntlm_logs')
-                    has_data = (conn_count + dns_count + ntlm_count) > 0
-                    if has_data:
-                        result = {
-                            'total_nodes': len(nm.nodes),
-                            'internal_nodes': sum(
-                                1 for n in nm.nodes.values()
-                                if getattr(n, 'is_internal', False)
-                            ),
-                        }
-                elif _is_sqlite:
-                    conn_count = hunting_data.count('network_connections')
-                    dns_count = hunting_data.count('dns_queries')
-                    ntlm_count = hunting_data.count('ntlm_logs')
-                    has_data = (conn_count + dns_count + ntlm_count) > 0
-                else:
-                    conns = hunting_data.get('network_connections', [])
-                    dns = hunting_data.get('dns_queries', [])
-                    ntlm = hunting_data.get('ntlm_logs', [])
-                    conn_count, dns_count, ntlm_count = len(conns), len(dns), len(ntlm)
-                    has_data = bool(conns or dns or ntlm)
-
-                if has_data and not _backfill_already_processed:
-                    # -- Feed network mapper (streaming if SQLite) --
-                    if _is_sqlite:
-                        total_events = conn_count + dns_count + ntlm_count
-                        log.info(f'Cycle {cycle}: streaming {conn_count} conns, '
-                                 f'{dns_count} DNS, {ntlm_count} NTLM into network mapper')
-                        send('running',
-                             f'Cycle {cycle}: building network map from '
-                             f'{total_events:,} events...',
-                             55, {'cycle': cycle, 'stage_detail': 'network_mapper',
-                                  'total_events': total_events})
-                        result = nm.execute(
-                            network_connections=hunting_data.iter_events('network_connections'),
-                            dns_queries=hunting_data.iter_events('dns_queries'),
-                            ntlm_logs=hunting_data.iter_events('ntlm_logs'),
+                # Save findings
+                for ao in assessment.get('agent_outputs', []):
+                    ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+                    for f in ao_dict.get('findings', []):
+                        findings_count += 1
+                        db.save_finding(
+                            finding_id=f.get('fingerprint',
+                                             f.get('activity_type', '') + str(analysis_cycle)),
+                            agent_name=ao_dict.get('agent_name', 'unknown'),
+                            activity_type=f.get('activity_type', ''),
+                            severity=ao_dict.get('severity', 'medium'),
+                            confidence=ao_dict.get('confidence', 0.0),
+                            description=f.get('description', ''),
+                            indicators=f.get('indicators', []),
+                            affected_assets=f.get('affected_assets', []),
+                            mitre_tactics=ao_dict.get('mitre_tactics', []),
+                            mitre_techniques=f.get('mitre_techniques', []),
+                            evidence_count=len(f.get('evidence', [])),
+                            recommended_actions=ao_dict.get('recommended_actions', []),
+                            source_cycle=analysis_cycle,
                         )
-                    else:
-                        result = nm.execute(
-                            network_connections=conns,
-                            dns_queries=dns,
-                            ntlm_logs=ntlm,
-                        )
-                    nm.save_map()
 
-                    # Build a lightweight data dict for the coordinator
-                    # and agents.
-                    _SAMPLE = 50_000
-                    if _is_sqlite:
-                        agent_data = {
-                            'network_connections': list(
-                                hunting_data.iter_events('network_connections', limit=_SAMPLE)
-                            ) if conn_count else [],
-                            'dns_queries': list(
-                                hunting_data.iter_events('dns_queries', limit=_SAMPLE)
-                            ) if dns_count else [],
-                            'ntlm_logs': list(
-                                hunting_data.iter_events('ntlm_logs', limit=_SAMPLE)
-                            ) if ntlm_count else [],
-                            'ids_alerts': list(
-                                hunting_data.iter_events('ids_alerts', limit=_SAMPLE)
-                            ) if hunting_data.count('ids_alerts') else [],
-                            '_counts': hunting_data.counts_by_type(),
-                        }
-                    else:
-                        agent_data = hunting_data
-
-                    # ---- Run hunting agents with network map context ----
+                # Persist LLM synthesis
+                llm_synth = assessment.get('llm_synthesis')
+                if llm_synth:
                     try:
-                        _backend = getattr(coordinator.llm_client, 'backend', 'none')
-                        _n_agents = len(coordinator.agents)
-                        _orch_label = 'CrewAI' if _crew_orchestrator else _backend
-                        log.info(f'Cycle {cycle}: running {_n_agents} '
-                                 f'hunting agents (orchestration: {_orch_label})')
-                        send('running',
-                             f'Cycle {cycle}: analyzing with {_n_agents} agents '
-                             f'({_orch_label})...',
-                             65, {'cycle': cycle, 'total_nodes': result['total_nodes'],
-                                  'internal_nodes': result['internal_nodes'],
-                                  'stage_detail': 'llm_analysis',
-                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
-                        context = NetworkState.from_data_with_map(
-                            agent_data, nm.nodes)
+                        db.save_synthesis(analysis_cycle, llm_synth)
+                        log.info(f'Cycle {analysis_cycle}: saved LLM synthesis '
+                                 f'(severity={llm_synth.get("overall_severity", "?")})')
+                    except Exception as se:
+                        log.error(f'Failed to save LLM synthesis: {se}')
 
-                        if _crew_orchestrator:
-                            assessment = _crew_orchestrator.hunt(
-                                data=agent_data, network_state=context)
-                        else:
-                            assessment = coordinator.hunt(
-                                data=agent_data, network_state=context)
+                db.mark_analysis_complete(analysis_cycle)
+                analyses_completed += 1
 
-                        agent_outputs = assessment.get('agent_outputs', [])
-                        for ao in agent_outputs:
-                            ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
-                            for f in ao_dict.get('findings', []):
-                                findings_this_cycle += 1
-                                db.save_finding(
-                                    finding_id=f.get('fingerprint', f.get('activity_type', '') + str(cycle)),
-                                    agent_name=ao_dict.get('agent_name', 'unknown'),
-                                    activity_type=f.get('activity_type', ''),
-                                    severity=ao_dict.get('severity', 'medium'),
-                                    confidence=ao_dict.get('confidence', 0.0),
-                                    description=f.get('description', ''),
-                                    indicators=f.get('indicators', []),
-                                    affected_assets=f.get('affected_assets', []),
-                                    mitre_tactics=ao_dict.get('mitre_tactics', []),
-                                    mitre_techniques=f.get('mitre_techniques', []),
-                                    evidence_count=len(f.get('evidence', [])),
-                                    recommended_actions=ao_dict.get('recommended_actions', []),
-                                    source_cycle=cycle,
-                                )
-                        # Persist LLM synthesis if present
-                        llm_synth = assessment.get('llm_synthesis')
-                        if llm_synth:
-                            try:
-                                db.save_synthesis(cycle, llm_synth)
-                                log.info(f'Cycle {cycle}: saved LLM synthesis '
-                                         f'(severity={llm_synth.get("overall_severity", "?")})')
-                            except Exception as se:
-                                log.error(f'Failed to save LLM synthesis: {se}')
+                msg = (f'Cycle {analysis_cycle} analyzed: '
+                       f'{findings_count} findings from {total_events:,} events')
+                log.info(msg)
+                send('running', msg, 50,
+                     {'pipeline': 'analysis',
+                      'cycle': analysis_cycle,
+                      'findings': findings_count,
+                      'analyses_completed': analyses_completed})
 
-                        if findings_this_cycle:
-                            log.info(f'Cycle {cycle}: agents produced {findings_this_cycle} findings')
-                    except Exception as ae:
-                        log.error(f'Agent analysis error: {ae}')
-                        log.error(traceback.format_exc())
-                        send('running',
-                             f'Cycle {cycle}: agent error: {ae}', 50,
-                             {'cycle': cycle, 'agent_error': str(ae)})
-
-                if has_data:
-                    msg = (f'Cycle {cycle} done: {conn_count} conns, '
-                           f'{dns_count} DNS, {ntlm_count} NTLM → '
-                           f'{result["total_nodes"]} nodes'
-                           f'{f", {findings_this_cycle} findings" if findings_this_cycle else ""}')
-                    log.info(msg)
-                    send('running', msg, 50,
-                         {'cycle': cycle, 'new_conns': conn_count,
-                          'new_dns': dns_count, 'new_ntlm': ntlm_count,
-                          'total_nodes': result['total_nodes'],
-                          'internal_nodes': result['internal_nodes'],
-                          'findings': findings_this_cycle})
-
-                    # Free the SQLite store after the cycle to reclaim
-                    # disk space (the next cycle will create a new one).
-                    if _is_sqlite:
-                        try:
-                            hunting_data.close()
-                        except Exception:
-                            pass
-
-                    # --- Auto-profile unprofiled devices ---
-                    try:
-                        stats = nm.get_profiling_stats()
-                        unprofiled = stats.get('unprofiled', 0)
-                        if unprofiled > 0:
-                            log.info(f'Cycle {cycle}: auto-profiling '
-                                     f'{unprofiled} unprofiled devices')
-                            send('running',
-                                 f'Cycle {cycle}: profiling {unprofiled} '
-                                 f'new devices...',
-                                 80, {'cycle': cycle,
-                                      'stage_detail': 'auto_profile'})
-                            profile_result = nm.profile_devices(
-                                pipeline.splunk,
-                                time_range=f'-{lookback_minutes}m',
-                            )
-                            nm.save_map()
-                            classified = profile_result.get('classified', 0)
-                            log.info(f'Cycle {cycle}: auto-profiled '
-                                     f'{classified} devices')
-                            send('running',
-                                 f'Cycle {cycle}: profiled {classified} '
-                                 f'devices',
-                                 85, {'cycle': cycle,
-                                      'stage_detail': 'auto_profile_done',
-                                      'classified': classified})
-                    except Exception as pe:
-                        log.warning(f'Cycle {cycle}: auto-profile error: {pe}')
-
-                else:
-                    msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
-                    log.info(msg)
-                    send('running', msg, 50, {'cycle': cycle})
-
-            except Exception as e:
-                log.error(f'Cycle {cycle} error: {e}')
+            except Exception as ae:
+                log.error(f'Analysis cycle {analysis_cycle} error: {ae}')
                 log.error(traceback.format_exc())
-                send('running', f'Cycle {cycle} error: {e}', 50,
-                     {'cycle': cycle, 'error': str(e)})
+                db.mark_analysis_complete(analysis_cycle)  # Don't retry
+                send('running',
+                     f'Cycle {analysis_cycle} analysis error: {ae}', 50,
+                     {'pipeline': 'analysis', 'cycle': analysis_cycle,
+                      'error': str(ae)})
 
-            # Sleep in 5-second increments so SIGTERM is checked promptly
-            wait_seconds = interval_minutes * 60
-            elapsed = (datetime.now() - cycle_start).total_seconds()
-            remaining = max(0, wait_seconds - elapsed)
-            while remaining > 0 and not _stop:
-                time.sleep(min(5, remaining))
-                remaining -= 5
-
-        send('complete', f'Stopped after {cycle} cycles', 100,
-             {'cycles_completed': cycle})
-        log.info(f'Continuous ingestion stopped after {cycle} cycles')
+        send('complete',
+             f'Analysis pipeline stopped ({analyses_completed} cycles analyzed)',
+             100, {'analyses_completed': analyses_completed,
+                   'pipeline': 'analysis'})
+        log.info(f'Analysis pipeline stopped after {analyses_completed} analyses')
 
     except Exception as e:
-        log.error(f'Continuous ingestion failed: {e}')
+        log.error(f'Analysis pipeline failed: {e}')
         log.error(traceback.format_exc())
-        send('error', f'Ingestion failed: {str(e)}', 0,
-             {'error_detail': traceback.format_exc()})
+        send('error', f'Analysis pipeline failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc(), 'pipeline': 'analysis'})
 
 
 # ---------------------------------------------------------------------------
@@ -933,9 +906,13 @@ class HuntManager:
         self._monitored_hunts: dict = {}      # job_id -> pid
         self._poll_task: Optional[asyncio.Task] = None
         self._splunk = None
-        # Continuous ingestion state
+        # Continuous ingestion state — dual pipeline
         self._continuous_id: Optional[str] = None
         self._continuous_pid: Optional[int] = None
+        self._data_pipeline_id: Optional[str] = None
+        self._data_pipeline_pid: Optional[int] = None
+        self._analysis_pipeline_id: Optional[str] = None
+        self._analysis_pipeline_pid: Optional[int] = None
 
     # WebSocket broadcast callback — set by the app at startup
     _broadcast_fn = None
@@ -955,156 +932,226 @@ class HuntManager:
     async def start_continuous(self, interval_minutes: int = 15,
                                lookback_minutes: int = 20,
                                backfill_from: str = None) -> dict:
-        """Start continuous network map ingestion in a background process."""
+        """Start continuous ingestion with decoupled data + analysis pipelines."""
         import multiprocessing
 
-        if self._continuous_pid and _pid_alive(self._continuous_pid):
+        # Check if either pipeline is already running
+        if self._data_pipeline_pid and _pid_alive(self._data_pipeline_pid):
             return {
                 'status': 'already_running',
-                'job_id': self._continuous_id,
-                'pid': self._continuous_pid,
+                'data_pipeline_id': self._data_pipeline_id,
+                'data_pipeline_pid': self._data_pipeline_pid,
+                'analysis_pipeline_id': self._analysis_pipeline_id,
+                'analysis_pipeline_pid': self._analysis_pipeline_pid,
             }
 
-        job_id = f'continuous_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data_job_id = f'datapipe_{ts}'
+        analysis_job_id = f'analysis_{ts}'
+        # Keep a composite ID for backward compat with frontend
+        composite_id = f'continuous_{ts}'
         db_path = self.db.db_path
 
-        proc = multiprocessing.Process(
-            target=_continuous_ingest_process,
-            args=(job_id, interval_minutes, lookback_minutes, db_path,
-                  backfill_from),
+        # Launch data pipeline process
+        data_proc = multiprocessing.Process(
+            target=_data_pipeline_process,
+            args=(data_job_id, interval_minutes, lookback_minutes,
+                  db_path, backfill_from),
             daemon=False,
         )
-        proc.start()
+        data_proc.start()
 
-        self._continuous_id = job_id
-        self._continuous_pid = proc.pid
-        self._monitored_hunts[job_id] = proc.pid
-        self.active_hunts[job_id] = {
+        # Launch analysis pipeline process
+        analysis_proc = multiprocessing.Process(
+            target=_analysis_pipeline_process,
+            args=(analysis_job_id, db_path),
+            daemon=False,
+        )
+        analysis_proc.start()
+
+        # Track both pipelines
+        self._data_pipeline_id = data_job_id
+        self._data_pipeline_pid = data_proc.pid
+        self._analysis_pipeline_id = analysis_job_id
+        self._analysis_pipeline_pid = analysis_proc.pid
+
+        # Composite tracking for backward compat
+        self._continuous_id = composite_id
+        self._continuous_pid = data_proc.pid  # primary PID for status checks
+
+        self._monitored_hunts[data_job_id] = data_proc.pid
+        self._monitored_hunts[analysis_job_id] = analysis_proc.pid
+
+        self.active_hunts[data_job_id] = {
             'status': 'running',
-            'type': 'continuous',
+            'type': 'data_pipeline',
             'progress': 0,
             'start_time': datetime.now(),
             'interval_minutes': interval_minutes,
             'lookback_minutes': lookback_minutes,
         }
+        self.active_hunts[analysis_job_id] = {
+            'status': 'running',
+            'type': 'analysis_pipeline',
+            'progress': 0,
+            'start_time': datetime.now(),
+        }
 
         logger.info(
-            f'Started continuous ingestion {job_id} (pid {proc.pid}), '
+            f'Started decoupled pipelines: data={data_job_id} '
+            f'(pid {data_proc.pid}), analysis={analysis_job_id} '
+            f'(pid {analysis_proc.pid}), '
             f'interval={interval_minutes}m, lookback={lookback_minutes}m'
         )
         self._ensure_poll_task()
         return {
             'status': 'started',
-            'job_id': job_id,
-            'pid': proc.pid,
+            'data_pipeline': {
+                'job_id': data_job_id,
+                'pid': data_proc.pid,
+            },
+            'analysis_pipeline': {
+                'job_id': analysis_job_id,
+                'pid': analysis_proc.pid,
+            },
             'interval_minutes': interval_minutes,
             'lookback_minutes': lookback_minutes,
         }
 
     async def stop_continuous(self) -> dict:
-        """Stop the continuous ingestion process."""
-        if not self._continuous_pid:
+        """Stop both data and analysis pipeline processes."""
+        pids_to_kill = []
+
+        # Collect all pipeline PIDs and clean up tracking
+        for attr_id, attr_pid in [
+            ('_data_pipeline_id', '_data_pipeline_pid'),
+            ('_analysis_pipeline_id', '_analysis_pipeline_pid'),
+        ]:
+            job_id = getattr(self, attr_id)
+            pid = getattr(self, attr_pid)
+            if job_id:
+                self._monitored_hunts.pop(job_id, None)
+                self.db.clear_progress(job_id)
+                if job_id in self.active_hunts:
+                    self.active_hunts[job_id]['status'] = 'stopped'
+                if pid and _pid_alive(pid):
+                    pids_to_kill.append(pid)
+                setattr(self, attr_id, None)
+                setattr(self, attr_pid, None)
+
+        if not pids_to_kill and not self._continuous_id:
             return {'status': 'not_running'}
 
-        if not _pid_alive(self._continuous_pid):
-            job_id = self._continuous_id
-            self.db.clear_progress(job_id)
-            self._continuous_id = None
-            self._continuous_pid = None
-            self._monitored_hunts.pop(job_id, None)
-            return {'status': 'already_stopped', 'job_id': job_id}
-
-        job_id = self._continuous_id
-        pid = self._continuous_pid
-        logger.info(
-            f'Stopping continuous ingestion {job_id} (pid {pid})'
-        )
-
-        # Immediately remove from poll loop tracking so
-        # _poll_progress stops broadcasting stale WS updates
-        # that would flip the frontend back to "running".
-        self._monitored_hunts.pop(job_id, None)
-        self.db.clear_progress(job_id)
-        if job_id in self.active_hunts:
-            self.active_hunts[job_id]['status'] = 'stopped'
+        composite_id = self._continuous_id
         self._continuous_id = None
         self._continuous_pid = None
 
-        # Broadcast an explicit 'complete' so the frontend
-        # flips to stopped even if an earlier 'running' msg
-        # was already in flight.
+        # Broadcast stop
         if self._broadcast_fn:
             await self._broadcast_fn({
                 'type': 'continuous_progress',
                 'stage': 'complete',
-                'message': 'Ingestion stopped by user',
+                'message': 'Pipelines stopped by user',
                 'progress': 100,
-                'hunt_id': job_id,
+                'hunt_id': composite_id or '',
             })
 
-        # Send SIGTERM — the process catches it and stops gracefully
-        try:
-            import signal as _sig
-            os.kill(pid, _sig.SIGTERM)
-        except OSError:
-            pass
+        # SIGTERM all pipeline processes
+        import signal as _sig
+        for pid in pids_to_kill:
+            try:
+                os.kill(pid, _sig.SIGTERM)
+            except OSError:
+                pass
 
         # Wait up to 10 seconds for graceful shutdown
         for _ in range(20):
             await asyncio.sleep(0.5)
-            if not _pid_alive(pid):
+            if all(not _pid_alive(p) for p in pids_to_kill):
                 break
 
-        # If still alive, force-kill with SIGKILL
-        if _pid_alive(pid):
-            logger.warning(
-                f'Process {pid} did not respond to SIGTERM, sending SIGKILL'
-            )
-            try:
-                import signal as _sig
-                os.kill(pid, _sig.SIGKILL)
-            except OSError:
-                pass
-            # Wait briefly for SIGKILL to take effect
-            for _ in range(10):
-                await asyncio.sleep(0.3)
-                if not _pid_alive(pid):
-                    break
+        # Force-kill if still alive
+        for pid in pids_to_kill:
+            if _pid_alive(pid):
+                logger.warning(f'Process {pid} did not respond to SIGTERM, sending SIGKILL')
+                try:
+                    os.kill(pid, _sig.SIGKILL)
+                except OSError:
+                    pass
 
-        return {'status': 'stopped', 'job_id': job_id}
+        return {'status': 'stopped'}
 
     def get_continuous_status(self) -> dict:
-        """Return current continuous ingestion status."""
-        if not self._continuous_id:
+        """Return status of both pipelines."""
+        data_alive = (self._data_pipeline_pid and
+                      _pid_alive(self._data_pipeline_pid))
+        analysis_alive = (self._analysis_pipeline_pid and
+                          _pid_alive(self._analysis_pipeline_pid))
+
+        if not data_alive and not analysis_alive:
+            if self._data_pipeline_id or self._analysis_pipeline_id:
+                # Clean up dead references
+                last_data = self._data_pipeline_id
+                last_analysis = self._analysis_pipeline_id
+                self._data_pipeline_id = None
+                self._data_pipeline_pid = None
+                self._analysis_pipeline_id = None
+                self._analysis_pipeline_pid = None
+                self._continuous_id = None
+                self._continuous_pid = None
+                return {'running': False,
+                        'last_data_pipeline': last_data,
+                        'last_analysis_pipeline': last_analysis}
             return {'running': False}
 
-        alive = self._continuous_pid and _pid_alive(self._continuous_pid)
-        if not alive:
-            job_id = self._continuous_id
-            self._continuous_id = None
-            self._continuous_pid = None
-            return {'running': False, 'last_job_id': job_id}
+        def _get_pipeline_info(job_id, pid, pipeline_type):
+            state = self.active_hunts.get(job_id, {})
+            last_progress = state.get('last_progress') or {}
+            extra = last_progress.get('data', {}) or {}
+            if isinstance(extra, str):
+                try:
+                    import json
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            return {
+                'running': _pid_alive(pid) if pid else False,
+                'job_id': job_id,
+                'pid': pid,
+                'message': last_progress.get('message', ''),
+                'cycle': extra.get('cycle', 0),
+                'total_nodes': extra.get('total_nodes', 0),
+                'stage_detail': extra.get('stage_detail', ''),
+                'findings': extra.get('findings', 0),
+                'analyses_completed': extra.get('analyses_completed', 0),
+            }
 
-        state = self.active_hunts.get(self._continuous_id, {})
-        last_progress = state.get('last_progress', {})
-        extra = {}
-        if last_progress.get('extra'):
-            try:
-                import json
-                extra = json.loads(last_progress['extra']) if isinstance(
-                    last_progress['extra'], str) else last_progress['extra']
-            except Exception:
-                pass
+        data_info = _get_pipeline_info(
+            self._data_pipeline_id, self._data_pipeline_pid, 'data')
+        analysis_info = _get_pipeline_info(
+            self._analysis_pipeline_id, self._analysis_pipeline_pid, 'analysis')
 
+        # Get analysis queue status for the frontend
+        try:
+            queue_status = self.db.get_analysis_queue_status()
+        except Exception:
+            queue_status = {}
+
+        # Backward compat fields
+        data_state = self.active_hunts.get(self._data_pipeline_id, {})
         return {
             'running': True,
             'job_id': self._continuous_id,
-            'pid': self._continuous_pid,
-            'message': last_progress.get('message', ''),
-            'cycle': extra.get('cycle', 0),
-            'interval_minutes': extra.get('interval', state.get('interval_minutes', 15)),
-            'lookback_minutes': extra.get('lookback', state.get('lookback_minutes', 20)),
-            'total_nodes': extra.get('total_nodes', 0),
+            'data_pipeline': data_info,
+            'analysis_pipeline': analysis_info,
+            'analysis_queue': queue_status,
+            'interval_minutes': data_state.get('interval_minutes', 15),
+            'lookback_minutes': data_state.get('lookback_minutes', 20),
+            # Backward compat
+            'pid': self._data_pipeline_pid,
+            'message': data_info.get('message', ''),
+            'cycle': data_info.get('cycle', 0),
+            'total_nodes': data_info.get('total_nodes', 0),
         }
 
     # ------------------------------------------------------------------
@@ -1394,7 +1441,10 @@ class HuntManager:
                     # Broadcast to WebSocket clients
                     if self._broadcast_fn:
                         is_bg_profile = hunt_id.startswith('bgprofile_')
-                        is_continuous = hunt_id.startswith('continuous_')
+                        is_data_pipe = hunt_id.startswith('datapipe_')
+                        is_analysis_pipe = hunt_id.startswith('analysis_')
+                        is_continuous = (hunt_id.startswith('continuous_')
+                                         or is_data_pipe or is_analysis_pipe)
                         msg_type = ('continuous_progress' if is_continuous
                                     else 'bg_profile_progress' if is_bg_profile
                                     else 'profile_progress')
@@ -1408,6 +1458,12 @@ class HuntManager:
                         if row.get('data'):
                             msg['result'] = row['data']
                         await self._broadcast_fn(msg)
+
+                    # Add pipeline info to the WS message
+                    if is_data_pipe:
+                        msg['pipeline'] = 'data'
+                    elif is_analysis_pipe:
+                        msg['pipeline'] = 'analysis'
 
                     # For continuous ingestion, reload the map from disk
                     # periodically so the API serves up-to-date graph data.
@@ -1439,6 +1495,10 @@ class HuntManager:
                             self._profile_pid = None
                         if hunt_id == self._bg_profile_id:
                             self._bg_profile_pid = None
+                        if hunt_id == self._data_pipeline_id:
+                            self._data_pipeline_pid = None
+                        if hunt_id == self._analysis_pipeline_id:
+                            self._analysis_pipeline_pid = None
                         if hunt_id == self._continuous_id:
                             self._continuous_id = None
                             self._continuous_pid = None
@@ -1500,6 +1560,15 @@ class HuntManager:
                 elif hunt_id.startswith('bgprofile_'):
                     self._bg_profile_id = hunt_id
                     self._bg_profile_pid = pid
+                elif hunt_id.startswith('datapipe_'):
+                    self._data_pipeline_id = hunt_id
+                    self._data_pipeline_pid = pid
+                    ts = hunt_id.replace('datapipe_', '')
+                    self._continuous_id = f'continuous_{ts}'
+                    self._continuous_pid = pid
+                elif hunt_id.startswith('analysis_'):
+                    self._analysis_pipeline_id = hunt_id
+                    self._analysis_pipeline_pid = pid
                 elif hunt_id.startswith('continuous_'):
                     self._continuous_id = hunt_id
                     self._continuous_pid = pid

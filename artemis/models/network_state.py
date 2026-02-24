@@ -112,6 +112,10 @@ class NetworkMapContext:
     # Per-device traffic baselines (ip -> {avg_conns, avg_bytes, ...})
     baselines: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
+    # Analyst annotations (ip -> list of note strings) — from the
+    # interactive map.  Gives hunting agents targeted analyst context.
+    analyst_annotations: Dict[str, List[str]] = field(default_factory=dict)
+
     def device_type_for(self, ip: str) -> str:
         """Return the profiled device type for an IP, or 'unknown'."""
         return self.ip_to_device_type.get(ip, 'unknown')

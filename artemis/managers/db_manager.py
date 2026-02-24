@@ -152,6 +152,69 @@ class DatabaseManager:
             )
         """)
 
+        # ------------------------------------------------------------------
+        # Decoupled pipeline: persistent event store + analysis queue
+        # ------------------------------------------------------------------
+
+        # Persistent event store — all Splunk events keyed by cycle
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hunt_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle INTEGER NOT NULL,
+                data_type TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                collected_at TIMESTAMP NOT NULL
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hunt_events_cycle_type "
+            "ON hunt_events(cycle, data_type)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hunt_events_collected "
+            "ON hunt_events(collected_at)"
+        )
+
+        # Analysis queue — cycles waiting for LLM/agent analysis
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_queue (
+                cycle INTEGER PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                event_counts TEXT DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+
+        # ------------------------------------------------------------------
+        # Interactive map: layout positions + annotations
+        # ------------------------------------------------------------------
+
+        # Saved node positions (drag-and-drop)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS map_layout (
+                node_id TEXT PRIMARY KEY,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                pinned INTEGER DEFAULT 0,
+                updated_at TIMESTAMP NOT NULL
+            )
+        """)
+
+        # User annotations on the network map
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS map_annotations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT,
+                annotation_type TEXT NOT NULL DEFAULT 'note',
+                content TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -694,6 +757,323 @@ class DatabaseManager:
                 'ip': r[0], 'verdict': r[1],
                 'sources': json.loads(r[2]), 'enriched_at': r[3],
             } for r in rows]
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Persistent event store (decoupled pipeline)
+    # ------------------------------------------------------------------
+
+    def store_events(self, cycle: int, data_type: str,
+                     events: List[Dict]) -> int:
+        """Bulk-insert events for a cycle into the persistent store."""
+        if not events:
+            return 0
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            conn.executemany(
+                "INSERT INTO hunt_events (cycle, data_type, event_json, "
+                "collected_at) VALUES (?, ?, ?, ?)",
+                [(cycle, data_type, _dumps(e), now) for e in events],
+            )
+            conn.commit()
+            return len(events)
+        finally:
+            conn.close()
+
+    def get_events_for_cycle(self, cycle: int) -> Dict[str, List[Dict]]:
+        """Retrieve all events for a cycle, grouped by data_type."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT data_type, event_json FROM hunt_events "
+                "WHERE cycle = ? ORDER BY id",
+                (cycle,),
+            ).fetchall()
+            result: Dict[str, List[Dict]] = {}
+            for data_type, event_json in rows:
+                result.setdefault(data_type, []).append(json.loads(event_json))
+            return result
+        finally:
+            conn.close()
+
+    def get_event_counts_for_cycle(self, cycle: int) -> Dict[str, int]:
+        """Get event counts by data_type for a cycle."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT data_type, COUNT(*) FROM hunt_events "
+                "WHERE cycle = ? GROUP BY data_type",
+                (cycle,),
+            ).fetchall()
+            return {r[0]: r[1] for r in rows}
+        finally:
+            conn.close()
+
+    def get_latest_event_cycle(self) -> int:
+        """Get the highest cycle number in the event store."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT MAX(cycle) FROM hunt_events"
+            ).fetchone()
+            return row[0] or 0
+        finally:
+            conn.close()
+
+    def cleanup_old_events(self, max_age_hours: int = 72) -> int:
+        """Delete events older than max_age_hours. Returns count deleted."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
+            cursor = conn.execute(
+                "DELETE FROM hunt_events WHERE collected_at < ?",
+                (cutoff,),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Analysis queue (decoupled pipeline)
+    # ------------------------------------------------------------------
+
+    def queue_analysis(self, cycle: int, event_counts: Dict[str, int] = None):
+        """Queue a cycle for agent/LLM analysis."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO analysis_queue "
+                "(cycle, status, event_counts, created_at) "
+                "VALUES (?, 'pending', ?, ?)",
+                (cycle, _dumps(event_counts or {}),
+                 datetime.now().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_pending_analysis(self) -> Dict | None:
+        """Get the next cycle waiting for analysis."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT cycle, event_counts, created_at "
+                "FROM analysis_queue WHERE status = 'pending' "
+                "ORDER BY cycle ASC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                'cycle': row[0],
+                'event_counts': json.loads(row[1]) if row[1] else {},
+                'created_at': row[2],
+            }
+        finally:
+            conn.close()
+
+    def mark_analysis_started(self, cycle: int):
+        """Mark a cycle as being analyzed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE analysis_queue SET status = 'in_progress', "
+                "started_at = ? WHERE cycle = ?",
+                (datetime.now().isoformat(), cycle),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_analysis_complete(self, cycle: int):
+        """Mark a cycle's analysis as complete."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE analysis_queue SET status = 'complete', "
+                "completed_at = ? WHERE cycle = ?",
+                (datetime.now().isoformat(), cycle),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_analysis_queue_status(self) -> Dict:
+        """Get summary of the analysis queue."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) FROM analysis_queue GROUP BY status"
+            ).fetchall()
+            by_status = {r[0]: r[1] for r in rows}
+            latest = conn.execute(
+                "SELECT cycle, status, created_at, started_at, completed_at "
+                "FROM analysis_queue ORDER BY cycle DESC LIMIT 1"
+            ).fetchone()
+            return {
+                'pending': by_status.get('pending', 0),
+                'in_progress': by_status.get('in_progress', 0),
+                'complete': by_status.get('complete', 0),
+                'latest': {
+                    'cycle': latest[0],
+                    'status': latest[1],
+                    'created_at': latest[2],
+                    'started_at': latest[3],
+                    'completed_at': latest[4],
+                } if latest else None,
+            }
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Map layout (saved node positions)
+    # ------------------------------------------------------------------
+
+    def save_layout(self, positions: Dict[str, Dict]) -> int:
+        """Save node positions. positions = {node_id: {x, y, pinned}}."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            count = 0
+            for node_id, pos in positions.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO map_layout "
+                    "(node_id, x, y, pinned, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (node_id, pos['x'], pos['y'],
+                     1 if pos.get('pinned') else 0, now),
+                )
+                count += 1
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def get_layout(self) -> Dict[str, Dict]:
+        """Get all saved node positions."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT node_id, x, y, pinned, updated_at FROM map_layout"
+            ).fetchall()
+            return {
+                r[0]: {'x': r[1], 'y': r[2], 'pinned': bool(r[3]),
+                       'updated_at': r[4]}
+                for r in rows
+            }
+        finally:
+            conn.close()
+
+    def clear_layout(self) -> int:
+        """Delete all saved positions (reset to auto-layout)."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM map_layout"
+            ).fetchone()[0]
+            conn.execute("DELETE FROM map_layout")
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Map annotations
+    # ------------------------------------------------------------------
+
+    def create_annotation(self, node_id: str | None,
+                          annotation_type: str, content: str,
+                          metadata: Dict = None) -> Dict:
+        """Create a map annotation."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            now = datetime.now().isoformat()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO map_annotations "
+                "(node_id, annotation_type, content, metadata, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (node_id, annotation_type, content,
+                 _dumps(metadata or {}), now, now),
+            )
+            ann_id = cursor.lastrowid
+            conn.commit()
+            return {
+                'id': ann_id, 'node_id': node_id,
+                'annotation_type': annotation_type,
+                'content': content,
+                'metadata': metadata or {},
+                'created_at': now, 'updated_at': now,
+            }
+        finally:
+            conn.close()
+
+    def get_annotations(self, node_id: str = None) -> List[Dict]:
+        """Get annotations, optionally filtered by node_id."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            if node_id:
+                rows = conn.execute(
+                    "SELECT id, node_id, annotation_type, content, metadata, "
+                    "created_at, updated_at FROM map_annotations "
+                    "WHERE node_id = ? ORDER BY created_at DESC",
+                    (node_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, node_id, annotation_type, content, metadata, "
+                    "created_at, updated_at FROM map_annotations "
+                    "ORDER BY created_at DESC"
+                ).fetchall()
+            return [{
+                'id': r[0], 'node_id': r[1],
+                'annotation_type': r[2], 'content': r[3],
+                'metadata': json.loads(r[4]) if r[4] else {},
+                'created_at': r[5], 'updated_at': r[6],
+            } for r in rows]
+        finally:
+            conn.close()
+
+    def update_annotation(self, ann_id: int, content: str = None,
+                          metadata: Dict = None) -> bool:
+        """Update an annotation's content or metadata."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            updates = []
+            params = []
+            if content is not None:
+                updates.append("content = ?")
+                params.append(content)
+            if metadata is not None:
+                updates.append("metadata = ?")
+                params.append(_dumps(metadata))
+            if not updates:
+                return False
+            updates.append("updated_at = ?")
+            params.append(datetime.now().isoformat())
+            params.append(ann_id)
+            conn.execute(
+                f"UPDATE map_annotations SET {', '.join(updates)} "
+                f"WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def delete_annotation(self, ann_id: int) -> bool:
+        """Delete an annotation."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM map_annotations WHERE id = ?", (ann_id,),
+            )
+            conn.commit()
+            return True
         finally:
             conn.close()
 
