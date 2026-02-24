@@ -1179,6 +1179,12 @@
                                 <span id="continuous-queue-badge" style="display:none; background:#ff9800; color:#fff; padding:0 6px; border-radius:8px; font-size:10px; margin-left:4px;"></span>
                             </span>
                             <span style="color:var(--border-color);">|</span>
+                            <span style="display:inline-flex; align-items:center; gap:4px;">
+                                <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:10px;"></i>
+                                <span style="font-weight:600;">Profiler:</span>
+                                <span id="continuous-profile-msg">—</span>
+                            </span>
+                            <span style="color:var(--border-color);">|</span>
                             <span id="continuous-cycle">Cycle: —</span>
                             <span id="continuous-nodes">Nodes: —</span>
                             <span id="continuous-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:11px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
@@ -4042,6 +4048,22 @@
                         _refreshFindingsBadge();
                     }
 
+                } else if (pipeline === 'profile') {
+                    const profileMsg = document.getElementById('continuous-profile-msg');
+                    profileMsg.textContent = data.message || 'Working...';
+
+                    // When profiling completes a batch, refresh graph
+                    // to show updated device types/icons
+                    const classified = result.classified || 0;
+                    if (classified > 0) {
+                        if (!handleContinuousProgress._lastProfileRefresh) handleContinuousProgress._lastProfileRefresh = 0;
+                        const now2 = Date.now();
+                        if (now2 - handleContinuousProgress._lastProfileRefresh > 15000) {
+                            handleContinuousProgress._lastProfileRefresh = now2;
+                            _refreshGraphData();
+                        }
+                    }
+
                 } else {
                     // Legacy / composite message — update everything
                     document.getElementById('continuous-msg').textContent = data.message || '';
@@ -4061,15 +4083,18 @@
                 if (status.running && !_stopRequested) {
                     setContinuousRunning(true);
 
-                    // Dual pipeline status
+                    // Triple pipeline status
                     const dp = status.data_pipeline || {};
                     const ap = status.analysis_pipeline || {};
+                    const pp = status.profile_pipeline || {};
                     const queue = status.analysis_queue || {};
 
                     document.getElementById('continuous-data-msg').textContent =
                         dp.message || (dp.running ? 'Running' : 'Stopped');
                     document.getElementById('continuous-analysis-msg').textContent =
                         ap.message || (ap.running ? 'Running' : 'Stopped');
+                    document.getElementById('continuous-profile-msg').textContent =
+                        pp.message || (pp.running ? 'Running' : 'Stopped');
                     document.getElementById('continuous-cycle').textContent =
                         `Cycle: ${status.cycle || dp.cycle || '—'}`;
                     document.getElementById('continuous-nodes').textContent =

@@ -583,71 +583,9 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                           'new_dns': dns_count, 'new_ntlm': ntlm_count,
                           'total_nodes': total_nodes})
 
-                    # Auto-profile unprofiled devices (deep profiling)
-                    # Uses the full windowed query approach (23 parallel
-                    # Splunk queries per window) and goes back to when each
-                    # device was first seen on the network.
-                    try:
-                        stats = nm.get_profiling_stats()
-                        unprofiled = stats.get('unprofiled', 0)
-                        if unprofiled > 0:
-                            # Determine time range from earliest first_seen
-                            # of unprofiled devices
-                            unprofiled_nodes = [
-                                n for n in nm.nodes.values()
-                                if not n.device_type and n.is_internal
-                            ]
-                            if unprofiled_nodes:
-                                earliest = min(
-                                    n.first_seen for n in unprofiled_nodes
-                                )
-                                age_secs = (
-                                    datetime.now() - earliest
-                                ).total_seconds()
-                                age_hours = max(1, int(age_secs / 3600) + 1)
-                                if age_hours >= 24:
-                                    age_days = (age_hours + 23) // 24
-                                    profile_time_range = f'-{age_days}d'
-                                else:
-                                    profile_time_range = f'-{age_hours}h'
-                            else:
-                                profile_time_range = f'-{lookback_minutes}m'
-
-                            log.info(
-                                f'Cycle {cycle}: deep profiling '
-                                f'{unprofiled} devices '
-                                f'(time_range={profile_time_range})'
-                            )
-                            send('running',
-                                 f'Cycle {cycle}: profiling {unprofiled} '
-                                 f'devices ({profile_time_range})...',
-                                 55, {'cycle': cycle, 'pipeline': 'data',
-                                      'stage_detail': 'auto_profiling',
-                                      'total_nodes': total_nodes})
-
-                            def _profile_progress(stage, message, pct):
-                                send('running',
-                                     f'Cycle {cycle}: profiling — '
-                                     f'{message}',
-                                     50 + pct // 10,
-                                     {'cycle': cycle, 'pipeline': 'data',
-                                      'stage_detail': 'auto_profiling',
-                                      'total_nodes': total_nodes,
-                                      'unprofiled': unprofiled})
-
-                            profile_result = nm.profile_devices(
-                                pipeline.splunk,
-                                time_range=profile_time_range,
-                                progress_callback=_profile_progress,
-                            )
-                            nm.save_map()
-                            log.info(
-                                f'Cycle {cycle}: profiling complete — '
-                                f'{profile_result.get("classified", 0)} '
-                                f'classified'
-                            )
-                    except Exception as pe:
-                        log.warning(f'Cycle {cycle}: auto-profile error: {pe}')
+                    # NOTE: profiling is handled by the separate profile
+                    # pipeline process running in parallel — no inline
+                    # profiling here to avoid blocking data collection.
 
                     # Cleanup old events (keep 72 hours)
                     try:
@@ -941,6 +879,151 @@ def _analysis_pipeline_process(job_id, db_path):
 
 
 # ---------------------------------------------------------------------------
+# Profile pipeline (separate subprocess)
+# ---------------------------------------------------------------------------
+
+def _profile_pipeline_process(job_id, db_path):
+    """Continuously profile unprofiled devices in a separate subprocess.
+
+    Runs in a non-daemon subprocess alongside the data and analysis
+    pipelines.  Polls for unprofiled devices, runs deep profiling
+    (23 parallel Splunk queries per 24-hour window going back to each
+    device's first_seen timestamp), then sleeps until the next check.
+
+    Uses merge_enrichment_and_save() to avoid clobbering connection
+    data being written concurrently by the data pipeline.
+    """
+    import os, logging, traceback, time, signal as _signal
+    from datetime import datetime
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True,
+    )
+    log = logging.getLogger('artemis.profile_pipeline')
+
+    db = DatabaseManager(db_path)
+    pid = os.getpid()
+    _stop = False
+
+    def _handle_term(*_a):
+        nonlocal _stop
+        _stop = True
+        log.info('Profile pipeline received SIGTERM, shutting down...')
+
+    _signal.signal(_signal.SIGTERM, _handle_term)
+
+    def send(stage, message, progress, data=None):
+        db.write_progress(job_id, pid, stage, message, progress, data)
+
+    send('running', 'Profile pipeline starting...', 0,
+         {'pipeline': 'profile'})
+
+    try:
+        cfg = _build_splunk_config()
+        pipeline = DataPipeline(cfg)
+        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm.initialize()
+
+        log.info(f'Profile pipeline started (pid {pid})')
+
+        while not _stop:
+            # Reload map from disk to pick up new nodes from data pipeline
+            nm.initialize()
+
+            stats = nm.get_profiling_stats()
+            unprofiled = stats.get('unprofiled', 0)
+
+            if unprofiled == 0:
+                send('running', 'All devices profiled — waiting for new nodes',
+                     50, {'pipeline': 'profile', 'unprofiled': 0,
+                          'total_nodes': len(nm.nodes)})
+                # Sleep 60s, checking for stop every 5s
+                for _ in range(12):
+                    if _stop:
+                        break
+                    time.sleep(5)
+                continue
+
+            # Calculate time range from earliest first_seen of unprofiled
+            unprofiled_nodes = [
+                n for n in nm.nodes.values()
+                if not n.device_type and n.is_internal
+            ]
+            if unprofiled_nodes:
+                earliest = min(n.first_seen for n in unprofiled_nodes)
+                age_secs = (datetime.now() - earliest).total_seconds()
+                age_hours = max(1, int(age_secs / 3600) + 1)
+                if age_hours >= 24:
+                    age_days = (age_hours + 23) // 24
+                    profile_time_range = f'-{age_days}d'
+                else:
+                    profile_time_range = f'-{age_hours}h'
+            else:
+                profile_time_range = '-24h'
+
+            log.info(f'Profiling {unprofiled} devices '
+                     f'(time_range={profile_time_range})')
+            send('running',
+                 f'Profiling {unprofiled} devices ({profile_time_range})...',
+                 20, {'pipeline': 'profile', 'unprofiled': unprofiled,
+                      'total_nodes': len(nm.nodes),
+                      'stage_detail': 'profiling'})
+
+            def _progress_cb(stage, message, pct):
+                if _stop:
+                    return
+                send('running', f'Profiling — {message}',
+                     20 + pct * 60 // 100,
+                     {'pipeline': 'profile', 'unprofiled': unprofiled,
+                      'total_nodes': len(nm.nodes),
+                      'stage_detail': 'profiling'})
+
+            try:
+                result = nm.profile_devices(
+                    pipeline.splunk,
+                    time_range=profile_time_range,
+                    progress_callback=_progress_cb,
+                )
+                # Merge enrichment data with the latest map on disk
+                # (the data pipeline may have written new connections)
+                nm.merge_enrichment_and_save()
+
+                classified = result.get('classified', 0)
+                log.info(f'Profiling complete: {classified} classified')
+                send('running',
+                     f'Profiled {classified} devices — waiting for new nodes',
+                     90, {'pipeline': 'profile', 'unprofiled': 0,
+                          'total_nodes': len(nm.nodes),
+                          'classified': classified})
+            except Exception as pe:
+                log.warning(f'Profile cycle error: {pe}')
+                log.warning(traceback.format_exc())
+                send('running', f'Profile error: {pe}', 50,
+                     {'pipeline': 'profile', 'error': str(pe)})
+
+            # Wait before next check (30s in 5s increments)
+            for _ in range(6):
+                if _stop:
+                    break
+                time.sleep(5)
+
+        send('complete', 'Profile pipeline stopped', 100,
+             {'pipeline': 'profile'})
+        log.info('Profile pipeline exiting')
+
+    except Exception as e:
+        log.error(f'Profile pipeline failed: {e}')
+        log.error(traceback.format_exc())
+        send('error', f'Profile pipeline failed: {str(e)}', 0,
+             {'error_detail': traceback.format_exc(), 'pipeline': 'profile'})
+
+
+# ---------------------------------------------------------------------------
 # HuntManager — lives in the web server process
 # ---------------------------------------------------------------------------
 
@@ -958,13 +1041,15 @@ class HuntManager:
         self._monitored_hunts: dict = {}      # job_id -> pid
         self._poll_task: Optional[asyncio.Task] = None
         self._splunk = None
-        # Continuous ingestion state — dual pipeline
+        # Continuous ingestion state — triple pipeline
         self._continuous_id: Optional[str] = None
         self._continuous_pid: Optional[int] = None
         self._data_pipeline_id: Optional[str] = None
         self._data_pipeline_pid: Optional[int] = None
         self._analysis_pipeline_id: Optional[str] = None
         self._analysis_pipeline_pid: Optional[int] = None
+        self._profile_pipeline_id: Optional[str] = None
+        self._profile_pipeline_pid: Optional[int] = None
 
     # WebSocket broadcast callback — set by the app at startup
     _broadcast_fn = None
@@ -1021,11 +1106,22 @@ class HuntManager:
         )
         analysis_proc.start()
 
-        # Track both pipelines
+        # Launch profile pipeline process
+        profile_job_id = f'profpipe_{ts}'
+        profile_proc = multiprocessing.Process(
+            target=_profile_pipeline_process,
+            args=(profile_job_id, db_path),
+            daemon=False,
+        )
+        profile_proc.start()
+
+        # Track all three pipelines
         self._data_pipeline_id = data_job_id
         self._data_pipeline_pid = data_proc.pid
         self._analysis_pipeline_id = analysis_job_id
         self._analysis_pipeline_pid = analysis_proc.pid
+        self._profile_pipeline_id = profile_job_id
+        self._profile_pipeline_pid = profile_proc.pid
 
         # Composite tracking for backward compat
         self._continuous_id = composite_id
@@ -1033,6 +1129,7 @@ class HuntManager:
 
         self._monitored_hunts[data_job_id] = data_proc.pid
         self._monitored_hunts[analysis_job_id] = analysis_proc.pid
+        self._monitored_hunts[profile_job_id] = profile_proc.pid
 
         self.active_hunts[data_job_id] = {
             'status': 'running',
@@ -1048,11 +1145,18 @@ class HuntManager:
             'progress': 0,
             'start_time': datetime.now(),
         }
+        self.active_hunts[profile_job_id] = {
+            'status': 'running',
+            'type': 'profile_pipeline',
+            'progress': 0,
+            'start_time': datetime.now(),
+        }
 
         logger.info(
-            f'Started decoupled pipelines: data={data_job_id} '
+            f'Started pipelines: data={data_job_id} '
             f'(pid {data_proc.pid}), analysis={analysis_job_id} '
-            f'(pid {analysis_proc.pid}), '
+            f'(pid {analysis_proc.pid}), profile={profile_job_id} '
+            f'(pid {profile_proc.pid}), '
             f'interval={interval_minutes}m, lookback={lookback_minutes}m'
         )
         self._ensure_poll_task()
@@ -1066,6 +1170,10 @@ class HuntManager:
                 'job_id': analysis_job_id,
                 'pid': analysis_proc.pid,
             },
+            'profile_pipeline': {
+                'job_id': profile_job_id,
+                'pid': profile_proc.pid,
+            },
             'interval_minutes': interval_minutes,
             'lookback_minutes': lookback_minutes,
         }
@@ -1078,6 +1186,7 @@ class HuntManager:
         for attr_id, attr_pid in [
             ('_data_pipeline_id', '_data_pipeline_pid'),
             ('_analysis_pipeline_id', '_analysis_pipeline_pid'),
+            ('_profile_pipeline_id', '_profile_pipeline_pid'),
         ]:
             job_id = getattr(self, attr_id)
             pid = getattr(self, attr_pid)
@@ -1134,13 +1243,15 @@ class HuntManager:
         return {'status': 'stopped'}
 
     def get_continuous_status(self) -> dict:
-        """Return status of both pipelines."""
+        """Return status of all pipelines."""
         data_alive = (self._data_pipeline_pid and
                       _pid_alive(self._data_pipeline_pid))
         analysis_alive = (self._analysis_pipeline_pid and
                           _pid_alive(self._analysis_pipeline_pid))
+        profile_alive = (self._profile_pipeline_pid and
+                         _pid_alive(self._profile_pipeline_pid))
 
-        if not data_alive and not analysis_alive:
+        if not data_alive and not analysis_alive and not profile_alive:
             if self._data_pipeline_id or self._analysis_pipeline_id:
                 # Clean up dead references
                 last_data = self._data_pipeline_id
@@ -1149,6 +1260,8 @@ class HuntManager:
                 self._data_pipeline_pid = None
                 self._analysis_pipeline_id = None
                 self._analysis_pipeline_pid = None
+                self._profile_pipeline_id = None
+                self._profile_pipeline_pid = None
                 self._continuous_id = None
                 self._continuous_pid = None
                 return {'running': False,
@@ -1182,6 +1295,8 @@ class HuntManager:
             self._data_pipeline_id, self._data_pipeline_pid, 'data')
         analysis_info = _get_pipeline_info(
             self._analysis_pipeline_id, self._analysis_pipeline_pid, 'analysis')
+        profile_info = _get_pipeline_info(
+            self._profile_pipeline_id, self._profile_pipeline_pid, 'profile')
 
         # Get analysis queue status for the frontend
         try:
@@ -1196,6 +1311,7 @@ class HuntManager:
             'job_id': self._continuous_id,
             'data_pipeline': data_info,
             'analysis_pipeline': analysis_info,
+            'profile_pipeline': profile_info,
             'analysis_queue': queue_status,
             'interval_minutes': data_state.get('interval_minutes', 15),
             'lookback_minutes': data_state.get('lookback_minutes', 20),
@@ -1495,8 +1611,10 @@ class HuntManager:
                         is_bg_profile = hunt_id.startswith('bgprofile_')
                         is_data_pipe = hunt_id.startswith('datapipe_')
                         is_analysis_pipe = hunt_id.startswith('analysis_')
+                        is_profile_pipe = hunt_id.startswith('profpipe_')
                         is_continuous = (hunt_id.startswith('continuous_')
-                                         or is_data_pipe or is_analysis_pipe)
+                                         or is_data_pipe or is_analysis_pipe
+                                         or is_profile_pipe)
                         msg_type = ('continuous_progress' if is_continuous
                                     else 'bg_profile_progress' if is_bg_profile
                                     else 'profile_progress')
@@ -1514,30 +1632,34 @@ class HuntManager:
                             msg['pipeline'] = 'data'
                         elif is_analysis_pipe:
                             msg['pipeline'] = 'analysis'
+                        elif is_profile_pipe:
+                            msg['pipeline'] = 'profile'
                         await self._broadcast_fn(msg)
 
-                    # For continuous ingestion, reload the map from disk
+                    # For continuous pipelines, reload the map from disk
                     # periodically so the API serves up-to-date graph data.
-                    # Triggers on cycle change OR node-count change (backfill),
-                    # throttled to at most once per 30 seconds (file can be large).
+                    # Triggers on cycle/node-count/classified changes,
+                    # throttled to at most once per 30 seconds per pipeline.
                     if is_continuous and row['stage'] == 'running':
                         data = row.get('data') or {}
                         if not isinstance(data, dict):
                             data = {}
-                        cur_cycle = data.get('cycle', 0)
-                        cur_nodes = data.get('total_nodes', 0)
+                        # Build a fingerprint of relevant state
+                        cur_fp = (
+                            data.get('cycle', 0),
+                            data.get('total_nodes', 0),
+                            data.get('classified', 0),
+                            data.get('unprofiled', 0),
+                        )
 
                         prev_key = f'_last_reload_{hunt_id}'
-                        prev = getattr(self, prev_key, (0, 0, 0))  # (cycle, nodes, timestamp)
-                        prev_cycle, prev_nodes, prev_ts = prev
+                        prev_fp, prev_ts = getattr(
+                            self, prev_key, ((0, 0, 0, 0), 0))
 
                         now_ts = _time.time()
-                        state_changed = (
-                            (cur_cycle and cur_cycle != prev_cycle) or
-                            (cur_nodes and cur_nodes != prev_nodes)
-                        )
+                        state_changed = cur_fp != prev_fp and any(cur_fp)
                         if state_changed and (now_ts - prev_ts) > 30:
-                            setattr(self, prev_key, (cur_cycle, cur_nodes, now_ts))
+                            setattr(self, prev_key, (cur_fp, now_ts))
                             try:
                                 plugin_manager.reload_from_disk(
                                     ['network_mapper']
@@ -1633,6 +1755,9 @@ class HuntManager:
                 elif hunt_id.startswith('analysis_'):
                     self._analysis_pipeline_id = hunt_id
                     self._analysis_pipeline_pid = pid
+                elif hunt_id.startswith('profpipe_'):
+                    self._profile_pipeline_id = hunt_id
+                    self._profile_pipeline_pid = pid
                 elif hunt_id.startswith('continuous_'):
                     self._continuous_id = hunt_id
                     self._continuous_pid = pid
