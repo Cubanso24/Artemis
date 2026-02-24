@@ -473,6 +473,27 @@
             position: relative;
         }
 
+        /* Minimap */
+        #graph-minimap {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 180px;
+            height: 120px;
+            background: rgba(15, 17, 23, 0.88);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            z-index: 20;
+            cursor: crosshair;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+        #graph-minimap canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
         .graph-controls {
             display: flex;
             gap: 8px;
@@ -1274,11 +1295,21 @@
                     <button class="btn btn-secondary" id="pin-all-btn" onclick="togglePinAll()" title="Lock all node positions" style="font-size:11px; padding:3px 8px;">
                         <i class="fa-solid fa-lock-open"></i> Unlocked
                     </button>
+                    <span style="color:var(--border-color);">|</span>
+                    <button class="btn btn-secondary" id="heatmap-btn" onclick="toggleHeatmap()" title="Heatmap: color nodes by connection volume" style="font-size:11px; padding:3px 8px;">
+                        <i class="fa-solid fa-temperature-high"></i> Heatmap
+                    </button>
+                    <button class="btn btn-secondary" id="flow-anim-btn" onclick="toggleFlowAnimation()" title="Show animated traffic flow on edges" style="font-size:11px; padding:3px 8px;">
+                        <i class="fa-solid fa-wave-square"></i> Flow
+                    </button>
                     <span style="flex:1;"></span>
                     <span id="graph-tool-hint" style="font-size:11px; color:var(--text-secondary); font-style:italic;"></span>
                 </div>
 
-                <div id="network-graph"></div>
+                <div style="position:relative;">
+                    <div id="network-graph"></div>
+                    <div id="graph-minimap"><canvas id="minimap-canvas" width="360" height="240"></canvas></div>
+                </div>
 
                 <div class="graph-legend" id="graph-legend">
                     <div style="font-size:11px; opacity:0.7; margin-bottom:6px; font-weight:600;">DEVICE TYPES</div>
@@ -2215,6 +2246,7 @@
                         source: src,
                         target: tgt,
                         weight: e.value || 1,
+                        _title: e.title || '',
                     },
                     classes: edgeClass,
                 });
@@ -2557,6 +2589,34 @@
                 _tipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
             });
 
+            // Edge hover tooltip
+            networkGraph.on('mouseover', 'edge', function(evt) {
+                const edge = evt.target;
+                const w = edge.data('weight') || 0;
+                const title = edge.data('_title') || '';
+                const src = edge.data('source') || '';
+                const tgt = edge.data('target') || '';
+                const srcLabel = (networkGraph.getElementById(src).data('label') || src).split('\n')[0];
+                const tgtLabel = (networkGraph.getElementById(tgt).data('label') || tgt).split('\n')[0];
+                const lines = [`${srcLabel}  \u2192  ${tgtLabel}`];
+                lines.push(title || `${Number(w).toLocaleString()} connections`);
+                _tipEl.textContent = lines.join('\n');
+                _tipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
+                _tipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+                _tipEl.style.display = 'block';
+                // Highlight edge on hover
+                edge.style({ 'line-color': '#58a6ff', 'target-arrow-color': '#58a6ff', 'opacity': 1, 'width': Math.max(edge.numericStyle('width'), 2.5) });
+            });
+            networkGraph.on('mouseout', 'edge', function(evt) {
+                _tipEl.style.display = 'none';
+                // Reset edge style
+                evt.target.removeStyle('line-color target-arrow-color opacity width');
+            });
+            networkGraph.on('mousemove', 'edge', function(evt) {
+                _tipEl.style.left = (evt.originalEvent.clientX + 12) + 'px';
+                _tipEl.style.top = (evt.originalEvent.clientY + 12) + 'px';
+            });
+
             // Click handler
             networkGraph.on('tap', 'node', function(evt) {
                 const node = evt.target;
@@ -2644,6 +2704,234 @@
 
             // Render existing annotations from the graph data
             _renderAnnotationOverlays(graphData.annotations || []);
+
+            // --- Minimap ---
+            _updateMinimap();
+            networkGraph.on('pan zoom resize', _debounceMinimap);
+
+            // Re-apply heatmap/flow if they were active
+            if (_heatmapActive) _applyHeatmap();
+            if (_flowAnimActive) _startFlowAnimation();
+        }
+
+        // ================================================================
+        // Minimap — small canvas overlay showing full graph + viewport rect
+        // ================================================================
+        let _minimapRAF = null;
+        function _debounceMinimap() {
+            if (_minimapRAF) return;
+            _minimapRAF = requestAnimationFrame(() => { _minimapRAF = null; _updateMinimap(); });
+        }
+
+        function _updateMinimap() {
+            if (!networkGraph) return;
+            const canvas = document.getElementById('minimap-canvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            const bb = networkGraph.elements().boundingBox();
+            if (!bb || bb.w === 0 || bb.h === 0) return;
+
+            // Padding around the bounding box
+            const pad = 20;
+            const bbW = bb.w + pad * 2, bbH = bb.h + pad * 2;
+            const scale = Math.min(W / bbW, H / bbH);
+            const offX = (W - bbW * scale) / 2 - (bb.x1 - pad) * scale;
+            const offY = (H - bbH * scale) / 2 - (bb.y1 - pad) * scale;
+
+            // Draw edges as thin lines
+            ctx.strokeStyle = 'rgba(100,126,234,0.15)';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            networkGraph.edges().forEach(e => {
+                const sp = e.sourceEndpoint();
+                const tp = e.targetEndpoint();
+                ctx.moveTo(sp.x * scale + offX, sp.y * scale + offY);
+                ctx.lineTo(tp.x * scale + offX, tp.y * scale + offY);
+            });
+            ctx.stroke();
+
+            // Draw nodes as small dots
+            const heatOn = _heatmapActive;
+            networkGraph.nodes().forEach(n => {
+                if (n.data('_isSubnet') && !n.hasClass('collapsed')) return;
+                const pos = n.position();
+                const x = pos.x * scale + offX;
+                const y = pos.y * scale + offY;
+                if (heatOn) {
+                    ctx.fillStyle = n.style('background-color') || '#4CAF50';
+                } else if (n.hasClass('internet-cloud')) {
+                    ctx.fillStyle = '#f44336';
+                } else if (n.hasClass('flagged-malicious')) {
+                    ctx.fillStyle = '#ff1744';
+                } else if (n.hasClass('flagged-suspicious')) {
+                    ctx.fillStyle = '#aa00ff';
+                } else {
+                    const dt = n.data('device_type');
+                    ctx.fillStyle = n.data('_color') || '#4CAF50';
+                }
+                const r = n.hasClass('internet-cloud') ? 4 : n.hasClass('subnet-group') ? 3 : 2;
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw viewport rectangle
+            const ext = networkGraph.extent();
+            const vx1 = ext.x1 * scale + offX;
+            const vy1 = ext.y1 * scale + offY;
+            const vx2 = ext.x2 * scale + offX;
+            const vy2 = ext.y2 * scale + offY;
+            ctx.strokeStyle = 'rgba(88,166,255,0.8)';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(vx1, vy1, vx2 - vx1, vy2 - vy1);
+            ctx.fillStyle = 'rgba(88,166,255,0.06)';
+            ctx.fillRect(vx1, vy1, vx2 - vx1, vy2 - vy1);
+
+            // Store transform for click-to-navigate
+            canvas._mmScale = scale;
+            canvas._mmOffX = offX;
+            canvas._mmOffY = offY;
+        }
+
+        // Click on minimap → pan main graph
+        document.addEventListener('DOMContentLoaded', () => {
+            const mc = document.getElementById('minimap-canvas');
+            if (!mc) return;
+            function minimapNav(e) {
+                if (!networkGraph || !mc._mmScale) return;
+                const rect = mc.getBoundingClientRect();
+                const sx = (e.clientX - rect.left) * (mc.width / rect.width);
+                const sy = (e.clientY - rect.top) * (mc.height / rect.height);
+                const modelX = (sx - mc._mmOffX) / mc._mmScale;
+                const modelY = (sy - mc._mmOffY) / mc._mmScale;
+                networkGraph.center({ eles: networkGraph.collection(), x: modelX, y: modelY });
+                networkGraph.panBy({ x: networkGraph.width() / 2 - networkGraph.width() / 2, y: 0 }); // force refresh
+                const zoom = networkGraph.zoom();
+                networkGraph.viewport({ zoom: zoom, pan: { x: networkGraph.width() / 2 - modelX * zoom, y: networkGraph.height() / 2 - modelY * zoom } });
+            }
+            let _mmDrag = false;
+            mc.addEventListener('mousedown', (e) => { _mmDrag = true; minimapNav(e); });
+            mc.addEventListener('mousemove', (e) => { if (_mmDrag) minimapNav(e); });
+            mc.addEventListener('mouseup', () => { _mmDrag = false; });
+            mc.addEventListener('mouseleave', () => { _mmDrag = false; });
+        });
+
+        // ================================================================
+        // Heatmap mode — color nodes by connection volume
+        // ================================================================
+        let _heatmapActive = false;
+
+        function toggleHeatmap() {
+            _heatmapActive = !_heatmapActive;
+            const btn = document.getElementById('heatmap-btn');
+            if (_heatmapActive) {
+                btn.style.background = '#e65100';
+                btn.style.color = '#fff';
+                btn.style.borderColor = '#e65100';
+                _applyHeatmap();
+            } else {
+                btn.style.background = '';
+                btn.style.color = '';
+                btn.style.borderColor = '';
+                _removeHeatmap();
+            }
+            _updateMinimap();
+        }
+
+        function _heatColor(ratio) {
+            // 0=cool blue, 0.5=yellow, 1.0=hot red
+            const r = ratio < 0.5 ? Math.round(ratio * 2 * 255) : 255;
+            const g = ratio < 0.5 ? Math.round(100 + ratio * 2 * 155) : Math.round(255 - (ratio - 0.5) * 2 * 255);
+            const b = ratio < 0.5 ? Math.round(255 - ratio * 2 * 255) : 0;
+            return `rgb(${r},${g},${b})`;
+        }
+
+        function _applyHeatmap() {
+            if (!networkGraph) return;
+            const nodes = networkGraph.nodes('.device, .internet-cloud');
+            let maxConns = 1;
+            nodes.forEach(n => {
+                const c = n.data('total_connections') || 0;
+                if (c > maxConns) maxConns = c;
+            });
+            // Use log scale for better distribution
+            const logMax = Math.log(maxConns + 1);
+            nodes.forEach(n => {
+                const c = n.data('total_connections') || 0;
+                const ratio = Math.min(Math.log(c + 1) / logMax, 1);
+                const color = _heatColor(ratio);
+                n.style({
+                    'background-color': color,
+                    'background-opacity': 0.25 + ratio * 0.5,
+                    'border-width': 2,
+                    'border-color': color,
+                    'border-opacity': 0.8,
+                });
+            });
+        }
+
+        function _removeHeatmap() {
+            if (!networkGraph) return;
+            networkGraph.nodes('.device, .internet-cloud').removeStyle(
+                'background-color background-opacity border-width border-color border-opacity'
+            );
+        }
+
+        // ================================================================
+        // Animated edge flow — dashed edges that animate to show direction
+        // ================================================================
+        let _flowAnimActive = false;
+        let _flowAnimTimer = null;
+        let _flowOffset = 0;
+
+        function toggleFlowAnimation() {
+            _flowAnimActive = !_flowAnimActive;
+            const btn = document.getElementById('flow-anim-btn');
+            if (_flowAnimActive) {
+                btn.style.background = '#1565c0';
+                btn.style.color = '#fff';
+                btn.style.borderColor = '#1565c0';
+                _startFlowAnimation();
+            } else {
+                btn.style.background = '';
+                btn.style.color = '';
+                btn.style.borderColor = '';
+                _stopFlowAnimation();
+            }
+        }
+
+        function _startFlowAnimation() {
+            if (!networkGraph) return;
+            _stopFlowAnimation();
+            // Apply dashed style to all edges
+            networkGraph.edges().style({
+                'line-style': 'dashed',
+                'line-dash-pattern': [8, 4],
+                'line-dash-offset': 0,
+            });
+            _flowOffset = 0;
+            // Run at ~20fps for subtle animation
+            function throttledTick() {
+                if (!_flowAnimActive || !networkGraph) return;
+                _flowOffset = (_flowOffset + 1) % 12;
+                networkGraph.edges().style('line-dash-offset', -_flowOffset);
+                _flowAnimTimer = setTimeout(throttledTick, 50);
+            }
+            throttledTick();
+        }
+
+        function _stopFlowAnimation() {
+            if (_flowAnimTimer) {
+                clearTimeout(_flowAnimTimer);
+                cancelAnimationFrame(_flowAnimTimer);
+                _flowAnimTimer = null;
+            }
+            if (networkGraph) {
+                networkGraph.edges().removeStyle('line-style line-dash-pattern line-dash-offset');
+            }
         }
 
         function showNodeDetails(node, delayScroll) {
