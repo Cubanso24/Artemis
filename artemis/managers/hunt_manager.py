@@ -744,6 +744,8 @@ def _analysis_pipeline_process(job_id, db_path):
                      f'Waiting for data (analyzed {analyses_completed} cycles)...',
                      50, {'pipeline': 'analysis',
                           'analyses_completed': analyses_completed,
+                          'n_agents': len(coordinator.agents),
+                          'llm_backend': getattr(coordinator.llm_client, 'backend', 'none'),
                           'status': 'idle'})
                 for _ in range(6):  # 30 seconds in 5s increments
                     if _stop:
@@ -769,6 +771,8 @@ def _analysis_pipeline_process(job_id, db_path):
                  60, {'pipeline': 'analysis',
                       'cycle': analysis_cycle,
                       'total_events': total_events,
+                      'n_agents': _n_agents,
+                      'llm_backend': _backend,
                       'stage_detail': 'llm_analysis',
                       'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
 
@@ -854,6 +858,8 @@ def _analysis_pipeline_process(job_id, db_path):
                      {'pipeline': 'analysis',
                       'cycle': analysis_cycle,
                       'findings': findings_count,
+                      'n_agents': _n_agents,
+                      'llm_backend': _backend,
                       'analyses_completed': analyses_completed})
 
             except Exception as ae:
@@ -972,6 +978,7 @@ def _profile_pipeline_process(job_id, db_path):
                  f'Profiling {unprofiled} devices ({profile_time_range})...',
                  20, {'pipeline': 'profile', 'unprofiled': unprofiled,
                       'total_nodes': len(nm.nodes),
+                      'time_range': profile_time_range,
                       'stage_detail': 'profiling'})
 
             def _progress_cb(stage, message, pct):
@@ -981,6 +988,7 @@ def _profile_pipeline_process(job_id, db_path):
                      20 + pct * 60 // 100,
                      {'pipeline': 'profile', 'unprofiled': unprofiled,
                       'total_nodes': len(nm.nodes),
+                      'time_range': profile_time_range,
                       'stage_detail': 'profiling'})
 
             try:
@@ -999,7 +1007,8 @@ def _profile_pipeline_process(job_id, db_path):
                      f'Profiled {classified} devices — waiting for new nodes',
                      90, {'pipeline': 'profile', 'unprofiled': 0,
                           'total_nodes': len(nm.nodes),
-                          'classified': classified})
+                          'classified': classified,
+                          'time_range': profile_time_range})
             except Exception as pe:
                 log.warning(f'Profile cycle error: {pe}')
                 log.warning(traceback.format_exc())
@@ -1289,6 +1298,8 @@ class HuntManager:
                 'stage_detail': extra.get('stage_detail', ''),
                 'findings': extra.get('findings', 0),
                 'analyses_completed': extra.get('analyses_completed', 0),
+                # Detailed fields for per-pipeline cards
+                'last_progress': extra,
             }
 
         data_info = _get_pipeline_info(

@@ -1165,31 +1165,73 @@
                         </div>
                     </div>
                     <div id="continuous-detail" style="display:none; margin-top:8px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:8px;">
-                        <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
-                            <span style="display:inline-flex; align-items:center; gap:4px;">
-                                <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:10px;"></i>
-                                <span style="font-weight:600;">Data:</span>
-                                <span id="continuous-data-msg">—</span>
-                            </span>
-                            <span style="color:var(--border-color);">|</span>
-                            <span style="display:inline-flex; align-items:center; gap:4px;">
-                                <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:10px;"></i>
-                                <span style="font-weight:600;">Analysis:</span>
-                                <span id="continuous-analysis-msg">—</span>
-                                <span id="continuous-queue-badge" style="display:none; background:#ff9800; color:#fff; padding:0 6px; border-radius:8px; font-size:10px; margin-left:4px;"></span>
-                            </span>
-                            <span style="color:var(--border-color);">|</span>
-                            <span style="display:inline-flex; align-items:center; gap:4px;">
-                                <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:10px;"></i>
-                                <span style="font-weight:600;">Profiler:</span>
-                                <span id="continuous-profile-msg">—</span>
-                            </span>
-                            <span style="color:var(--border-color);">|</span>
-                            <span id="continuous-cycle">Cycle: —</span>
-                            <span id="continuous-nodes">Nodes: —</span>
-                            <span id="continuous-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:11px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
+                        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px;">
+                            <!-- Data Pipeline Card -->
+                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
+                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
+                                    <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:11px;"></i>
+                                    <span style="font-weight:600; color:var(--text-primary);">Data Pipeline</span>
+                                    <span id="pipe-data-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#388bfd33; color:#4fc3f7;">—</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
+                                    <span style="color:var(--text-secondary);">Cycle:</span>
+                                    <span id="pipe-data-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
+                                    <span style="color:var(--text-secondary);">Nodes:</span>
+                                    <span id="pipe-data-nodes" style="color:var(--text-primary); font-weight:500;">—</span>
+                                    <span style="color:var(--text-secondary);">Conns:</span>
+                                    <span id="pipe-data-conns" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">DNS:</span>
+                                    <span id="pipe-data-dns" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">NTLM:</span>
+                                    <span id="pipe-data-ntlm" style="color:var(--text-primary);">—</span>
+                                </div>
+                                <div id="pipe-data-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                            </div>
+                            <!-- Analysis Pipeline Card -->
+                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
+                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
+                                    <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:11px;"></i>
+                                    <span style="font-weight:600; color:var(--text-primary);">Analysis Pipeline</span>
+                                    <span id="pipe-analysis-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#ab47bc33; color:#ab47bc;">—</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
+                                    <span style="color:var(--text-secondary);">Events:</span>
+                                    <span id="pipe-analysis-events" style="color:var(--text-primary); font-weight:500;">—</span>
+                                    <span style="color:var(--text-secondary);">Agents:</span>
+                                    <span id="pipe-analysis-agents" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">LLM:</span>
+                                    <span id="pipe-analysis-llm" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">Findings:</span>
+                                    <span id="pipe-analysis-findings" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">Completed:</span>
+                                    <span id="pipe-analysis-completed" style="color:var(--text-primary);">—</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+                                    <span id="pipe-analysis-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:10px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM Active</span>
+                                    <span id="pipe-analysis-queue-badge" style="display:none; background:#ff9800; color:#fff; padding:0 6px; border-radius:8px; font-size:10px;"></span>
+                                </div>
+                            </div>
+                            <!-- Profile Pipeline Card -->
+                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
+                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
+                                    <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:11px;"></i>
+                                    <span style="font-weight:600; color:var(--text-primary);">Profile Pipeline</span>
+                                    <span id="pipe-profile-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#4caf5033; color:#4caf50;">—</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
+                                    <span style="color:var(--text-secondary);">Unprofiled:</span>
+                                    <span id="pipe-profile-unprofiled" style="color:var(--text-primary); font-weight:500;">—</span>
+                                    <span style="color:var(--text-secondary);">Classified:</span>
+                                    <span id="pipe-profile-classified" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">Total Nodes:</span>
+                                    <span id="pipe-profile-total" style="color:var(--text-primary);">—</span>
+                                    <span style="color:var(--text-secondary);">Time Range:</span>
+                                    <span id="pipe-profile-timerange" style="color:var(--text-primary);">—</span>
+                                </div>
+                                <div id="pipe-profile-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                            </div>
                         </div>
-                        <div id="continuous-msg" style="margin-top:4px; opacity:0.7;"></div>
+                        <div id="continuous-msg" style="margin-top:6px; opacity:0.7; font-size:11px;"></div>
                     </div>
                 </div>
 
@@ -3981,11 +4023,9 @@
 
         function handleContinuousProgress(data) {
             const result = data.result || {};
-            const pipeline = data.pipeline || '';  // 'data' or 'analysis'
+            const pipeline = data.pipeline || '';
 
             if (data.stage === 'complete') {
-                // Only mark as fully stopped if no pipeline identifier
-                // (i.e. the composite stop message)
                 if (!pipeline) {
                     _stopRequested = false;
                     setContinuousRunning(false);
@@ -3996,65 +4036,146 @@
                     setTimeout(() => {
                         document.getElementById('continuous-detail').style.display = 'none';
                     }, 5000);
+                } else {
+                    // Individual pipeline stopped
+                    const statusEl = document.getElementById(`pipe-${pipeline}-status`);
+                    if (statusEl) { statusEl.textContent = 'Stopped'; statusEl.style.background = '#f8514933'; statusEl.style.color = '#f85149'; }
                 }
                 return;
 
             } else if (data.stage === 'error') {
-                const label = pipeline === 'analysis' ? 'Analysis' : 'Data';
+                const label = {data: 'Data', analysis: 'Analysis', profile: 'Profile'}[pipeline] || pipeline;
                 document.getElementById('continuous-msg').textContent = `${label} error: ${data.message}`;
                 addLog(`${label} pipeline error: ${data.message}`, 'error');
+                const statusEl = document.getElementById(`pipe-${pipeline}-status`);
+                if (statusEl) { statusEl.textContent = 'Error'; statusEl.style.background = '#f8514933'; statusEl.style.color = '#f85149'; }
                 return;
 
             } else if (_stopRequested) {
                 return;
 
             } else {
-                // Running — update appropriate pipeline display
                 setContinuousRunning(true);
 
                 if (pipeline === 'data') {
-                    const dataMsg = document.getElementById('continuous-data-msg');
+                    // --- Data Pipeline Card ---
                     const cycle = result.cycle || '—';
-                    const totalNodes = result.total_nodes || '—';
-                    dataMsg.textContent = data.message || `Cycle ${cycle}`;
-                    document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
-                    document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
+                    const totalNodes = result.total_nodes || 0;
+                    const newConns = result.new_conns;
+                    const newDns = result.new_dns;
+                    const newNtlm = result.new_ntlm;
+                    const isBackfill = result.stage_detail === 'backfill_mapping';
 
-                    // Refresh graph data: fast (5s) when map is empty, normal (30s) after
+                    const statusEl = document.getElementById('pipe-data-status');
+                    statusEl.textContent = isBackfill ? 'Backfill' : 'Running';
+                    statusEl.style.background = isBackfill ? '#d2992233' : '#388bfd33';
+                    statusEl.style.color = isBackfill ? '#d29922' : '#4fc3f7';
+
+                    document.getElementById('pipe-data-cycle').textContent = cycle;
+                    document.getElementById('pipe-data-nodes').textContent = totalNodes ? Number(totalNodes).toLocaleString() : '—';
+                    document.getElementById('pipe-data-conns').textContent = newConns != null ? Number(newConns).toLocaleString() : '—';
+                    document.getElementById('pipe-data-dns').textContent = newDns != null ? Number(newDns).toLocaleString() : '—';
+                    document.getElementById('pipe-data-ntlm').textContent = newNtlm != null ? Number(newNtlm).toLocaleString() : '—';
+
+                    const detailEl = document.getElementById('pipe-data-detail');
+                    if (result.total_events) {
+                        detailEl.textContent = `Backfill: ${Number(result.total_events).toLocaleString()} events processed`;
+                    } else if (result.error) {
+                        detailEl.textContent = `Error: ${result.error}`;
+                        detailEl.style.color = '#f85149';
+                    } else {
+                        detailEl.textContent = '';
+                    }
+
+                    // Refresh graph data
                     if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
                     const now = Date.now();
                     const mapEmpty = !_fullGraphData || !_fullGraphData.nodes || _fullGraphData.nodes.length === 0;
                     const debounce = mapEmpty ? 5000 : 30000;
-                    if (result.total_nodes && now - handleContinuousProgress._lastRefresh > debounce) {
+                    if (totalNodes && now - handleContinuousProgress._lastRefresh > debounce) {
                         handleContinuousProgress._lastRefresh = now;
                         _refreshGraphData();
                         loadNetworkSummary();
                     }
 
                 } else if (pipeline === 'analysis') {
-                    const analysisMsg = document.getElementById('continuous-analysis-msg');
-                    analysisMsg.textContent = data.message || 'Working...';
-                    const llmBadge = document.getElementById('continuous-llm-badge');
-                    llmBadge.style.display = result.stage_detail === 'llm_analysis' ? 'inline' : 'none';
+                    // --- Analysis Pipeline Card ---
+                    const totalEvents = result.total_events || 0;
+                    const nAgents = result.n_agents || 0;
+                    const llmBackend = result.llm_backend || '—';
+                    const findings = result.findings || 0;
+                    const completed = result.analyses_completed || 0;
+                    const isLlmActive = result.stage_detail === 'llm_analysis';
+                    const isIdle = result.status === 'idle';
+                    const orch = result.orchestration;
 
-                    // Show queue depth badge
-                    if (result.status === 'idle') {
-                        analysisMsg.textContent = `Idle (${result.analyses_completed || 0} analyzed)`;
+                    const statusEl = document.getElementById('pipe-analysis-status');
+                    if (isIdle) {
+                        statusEl.textContent = 'Idle';
+                        statusEl.style.background = '#8b949e33';
+                        statusEl.style.color = '#8b949e';
+                    } else {
+                        statusEl.textContent = isLlmActive ? 'Analyzing' : 'Running';
+                        statusEl.style.background = '#ab47bc33';
+                        statusEl.style.color = '#ab47bc';
                     }
 
-                    // Refresh findings when agents produce detections
-                    const findingsCount = result.findings || 0;
-                    if (findingsCount > 0) {
+                    document.getElementById('pipe-analysis-events').textContent = totalEvents ? Number(totalEvents).toLocaleString() : (isIdle ? '0' : '—');
+                    document.getElementById('pipe-analysis-agents').textContent = nAgents ? `${nAgents} agents` : '—';
+                    document.getElementById('pipe-analysis-llm').textContent = orch === 'crewai' ? `CrewAI (${llmBackend})` : (llmBackend !== '—' ? llmBackend : '—');
+                    document.getElementById('pipe-analysis-findings').textContent = findings > 0 ? findings : '0';
+                    document.getElementById('pipe-analysis-completed').textContent = `${completed} cycles`;
+
+                    // LLM active badge
+                    document.getElementById('pipe-analysis-llm-badge').style.display = isLlmActive ? 'inline' : 'none';
+
+                    // Refresh findings
+                    if (findings > 0) {
                         _refreshFindingsBadge();
                     }
 
                 } else if (pipeline === 'profile') {
-                    const profileMsg = document.getElementById('continuous-profile-msg');
-                    profileMsg.textContent = data.message || 'Working...';
-
-                    // When profiling completes a batch, refresh graph
-                    // to show updated device types/icons
+                    // --- Profile Pipeline Card ---
+                    const unprofiled = result.unprofiled != null ? result.unprofiled : '—';
                     const classified = result.classified || 0;
+                    const totalNodes = result.total_nodes || 0;
+                    const timeRange = result.time_range || '—';
+                    const isProfiling = result.stage_detail === 'profiling';
+                    const isWaiting = unprofiled === 0 && !isProfiling;
+
+                    const statusEl = document.getElementById('pipe-profile-status');
+                    if (isProfiling) {
+                        statusEl.textContent = 'Profiling';
+                        statusEl.style.background = '#4caf5033';
+                        statusEl.style.color = '#4caf50';
+                    } else if (isWaiting) {
+                        statusEl.textContent = 'All Profiled';
+                        statusEl.style.background = '#3fb95033';
+                        statusEl.style.color = '#3fb950';
+                    } else {
+                        statusEl.textContent = 'Running';
+                        statusEl.style.background = '#4caf5033';
+                        statusEl.style.color = '#4caf50';
+                    }
+
+                    document.getElementById('pipe-profile-unprofiled').textContent = unprofiled != null ? Number(unprofiled).toLocaleString() : '—';
+                    document.getElementById('pipe-profile-classified').textContent = classified ? Number(classified).toLocaleString() : '0';
+                    document.getElementById('pipe-profile-total').textContent = totalNodes ? Number(totalNodes).toLocaleString() : '—';
+                    document.getElementById('pipe-profile-timerange').textContent = timeRange;
+
+                    const detailEl = document.getElementById('pipe-profile-detail');
+                    if (result.error) {
+                        detailEl.textContent = `Error: ${result.error}`;
+                        detailEl.style.color = '#f85149';
+                    } else if (isProfiling) {
+                        detailEl.textContent = `Running 23 parallel Splunk queries (${timeRange})...`;
+                    } else if (isWaiting) {
+                        detailEl.textContent = 'Waiting for new unclassified devices...';
+                    } else {
+                        detailEl.textContent = data.message || '';
+                    }
+
+                    // Refresh graph when profiling classifies devices
                     if (classified > 0) {
                         if (!handleContinuousProgress._lastProfileRefresh) handleContinuousProgress._lastProfileRefresh = 0;
                         const now2 = Date.now();
@@ -4065,12 +4186,8 @@
                     }
 
                 } else {
-                    // Legacy / composite message — update everything
+                    // Legacy / composite message
                     document.getElementById('continuous-msg').textContent = data.message || '';
-                    const cycle = result.cycle || '—';
-                    const totalNodes = result.total_nodes || '—';
-                    document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
-                    document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
                 }
             }
         }
@@ -4083,25 +4200,48 @@
                 if (status.running && !_stopRequested) {
                     setContinuousRunning(true);
 
-                    // Triple pipeline status
                     const dp = status.data_pipeline || {};
                     const ap = status.analysis_pipeline || {};
                     const pp = status.profile_pipeline || {};
                     const queue = status.analysis_queue || {};
 
-                    document.getElementById('continuous-data-msg').textContent =
-                        dp.message || (dp.running ? 'Running' : 'Stopped');
-                    document.getElementById('continuous-analysis-msg').textContent =
-                        ap.message || (ap.running ? 'Running' : 'Stopped');
-                    document.getElementById('continuous-profile-msg').textContent =
-                        pp.message || (pp.running ? 'Running' : 'Stopped');
-                    document.getElementById('continuous-cycle').textContent =
-                        `Cycle: ${status.cycle || dp.cycle || '—'}`;
-                    document.getElementById('continuous-nodes').textContent =
-                        `Nodes: ${status.total_nodes || dp.total_nodes || '—'}`;
+                    // --- Data pipeline card ---
+                    const dpStatus = document.getElementById('pipe-data-status');
+                    dpStatus.textContent = dp.running ? 'Running' : 'Stopped';
+                    dpStatus.style.background = dp.running ? '#388bfd33' : '#8b949e33';
+                    dpStatus.style.color = dp.running ? '#4fc3f7' : '#8b949e';
+                    document.getElementById('pipe-data-cycle').textContent = status.cycle || dp.cycle || '—';
+                    document.getElementById('pipe-data-nodes').textContent =
+                        (status.total_nodes || dp.total_nodes) ? Number(status.total_nodes || dp.total_nodes).toLocaleString() : '—';
+                    document.getElementById('pipe-data-conns').textContent = '—';
+                    document.getElementById('pipe-data-dns').textContent = '—';
+                    document.getElementById('pipe-data-ntlm').textContent = '—';
+
+                    // --- Analysis pipeline card ---
+                    const apStatus = document.getElementById('pipe-analysis-status');
+                    const apData = ap.last_progress || {};
+                    if (ap.running) {
+                        apStatus.textContent = apData.stage_detail === 'llm_analysis' ? 'Analyzing' : 'Running';
+                        apStatus.style.background = '#ab47bc33';
+                        apStatus.style.color = '#ab47bc';
+                    } else {
+                        apStatus.textContent = 'Stopped';
+                        apStatus.style.background = '#8b949e33';
+                        apStatus.style.color = '#8b949e';
+                    }
+                    document.getElementById('pipe-analysis-events').textContent =
+                        apData.total_events ? Number(apData.total_events).toLocaleString() : '—';
+                    document.getElementById('pipe-analysis-agents').textContent =
+                        apData.n_agents ? `${apData.n_agents} agents` : '—';
+                    document.getElementById('pipe-analysis-llm').textContent = apData.llm_backend || '—';
+                    document.getElementById('pipe-analysis-findings').textContent = apData.findings || '0';
+                    document.getElementById('pipe-analysis-completed').textContent =
+                        `${apData.analyses_completed || 0} cycles`;
+                    document.getElementById('pipe-analysis-llm-badge').style.display =
+                        apData.stage_detail === 'llm_analysis' ? 'inline' : 'none';
 
                     // Queue badge
-                    const queueBadge = document.getElementById('continuous-queue-badge');
+                    const queueBadge = document.getElementById('pipe-analysis-queue-badge');
                     const pending = queue.pending || 0;
                     if (pending > 0) {
                         queueBadge.textContent = `${pending} queued`;
@@ -4110,9 +4250,30 @@
                         queueBadge.style.display = 'none';
                     }
 
+                    // --- Profile pipeline card ---
+                    const ppStatus = document.getElementById('pipe-profile-status');
+                    const ppData = pp.last_progress || {};
+                    if (pp.running) {
+                        const isProfiling = ppData.stage_detail === 'profiling';
+                        ppStatus.textContent = isProfiling ? 'Profiling' : 'Running';
+                        ppStatus.style.background = '#4caf5033';
+                        ppStatus.style.color = '#4caf50';
+                    } else {
+                        ppStatus.textContent = 'Stopped';
+                        ppStatus.style.background = '#8b949e33';
+                        ppStatus.style.color = '#8b949e';
+                    }
+                    document.getElementById('pipe-profile-unprofiled').textContent =
+                        ppData.unprofiled != null ? Number(ppData.unprofiled).toLocaleString() : '—';
+                    document.getElementById('pipe-profile-classified').textContent =
+                        ppData.classified ? Number(ppData.classified).toLocaleString() : '0';
+                    document.getElementById('pipe-profile-total').textContent =
+                        ppData.total_nodes ? Number(ppData.total_nodes).toLocaleString() : '—';
+                    document.getElementById('pipe-profile-timerange').textContent = ppData.time_range || '—';
+
                     document.getElementById('continuous-interval').value = status.interval_minutes || 15;
                     document.getElementById('continuous-lookback').value = status.lookback_minutes || 20;
-                    addLog(`Reconnected to live ingestion (data: ${dp.running ? 'running' : 'stopped'}, analysis: ${ap.running ? 'running' : 'stopped'})`, 'info');
+                    addLog(`Reconnected to live ingestion (data: ${dp.running ? 'running' : 'stopped'}, analysis: ${ap.running ? 'running' : 'stopped'}, profiler: ${pp.running ? 'running' : 'stopped'})`, 'info');
                 }
             } catch(e) {}
         }
