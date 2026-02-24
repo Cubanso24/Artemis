@@ -4426,10 +4426,10 @@
 
                 } else if (pipeline === 'profile') {
                     // --- Profile Pipeline Card ---
-                    const unprofiled = result.unprofiled != null ? result.unprofiled : '—';
-                    const classified = result.classified || 0;
+                    const unprofiled = result.unprofiled != null ? result.unprofiled : null;
+                    const classified = result.classified;
                     const totalNodes = result.total_nodes || 0;
-                    const timeRange = result.time_range || '—';
+                    const timeRange = result.time_range;
                     const isProfiling = result.stage_detail === 'profiling';
                     const isWaiting = unprofiled === 0 && !isProfiling;
 
@@ -4448,17 +4448,18 @@
                         statusEl.style.color = '#4caf50';
                     }
 
-                    document.getElementById('pipe-profile-unprofiled').textContent = unprofiled != null ? Number(unprofiled).toLocaleString() : '—';
-                    document.getElementById('pipe-profile-classified').textContent = classified ? Number(classified).toLocaleString() : '0';
-                    document.getElementById('pipe-profile-total').textContent = totalNodes ? Number(totalNodes).toLocaleString() : '—';
-                    document.getElementById('pipe-profile-timerange').textContent = timeRange;
+                    // Only overwrite if value is present; retain previous otherwise
+                    if (unprofiled != null) document.getElementById('pipe-profile-unprofiled').textContent = Number(unprofiled).toLocaleString();
+                    if (classified != null && classified > 0) document.getElementById('pipe-profile-classified').textContent = Number(classified).toLocaleString();
+                    if (totalNodes) document.getElementById('pipe-profile-total').textContent = Number(totalNodes).toLocaleString();
+                    if (timeRange) document.getElementById('pipe-profile-timerange').textContent = timeRange;
 
                     const detailEl = document.getElementById('pipe-profile-detail');
                     if (result.error) {
                         detailEl.textContent = `Error: ${result.error}`;
                         detailEl.style.color = '#f85149';
                     } else if (isProfiling) {
-                        detailEl.textContent = `Running 23 parallel Splunk queries (${timeRange})...`;
+                        detailEl.textContent = `Running 23 parallel Splunk queries (${timeRange || '...'})...`;
                     } else if (isWaiting) {
                         detailEl.textContent = 'Waiting for new unclassified devices...';
                     } else {
@@ -4545,21 +4546,20 @@
                     const ppData = pp.last_progress || {};
                     if (pp.running) {
                         const isProfiling = ppData.stage_detail === 'profiling';
-                        ppStatus.textContent = isProfiling ? 'Profiling' : 'Running';
-                        ppStatus.style.background = '#4caf5033';
-                        ppStatus.style.color = '#4caf50';
+                        const ppWaiting = (ppData.unprofiled === 0) && !isProfiling;
+                        ppStatus.textContent = isProfiling ? 'Profiling' : ppWaiting ? 'All Profiled' : 'Running';
+                        ppStatus.style.background = ppWaiting ? '#3fb95033' : '#4caf5033';
+                        ppStatus.style.color = ppWaiting ? '#3fb950' : '#4caf50';
                     } else {
                         ppStatus.textContent = 'Stopped';
                         ppStatus.style.background = '#8b949e33';
                         ppStatus.style.color = '#8b949e';
                     }
-                    document.getElementById('pipe-profile-unprofiled').textContent =
-                        ppData.unprofiled != null ? Number(ppData.unprofiled).toLocaleString() : '—';
-                    document.getElementById('pipe-profile-classified').textContent =
-                        ppData.classified ? Number(ppData.classified).toLocaleString() : '0';
-                    document.getElementById('pipe-profile-total').textContent =
-                        ppData.total_nodes ? Number(ppData.total_nodes).toLocaleString() : '—';
-                    document.getElementById('pipe-profile-timerange').textContent = ppData.time_range || '—';
+                    // Always show last known stats even when stopped
+                    if (ppData.unprofiled != null) document.getElementById('pipe-profile-unprofiled').textContent = Number(ppData.unprofiled).toLocaleString();
+                    if (ppData.classified) document.getElementById('pipe-profile-classified').textContent = Number(ppData.classified).toLocaleString();
+                    if (ppData.total_nodes) document.getElementById('pipe-profile-total').textContent = Number(ppData.total_nodes).toLocaleString();
+                    if (ppData.time_range) document.getElementById('pipe-profile-timerange').textContent = ppData.time_range;
 
                     document.getElementById('continuous-interval').value = status.interval_minutes || 15;
                     document.getElementById('continuous-lookback').value = status.lookback_minutes || 20;

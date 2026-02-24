@@ -943,16 +943,20 @@ def _profile_pipeline_process(job_id, db_path):
 
         log.info(f'Profile pipeline started (pid {pid})')
 
+        _total_classified = 0
+
         while not _stop:
             # Reload map from disk to pick up new nodes from data pipeline
             nm.initialize()
 
             stats = nm.get_profiling_stats()
             unprofiled = stats.get('unprofiled', 0)
+            profiled = stats.get('profiled', 0)
 
             if unprofiled == 0:
                 send('running', 'All devices profiled — waiting for new nodes',
                      50, {'pipeline': 'profile', 'unprofiled': 0,
+                          'classified': profiled or _total_classified,
                           'total_nodes': len(nm.nodes)})
                 # Sleep 60s, checking for stop every 5s
                 for _ in range(12):
@@ -1008,12 +1012,14 @@ def _profile_pipeline_process(job_id, db_path):
                 nm.merge_enrichment_and_save()
 
                 classified = result.get('classified', 0)
-                log.info(f'Profiling complete: {classified} classified')
+                _total_classified += classified
+                log.info(f'Profiling complete: {classified} classified '
+                         f'({_total_classified} total)')
                 send('running',
                      f'Profiled {classified} devices — waiting for new nodes',
                      90, {'pipeline': 'profile', 'unprofiled': 0,
                           'total_nodes': len(nm.nodes),
-                          'classified': classified,
+                          'classified': _total_classified,
                           'time_range': profile_time_range})
             except Exception as pe:
                 log.warning(f'Profile cycle error: {pe}')
