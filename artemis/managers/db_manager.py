@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import logging
+import time as _time
 from datetime import datetime, date
 from typing import Dict, List
 
@@ -42,6 +43,27 @@ class DatabaseManager:
         conn.execute(f"PRAGMA busy_timeout = {self.BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
+
+    def _exec_with_retry(self, fn, max_retries=4):
+        """Execute *fn(conn)* with automatic retry on database-locked errors.
+
+        Three pipeline processes write concurrently; despite WAL mode and a
+        busy timeout, transient OperationalError can still occur.  This
+        helper retries with exponential back-off (0.2 s, 0.4 s, 0.8 s).
+        """
+        for attempt in range(max_retries):
+            conn = self._connect()
+            try:
+                result = fn(conn)
+                conn.commit()
+                return result
+            except sqlite3.OperationalError:
+                if attempt < max_retries - 1:
+                    _time.sleep(0.2 * (2 ** attempt))
+                else:
+                    raise
+            finally:
+                conn.close()
 
     def init_db(self):
         """Initialize database schema."""
@@ -242,9 +264,9 @@ class DatabaseManager:
                      recommended_actions: list = None,
                      source_cycle: int = 0) -> Dict:
         """Save an agent finding to the database."""
-        conn = self._connect()
-        try:
-            now = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+
+        def _do(conn):
             conn.execute(
                 "INSERT OR IGNORE INTO agent_findings "
                 "(finding_id, agent_name, activity_type, severity, confidence, "
@@ -262,11 +284,9 @@ class DatabaseManager:
                  _dumps(recommended_actions or []),
                  source_cycle, now),
             )
-            conn.commit()
             return {'finding_id': finding_id, 'agent_name': agent_name,
                     'activity_type': activity_type, 'created_at': now}
-        finally:
-            conn.close()
+        return self._exec_with_retry(_do)
 
     def get_findings(self, limit: int = 100, include_dismissed: bool = False,
                      agent_name: str = None, min_severity: str = None) -> List[Dict]:
@@ -381,9 +401,9 @@ class DatabaseManager:
 
     def save_synthesis(self, cycle: int, synthesis: Dict) -> Dict:
         """Save an LLM synthesis report."""
-        conn = self._connect()
-        try:
-            now = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+
+        def _do(conn):
             conn.execute(
                 "INSERT INTO llm_syntheses "
                 "(cycle, overall_severity, overall_confidence, reasoning, "
@@ -401,10 +421,8 @@ class DatabaseManager:
                  _dumps(synthesis),
                  now),
             )
-            conn.commit()
             return {'cycle': cycle, 'created_at': now}
-        finally:
-            conn.close()
+        return self._exec_with_retry(_do)
 
     def get_syntheses(self, limit: int = 20) -> List[Dict]:
         """Get recent LLM synthesis reports."""
@@ -596,33 +614,18 @@ class DatabaseManager:
 
     def write_progress(self, hunt_id: str, pid: int, stage: str,
                        message: str, progress: int, data: dict = None):
-        """Write job progress from the subprocess.
-
-        Retries on ``OperationalError`` (database-locked) to tolerate
-        concurrent writes from the three pipeline processes.
-        """
-        for attempt in range(4):
-            conn = self._connect()
-            try:
-                conn.execute("""
-                    INSERT OR REPLACE INTO hunt_progress
-                        (hunt_id, pid, stage, message, progress, data, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    hunt_id, pid, stage, message, progress,
-                    _dumps(data) if data else None,
-                    datetime.now().isoformat(),
-                ))
-                conn.commit()
-                return
-            except sqlite3.OperationalError:
-                if attempt < 3:
-                    import time
-                    time.sleep(0.2 * (2 ** attempt))  # 0.2s, 0.4s, 0.8s
-                else:
-                    raise
-            finally:
-                conn.close()
+        """Write job progress from the subprocess."""
+        def _do(conn):
+            conn.execute("""
+                INSERT OR REPLACE INTO hunt_progress
+                    (hunt_id, pid, stage, message, progress, data, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                hunt_id, pid, stage, message, progress,
+                _dumps(data) if data else None,
+                datetime.now().isoformat(),
+            ))
+        self._exec_with_retry(_do)
 
     def read_progress(self, hunt_id: str) -> dict | None:
         """Read current progress for a job."""
@@ -793,18 +796,17 @@ class DatabaseManager:
         """Bulk-insert events for a cycle into the persistent store."""
         if not events:
             return 0
-        conn = self._connect()
-        try:
-            now = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+        rows = [(cycle, data_type, _dumps(e), now) for e in events]
+
+        def _do(conn):
             conn.executemany(
                 "INSERT INTO hunt_events (cycle, data_type, event_json, "
                 "collected_at) VALUES (?, ?, ?, ?)",
-                [(cycle, data_type, _dumps(e), now) for e in events],
+                rows,
             )
-            conn.commit()
             return len(events)
-        finally:
-            conn.close()
+        return self._exec_with_retry(_do)
 
     def get_events_for_cycle(self, cycle: int) -> Dict[str, List[Dict]]:
         """Retrieve all events for a cycle, grouped by data_type."""
@@ -867,8 +869,7 @@ class DatabaseManager:
 
     def queue_analysis(self, cycle: int, event_counts: Dict[str, int] = None):
         """Queue a cycle for agent/LLM analysis."""
-        conn = self._connect()
-        try:
+        def _do(conn):
             conn.execute(
                 "INSERT OR IGNORE INTO analysis_queue "
                 "(cycle, status, event_counts, created_at) "
@@ -876,9 +877,7 @@ class DatabaseManager:
                 (cycle, _dumps(event_counts or {}),
                  datetime.now().isoformat()),
             )
-            conn.commit()
-        finally:
-            conn.close()
+        self._exec_with_retry(_do)
 
     def get_pending_analysis(self) -> Dict | None:
         """Get the next cycle waiting for analysis."""
@@ -901,29 +900,23 @@ class DatabaseManager:
 
     def mark_analysis_started(self, cycle: int):
         """Mark a cycle as being analyzed."""
-        conn = self._connect()
-        try:
+        def _do(conn):
             conn.execute(
                 "UPDATE analysis_queue SET status = 'in_progress', "
                 "started_at = ? WHERE cycle = ?",
                 (datetime.now().isoformat(), cycle),
             )
-            conn.commit()
-        finally:
-            conn.close()
+        self._exec_with_retry(_do)
 
     def mark_analysis_complete(self, cycle: int):
         """Mark a cycle's analysis as complete."""
-        conn = self._connect()
-        try:
+        def _do(conn):
             conn.execute(
                 "UPDATE analysis_queue SET status = 'complete', "
                 "completed_at = ? WHERE cycle = ?",
                 (datetime.now().isoformat(), cycle),
             )
-            conn.commit()
-        finally:
-            conn.close()
+        self._exec_with_retry(_do)
 
     def get_analysis_queue_status(self) -> Dict:
         """Get summary of the analysis queue."""
