@@ -27,13 +27,25 @@ def _dumps(obj):
 class DatabaseManager:
     """Manages Artemis database for network mapping, profiling, and enrichment."""
 
+    # Default busy timeout (ms) — how long SQLite waits on a locked DB
+    # before raising OperationalError.  5 seconds is plenty for the brief
+    # write locks that occur during normal operation.
+    BUSY_TIMEOUT_MS = 5000
+
     def __init__(self, db_path: str = "artemis.db"):
         self.db_path = db_path
         self.init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Create a new SQLite connection with WAL mode and busy timeout."""
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.execute(f"PRAGMA busy_timeout = {self.BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA journal_mode = WAL")
+        return conn
+
     def init_db(self):
         """Initialize database schema."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -230,7 +242,7 @@ class DatabaseManager:
                      recommended_actions: list = None,
                      source_cycle: int = 0) -> Dict:
         """Save an agent finding to the database."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             conn.execute(
@@ -259,7 +271,7 @@ class DatabaseManager:
     def get_findings(self, limit: int = 100, include_dismissed: bool = False,
                      agent_name: str = None, min_severity: str = None) -> List[Dict]:
         """Get agent findings with optional filtering."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             query = "SELECT * FROM agent_findings WHERE 1=1"
             params = []
@@ -308,7 +320,7 @@ class DatabaseManager:
 
     def dismiss_finding(self, finding_id: str) -> bool:
         """Mark a finding as dismissed."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "UPDATE agent_findings SET dismissed = 1 WHERE finding_id = ?",
@@ -321,7 +333,7 @@ class DatabaseManager:
 
     def get_findings_summary(self) -> Dict:
         """Get a summary of findings by severity and agent."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             # Count by severity
             rows = conn.execute(
@@ -351,7 +363,7 @@ class DatabaseManager:
 
     def clear_findings(self) -> int:
         """Delete all findings and LLM syntheses. Returns count deleted."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             count = conn.execute(
                 "SELECT COUNT(*) FROM agent_findings"
@@ -369,7 +381,7 @@ class DatabaseManager:
 
     def save_synthesis(self, cycle: int, synthesis: Dict) -> Dict:
         """Save an LLM synthesis report."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             conn.execute(
@@ -396,7 +408,7 @@ class DatabaseManager:
 
     def get_syntheses(self, limit: int = 20) -> List[Dict]:
         """Get recent LLM synthesis reports."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -435,7 +447,7 @@ class DatabaseManager:
                          color: str = '#667eea',
                          member_ids: List[str] = None) -> Dict:
         """Create a new LAN group with optional initial members."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             cursor = conn.cursor()
@@ -460,7 +472,7 @@ class DatabaseManager:
 
     def get_lan_groups(self) -> List[Dict]:
         """Get all LAN groups with their members."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT id, name, description, color, created_at, updated_at "
@@ -485,7 +497,7 @@ class DatabaseManager:
                          description: str = None, color: str = None,
                          member_ids: List[str] = None) -> bool:
         """Update a LAN group's properties and/or members."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             updates = []
             params = []
@@ -524,7 +536,7 @@ class DatabaseManager:
 
     def delete_lan_group(self, group_id: int) -> bool:
         """Delete a LAN group and its memberships."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute("DELETE FROM lan_group_members WHERE group_id = ?", (group_id,))
             conn.execute("DELETE FROM lan_groups WHERE id = ?", (group_id,))
@@ -540,7 +552,7 @@ class DatabaseManager:
     def set_device_flag(self, node_id: str, flag_type: str,
                         reason: str = '') -> Dict:
         """Flag a device as malicious or suspicious."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             conn.execute(
@@ -556,7 +568,7 @@ class DatabaseManager:
 
     def remove_device_flag(self, node_id: str) -> bool:
         """Remove a flag from a device."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute("DELETE FROM device_flags WHERE node_id = ?", (node_id,))
             conn.commit()
@@ -566,7 +578,7 @@ class DatabaseManager:
 
     def get_device_flags(self) -> Dict[str, Dict]:
         """Get all device flags as a dict keyed by node_id."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT node_id, flag_type, reason, flagged_at FROM device_flags"
@@ -585,7 +597,7 @@ class DatabaseManager:
     def write_progress(self, hunt_id: str, pid: int, stage: str,
                        message: str, progress: int, data: dict = None):
         """Write job progress from the subprocess."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute("""
                 INSERT OR REPLACE INTO hunt_progress
@@ -602,7 +614,7 @@ class DatabaseManager:
 
     def read_progress(self, hunt_id: str) -> dict | None:
         """Read current progress for a job."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT hunt_id, pid, stage, message, progress, data, updated_at "
@@ -621,7 +633,7 @@ class DatabaseManager:
 
     def get_all_running_progress(self) -> List[dict]:
         """Get progress rows for all jobs that haven't reached a terminal state."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT hunt_id, pid, stage, message, progress, data, updated_at "
@@ -638,7 +650,7 @@ class DatabaseManager:
 
     def clear_progress(self, hunt_id: str):
         """Remove progress row after job completes."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute("DELETE FROM hunt_progress WHERE hunt_id = ?", (hunt_id,))
             conn.commit()
@@ -651,7 +663,7 @@ class DatabaseManager:
 
     def save_enrichment(self, ip: str, verdict: str, sources: Dict):
         """Save enrichment result for an IP."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO enrichment_results "
@@ -664,7 +676,7 @@ class DatabaseManager:
 
     def get_enrichment(self, ip: str) -> Dict | None:
         """Get enrichment result for an IP."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT ip, verdict, sources, enriched_at "
@@ -683,7 +695,7 @@ class DatabaseManager:
         """Get enrichment results for multiple IPs at once."""
         if not ips:
             return {}
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             placeholders = ",".join("?" for _ in ips)
             rows = conn.execute(
@@ -701,7 +713,7 @@ class DatabaseManager:
 
     def queue_enrichment(self, ips: List[str], hunt_id: str = ""):
         """Add IPs to the enrichment queue (skips already-queued IPs)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             for ip in ips:
@@ -716,7 +728,7 @@ class DatabaseManager:
 
     def dequeue_enrichment(self, batch_size: int = 10) -> List[str]:
         """Pop up to batch_size IPs from the enrichment queue."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT ip FROM enrichment_queue ORDER BY queued_at LIMIT ?",
@@ -736,7 +748,7 @@ class DatabaseManager:
 
     def enrichment_queue_size(self) -> int:
         """Get number of IPs waiting in the enrichment queue."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT COUNT(*) FROM enrichment_queue"
@@ -747,7 +759,7 @@ class DatabaseManager:
 
     def get_all_enrichments(self) -> List[Dict]:
         """Get all enrichment results."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT ip, verdict, sources, enriched_at "
@@ -769,7 +781,7 @@ class DatabaseManager:
         """Bulk-insert events for a cycle into the persistent store."""
         if not events:
             return 0
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             conn.executemany(
@@ -784,7 +796,7 @@ class DatabaseManager:
 
     def get_events_for_cycle(self, cycle: int) -> Dict[str, List[Dict]]:
         """Retrieve all events for a cycle, grouped by data_type."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT data_type, event_json FROM hunt_events "
@@ -800,7 +812,7 @@ class DatabaseManager:
 
     def get_event_counts_for_cycle(self, cycle: int) -> Dict[str, int]:
         """Get event counts by data_type for a cycle."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT data_type, COUNT(*) FROM hunt_events "
@@ -813,7 +825,7 @@ class DatabaseManager:
 
     def get_latest_event_cycle(self) -> int:
         """Get the highest cycle number in the event store."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT MAX(cycle) FROM hunt_events"
@@ -824,7 +836,7 @@ class DatabaseManager:
 
     def cleanup_old_events(self, max_age_hours: int = 72) -> int:
         """Delete events older than max_age_hours. Returns count deleted."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             from datetime import timedelta
             cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
@@ -843,7 +855,7 @@ class DatabaseManager:
 
     def queue_analysis(self, cycle: int, event_counts: Dict[str, int] = None):
         """Queue a cycle for agent/LLM analysis."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "INSERT OR IGNORE INTO analysis_queue "
@@ -858,7 +870,7 @@ class DatabaseManager:
 
     def get_pending_analysis(self) -> Dict | None:
         """Get the next cycle waiting for analysis."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT cycle, event_counts, created_at "
@@ -877,7 +889,7 @@ class DatabaseManager:
 
     def mark_analysis_started(self, cycle: int):
         """Mark a cycle as being analyzed."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "UPDATE analysis_queue SET status = 'in_progress', "
@@ -890,7 +902,7 @@ class DatabaseManager:
 
     def mark_analysis_complete(self, cycle: int):
         """Mark a cycle's analysis as complete."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "UPDATE analysis_queue SET status = 'complete', "
@@ -903,7 +915,7 @@ class DatabaseManager:
 
     def get_analysis_queue_status(self) -> Dict:
         """Get summary of the analysis queue."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT status, COUNT(*) FROM analysis_queue GROUP BY status"
@@ -934,7 +946,7 @@ class DatabaseManager:
 
     def save_layout(self, positions: Dict[str, Dict]) -> int:
         """Save node positions. positions = {node_id: {x, y, pinned}}."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             count = 0
@@ -954,7 +966,7 @@ class DatabaseManager:
 
     def get_layout(self) -> Dict[str, Dict]:
         """Get all saved node positions."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT node_id, x, y, pinned, updated_at FROM map_layout"
@@ -969,7 +981,7 @@ class DatabaseManager:
 
     def clear_layout(self) -> int:
         """Delete all saved positions (reset to auto-layout)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             count = conn.execute(
                 "SELECT COUNT(*) FROM map_layout"
@@ -988,7 +1000,7 @@ class DatabaseManager:
                           annotation_type: str, content: str,
                           metadata: Dict = None) -> Dict:
         """Create a map annotation."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             now = datetime.now().isoformat()
             cursor = conn.cursor()
@@ -1013,7 +1025,7 @@ class DatabaseManager:
 
     def get_annotations(self, node_id: str = None) -> List[Dict]:
         """Get annotations, optionally filtered by node_id."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             if node_id:
                 rows = conn.execute(
@@ -1040,7 +1052,7 @@ class DatabaseManager:
     def update_annotation(self, ann_id: int, content: str = None,
                           metadata: Dict = None) -> bool:
         """Update an annotation's content or metadata."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             updates = []
             params = []
@@ -1067,7 +1079,7 @@ class DatabaseManager:
 
     def delete_annotation(self, ann_id: int) -> bool:
         """Delete an annotation."""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             conn.execute(
                 "DELETE FROM map_annotations WHERE id = ?", (ann_id,),

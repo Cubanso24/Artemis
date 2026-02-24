@@ -1854,19 +1854,33 @@
         }
 
         async function _refreshGraphData() {
-            // Background data refresh: updates data stores and search index
-            // without destroying the graph, preserving zoom/pan/VLAN.
+            // Background data refresh: re-renders the graph when nodes change,
+            // preserving VLAN filter selection.
             try {
                 const response = await fetch('/api/network-graph');
                 const graphData = await response.json();
                 if (graphData.error) return;
+
+                const prevCount = (_fullGraphData && _fullGraphData.nodes)
+                    ? _fullGraphData.nodes.length : 0;
+                const newCount = (graphData.nodes || []).length;
 
                 _fullGraphData = graphData;
                 _deviceFlags = graphData.device_flags || {};
                 _lanGroups = graphData.lan_groups || [];
                 buildVlanTabs(graphData);
                 renderLanGroupChips();
-                // Update search index so newly profiled nodes are searchable
+
+                // If node count changed, rebuild the graph so new nodes appear
+                if (newCount !== prevCount || !networkGraph) {
+                    const viewData = _activeVlan !== null
+                        ? _getVlanFilteredData(_activeVlan)
+                        : graphData;
+                    renderNetworkGraph(viewData);
+                    addLog(`Map updated: ${newCount} nodes (+${newCount - prevCount} new)`, 'info');
+                }
+
+                // Update search index
                 if (networkGraph) {
                     networkGraphData = { raw: graphData, cy: networkGraph };
                 }
@@ -4000,10 +4014,12 @@
                     document.getElementById('continuous-cycle').textContent = `Cycle: ${cycle}`;
                     document.getElementById('continuous-nodes').textContent = `Nodes: ${totalNodes}`;
 
-                    // Refresh graph data periodically
+                    // Refresh graph data: fast (5s) when map is empty, normal (30s) after
                     if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
                     const now = Date.now();
-                    if (result.total_nodes && now - handleContinuousProgress._lastRefresh > 30000) {
+                    const mapEmpty = !_fullGraphData || !_fullGraphData.nodes || _fullGraphData.nodes.length === 0;
+                    const debounce = mapEmpty ? 5000 : 30000;
+                    if (result.total_nodes && now - handleContinuousProgress._lastRefresh > debounce) {
                         handleContinuousProgress._lastRefresh = now;
                         _refreshGraphData();
                         loadNetworkSummary();

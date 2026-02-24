@@ -1457,13 +1457,12 @@ class HuntManager:
                         }
                         if row.get('data'):
                             msg['result'] = row['data']
+                        # Add pipeline identifier BEFORE broadcasting
+                        if is_data_pipe:
+                            msg['pipeline'] = 'data'
+                        elif is_analysis_pipe:
+                            msg['pipeline'] = 'analysis'
                         await self._broadcast_fn(msg)
-
-                    # Add pipeline info to the WS message
-                    if is_data_pipe:
-                        msg['pipeline'] = 'data'
-                    elif is_analysis_pipe:
-                        msg['pipeline'] = 'analysis'
 
                     # For continuous ingestion, reload the map from disk
                     # periodically so the API serves up-to-date graph data.
