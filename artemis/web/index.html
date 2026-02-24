@@ -5155,6 +5155,8 @@
 
                 addLog('Network map reset to empty', 'info');
                 loadNetworkMaps();
+                loadNetworkGraph(true);
+                loadNetworkSummary();
 
             } catch (error) {
                 console.error('Error resetting map:', error);
