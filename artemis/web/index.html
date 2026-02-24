@@ -1233,19 +1233,26 @@
                 <div id="network-graph"></div>
 
                 <div class="graph-legend" id="graph-legend">
-                    <div style="font-size:11px; opacity:0.7; margin-bottom:6px; font-weight:600;">TIERS (top → bottom)</div>
-                    <div class="legend-item"><i class="fa-solid fa-cloud" style="color:#f44336; width:16px; text-align:center;"></i><span>Internet (click to expand)</span></div>
-                    <div class="legend-item"><i class="fa-solid fa-shield-halved" style="color:#FF9800; width:16px; text-align:center;"></i><span>Gateway / Firewall</span></div>
-                    <div class="legend-item"><i class="fa-solid fa-sitemap" style="color:#00BCD4; width:16px; text-align:center;"></i><span>Core Infra (DNS/DC/DHCP)</span></div>
-                    <div class="legend-item"><i class="fa-solid fa-server" style="color:#9C27B0; width:16px; text-align:center;"></i><span>Servers</span></div>
-                    <div class="legend-item"><i class="fa-solid fa-desktop" style="color:#607D8B; width:16px; text-align:center;"></i><span>Endpoints</span></div>
+                    <div style="font-size:11px; opacity:0.7; margin-bottom:6px; font-weight:600;">DEVICE TYPES</div>
+                    <div class="legend-item"><img src="/static/icons/internet.svg" style="width:18px; height:18px;"><span>Internet</span></div>
+                    <div class="legend-item"><img src="/static/icons/firewall.svg" style="width:18px; height:18px;"><span>Firewall</span></div>
+                    <div class="legend-item"><img src="/static/icons/router.svg" style="width:18px; height:18px;"><span>Router</span></div>
+                    <div class="legend-item"><img src="/static/icons/switch.svg" style="width:18px; height:18px;"><span>Switch</span></div>
+                    <div class="legend-item"><img src="/static/icons/domain_controller.svg" style="width:18px; height:18px;"><span>Domain Controller</span></div>
+                    <div class="legend-item"><img src="/static/icons/dns_server.svg" style="width:18px; height:18px;"><span>DNS Server</span></div>
+                    <div class="legend-item"><img src="/static/icons/server.svg" style="width:18px; height:18px;"><span>Server</span></div>
+                    <div class="legend-item"><img src="/static/icons/workstation.svg" style="width:18px; height:18px;"><span>Workstation</span></div>
                     <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
                     <div style="font-size:11px; opacity:0.7; font-weight:600;">GROUPING</div>
                     <div class="legend-item"><div style="width:18px; height:14px; background:#1e293b; border:2px solid #667eea; border-radius:3px;"></div><span>Subnet (click to expand)</span></div>
                     <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
+                    <div style="font-size:11px; opacity:0.7; font-weight:600;">FLAGS</div>
+                    <div class="legend-item"><div style="width:18px; height:18px; border:2px solid #ff1744; border-radius:3px; background:rgba(255,23,68,0.15);"></div><span>Malicious</span></div>
+                    <div class="legend-item"><div style="width:18px; height:18px; border:2px solid #aa00ff; border-radius:3px; background:rgba(170,0,255,0.15);"></div><span>Suspicious</span></div>
+                    <div style="width:1px; background:var(--border-color); margin:0 4px;"></div>
                     <div style="font-size:11px; opacity:0.7; font-weight:600;">CONNECTIONS</div>
-                    <div class="legend-item"><div style="width:24px; height:3px; background:#ff1744; border-radius:2px;"></div><span>Malicious</span></div>
-                    <div class="legend-item"><div style="width:24px; height:3px; background:#aa00ff; border-radius:2px;"></div><span>Suspicious</span></div>
+                    <div class="legend-item"><div style="width:24px; height:3px; background:#ff1744; border-radius:2px;"></div><span>Malicious traffic</span></div>
+                    <div class="legend-item"><div style="width:24px; height:3px; background:#aa00ff; border-radius:2px;"></div><span>Suspicious traffic</span></div>
                 </div>
                 <div class="lan-groups-bar" id="lan-groups-bar"></div>
                 <div id="profile-status" style="display:none; margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:5px;"></div>
@@ -1961,29 +1968,31 @@
             const subnets = {};
             const COLLAPSE_THRESHOLD = 4;
 
-            // Device icon unicode and color map
+            // Device icon SVG path and color map
             const deviceIcons = {
-                'domain_controller': { icon: '\uf0e8', color: '#E91E63' },
-                'dns_server':        { icon: '\uf0ac', color: '#00BCD4' },
-                'web_server':        { icon: '\uf233', color: '#FF5722' },
-                'database_server':   { icon: '\uf1c0', color: '#9C27B0' },
-                'mail_server':       { icon: '\uf0e0', color: '#3F51B5' },
-                'file_server':       { icon: '\uf07b', color: '#3F51B5' },
-                'dhcp_server':       { icon: '\uf6ff', color: '#009688' },
-                'ssh_server':        { icon: '\uf120', color: '#795548' },
-                'vpn_gateway':       { icon: '\uf3ed', color: '#FF9800' },
-                'router':            { icon: '\uf362', color: '#FF6F00' },
-                'firewall':          { icon: '\uf06d', color: '#D32F2F' },
-                'print_server':      { icon: '\uf02f', color: '#607D8B' },
-                'syslog_server':     { icon: '\uf15c', color: '#8BC34A' },
-                'monitoring':        { icon: '\uf201', color: '#CDDC39' },
-                'workstation':       { icon: '\uf108', color: '#607D8B' },
-                'gateway':           { icon: '\uf132', color: '#FF9800' },
-                'iot_device':        { icon: '\uf2db', color: '#9E9E9E' },
-                'ntp_server':        { icon: '\uf017', color: '#8BC34A' },
-                'radius_server':     { icon: '\uf084', color: '#FF9800' },
-                'mqtt_broker':       { icon: '\uf1eb', color: '#009688' },
-                'ics_device':        { icon: '\uf085', color: '#FF5722' },
+                'domain_controller': { svg: '/static/icons/domain_controller.svg', color: '#E91E63' },
+                'dns_server':        { svg: '/static/icons/dns_server.svg',        color: '#00BCD4' },
+                'web_server':        { svg: '/static/icons/web_server.svg',        color: '#FF5722' },
+                'database_server':   { svg: '/static/icons/database_server.svg',   color: '#9C27B0' },
+                'mail_server':       { svg: '/static/icons/mail_server.svg',       color: '#3F51B5' },
+                'file_server':       { svg: '/static/icons/file_server.svg',       color: '#3F51B5' },
+                'dhcp_server':       { svg: '/static/icons/dhcp_server.svg',       color: '#009688' },
+                'ssh_server':        { svg: '/static/icons/ssh_server.svg',        color: '#795548' },
+                'vpn_gateway':       { svg: '/static/icons/vpn_gateway.svg',       color: '#FF9800' },
+                'router':            { svg: '/static/icons/router.svg',            color: '#FF6F00' },
+                'firewall':          { svg: '/static/icons/firewall.svg',          color: '#D32F2F' },
+                'print_server':      { svg: '/static/icons/print_server.svg',      color: '#607D8B' },
+                'syslog_server':     { svg: '/static/icons/syslog_server.svg',     color: '#8BC34A' },
+                'monitoring':        { svg: '/static/icons/monitoring.svg',         color: '#CDDC39' },
+                'workstation':       { svg: '/static/icons/workstation.svg',        color: '#607D8B' },
+                'gateway':           { svg: '/static/icons/gateway.svg',            color: '#FF9800' },
+                'iot_device':        { svg: '/static/icons/iot_device.svg',         color: '#9E9E9E' },
+                'ntp_server':        { svg: '/static/icons/ntp_server.svg',         color: '#8BC34A' },
+                'radius_server':     { svg: '/static/icons/radius_server.svg',      color: '#FF9800' },
+                'mqtt_broker':       { svg: '/static/icons/mqtt_broker.svg',        color: '#009688' },
+                'ics_device':        { svg: '/static/icons/ics_device.svg',         color: '#FF5722' },
+                'switch':            { svg: '/static/icons/switch.svg',             color: '#4CAF50' },
+                'server':            { svg: '/static/icons/server.svg',             color: '#42A5F5' },
             };
 
             // Group internal nodes by subnet
@@ -2036,6 +2045,7 @@
                             label: n.label,
                             _raw: n,
                             _nodeGroup: 'internet',
+                            _svgIcon: '/static/icons/internet.svg',
                             unique_ips: n.unique_ips || 0,
                             total_connections: n.total_connections || 0,
                         },
@@ -2070,6 +2080,10 @@
                 if (n.is_virtual) classes.push('virtual');
                 classes.push('tier-' + tier);
 
+                // Resolve SVG icon for this device type
+                const iconInfo = deviceIcons[n.device_type] || deviceIcons['server'] || {};
+                const svgPath = iconInfo.svg || '/static/icons/unknown.svg';
+
                 elements.push({
                     group: 'nodes',
                     data: {
@@ -2079,6 +2093,7 @@
                         _raw: n,
                         _nodeGroup: n.group || 'internal',
                         _color: nodeColor,
+                        _svgIcon: svgPath,
                         _tier: tier,
                         device_type: n.device_type || '',
                         total_connections: n.total_connections || 0,
@@ -2182,7 +2197,7 @@
 
             // Cytoscape stylesheet
             const cyStyle = [
-                // Default node
+                // Default device node — SVG icon background
                 {
                     selector: 'node.device',
                     style: {
@@ -2194,51 +2209,43 @@
                         'text-valign': 'bottom',
                         'text-halign': 'center',
                         'text-margin-y': 6,
-                        'background-color': 'data(_color)',
-                        'border-color': 'data(_color)',
-                        'border-width': 2,
-                        'width': 28,
-                        'height': 28,
-                        'shape': 'ellipse',
+                        'background-color': '#0d1117',
+                        'background-opacity': 0.01,
+                        'background-image': 'data(_svgIcon)',
+                        'background-fit': 'contain',
+                        'background-clip': 'none',
+                        'border-width': 0,
+                        'width': 40,
+                        'height': 40,
+                        'shape': 'rectangle',
                         'overlay-opacity': 0,
                     }
                 },
-                // Typed device nodes - larger
-                {
-                    selector: 'node.device[device_type]',
-                    style: {
-                        'width': 32,
-                        'height': 32,
-                    }
-                },
-                // Infrastructure nodes (routers, firewalls) - diamond shape
+                // Infrastructure nodes — slightly larger
                 {
                     selector: 'node.type-router, node.type-firewall, node.type-gateway, node.type-vpn_gateway',
                     style: {
-                        'shape': 'diamond',
-                        'width': 36,
-                        'height': 36,
+                        'width': 48,
+                        'height': 48,
                     }
                 },
-                // Server nodes - round rectangle
+                // Server nodes
                 {
                     selector: 'node.type-domain_controller, node.type-dns_server, node.type-web_server, node.type-database_server, node.type-mail_server, node.type-file_server, node.type-dhcp_server, node.type-ssh_server, node.type-ntp_server, node.type-radius_server, node.type-mqtt_broker',
                     style: {
-                        'shape': 'round-rectangle',
-                        'width': 34,
-                        'height': 28,
+                        'width': 44,
+                        'height': 44,
                     }
                 },
-                // IoT / ICS nodes - hexagon
+                // IoT / ICS nodes
                 {
                     selector: 'node.type-iot_device, node.type-ics_device',
                     style: {
-                        'shape': 'hexagon',
-                        'width': 30,
-                        'height': 30,
+                        'width': 38,
+                        'height': 38,
                     }
                 },
-                // Internet cloud node
+                // Internet cloud node — larger with SVG globe
                 {
                     selector: 'node.internet-cloud',
                     style: {
@@ -2249,12 +2256,15 @@
                         'text-valign': 'bottom',
                         'text-halign': 'center',
                         'text-margin-y': 8,
-                        'background-color': '#f44336',
-                        'border-color': '#f44336',
-                        'border-width': 2,
-                        'width': 50,
-                        'height': 50,
-                        'shape': 'octagon',
+                        'background-color': '#0d1117',
+                        'background-opacity': 0.01,
+                        'background-image': 'data(_svgIcon)',
+                        'background-fit': 'contain',
+                        'background-clip': 'none',
+                        'border-width': 0,
+                        'width': 56,
+                        'height': 56,
+                        'shape': 'rectangle',
                         'overlay-opacity': 0,
                     }
                 },
@@ -2292,13 +2302,16 @@
                         'border-style': 'solid',
                     }
                 },
-                // Flagged nodes
+                // Flagged nodes — colored border ring around the SVG icon
                 {
                     selector: 'node.flagged-malicious',
                     style: {
                         'border-color': '#ff1744',
                         'border-width': 3,
+                        'border-opacity': 1,
                         'background-color': '#ff1744',
+                        'background-opacity': 0.12,
+                        'shape': 'ellipse',
                     }
                 },
                 {
@@ -2306,7 +2319,10 @@
                     style: {
                         'border-color': '#aa00ff',
                         'border-width': 3,
+                        'border-opacity': 1,
                         'background-color': '#aa00ff',
+                        'background-opacity': 0.12,
+                        'shape': 'ellipse',
                     }
                 },
                 // Virtual machine nodes
@@ -2321,7 +2337,8 @@
                     selector: 'node:selected',
                     style: {
                         'border-color': '#667eea',
-                        'border-width': 3,
+                        'border-width': 2,
+                        'border-opacity': 1,
                         'overlay-color': '#667eea',
                         'overlay-opacity': 0.15,
                     }
