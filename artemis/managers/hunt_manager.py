@@ -444,6 +444,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                 send('running',
                      f'Cycle {cycle}: backfilling from {bf_start}...',
                      25, {'cycle': cycle, 'pipeline': 'data',
+                          'total_nodes': len(nm.nodes),
                           'interval': interval_minutes,
                           'lookback': lookback_minutes,
                           'backfill_from': bf_start})
@@ -452,6 +453,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                 send('running',
                      f'Cycle {cycle}: collecting data (last {lookback_minutes}m)...',
                      50, {'cycle': cycle, 'pipeline': 'data',
+                          'total_nodes': len(nm.nodes),
                           'interval': interval_minutes,
                           'lookback': lookback_minutes})
                 bf_start = None
@@ -470,6 +472,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                              f'({rt:,} events)...',
                              25 + int(30 * w / max(tw, 1)),
                              {'cycle': cycle, 'pipeline': 'data',
+                              'total_nodes': len(nm.nodes),
                               'stage_detail': 'splunk_fetch',
                               'window': w, 'total_windows': tw,
                               'running_total': rt})
@@ -599,13 +602,16 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                     msg = f'Cycle {cycle}: no new data in last {lookback_minutes}m'
                     log.info(msg)
                     send('running', msg, 50,
-                         {'cycle': cycle, 'pipeline': 'data'})
+                         {'cycle': cycle, 'pipeline': 'data',
+                          'new_conns': 0, 'new_dns': 0, 'new_ntlm': 0,
+                          'total_nodes': len(nm.nodes)})
 
             except Exception as e:
                 log.error(f'Cycle {cycle} error: {e}')
                 log.error(traceback.format_exc())
                 send('running', f'Cycle {cycle} error: {e}', 50,
                      {'cycle': cycle, 'pipeline': 'data',
+                      'total_nodes': len(nm.nodes),
                       'error': str(e)})
 
             # Sleep in 5-second increments

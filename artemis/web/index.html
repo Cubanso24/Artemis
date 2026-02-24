@@ -4353,17 +4353,19 @@
                     const newDns = result.new_dns;
                     const newNtlm = result.new_ntlm;
                     const isBackfill = result.stage_detail === 'backfill_mapping';
+                    const isFetching = result.stage_detail === 'splunk_fetch';
 
                     const statusEl = document.getElementById('pipe-data-status');
-                    statusEl.textContent = isBackfill ? 'Backfill' : 'Running';
+                    statusEl.textContent = isBackfill ? 'Backfill' : isFetching ? 'Fetching' : 'Running';
                     statusEl.style.background = isBackfill ? '#d2992233' : '#388bfd33';
                     statusEl.style.color = isBackfill ? '#d29922' : '#4fc3f7';
 
                     document.getElementById('pipe-data-cycle').textContent = cycle;
-                    document.getElementById('pipe-data-nodes').textContent = totalNodes ? Number(totalNodes).toLocaleString() : '—';
-                    document.getElementById('pipe-data-conns').textContent = newConns != null ? Number(newConns).toLocaleString() : '—';
-                    document.getElementById('pipe-data-dns').textContent = newDns != null ? Number(newDns).toLocaleString() : '—';
-                    document.getElementById('pipe-data-ntlm').textContent = newNtlm != null ? Number(newNtlm).toLocaleString() : '—';
+                    // Always update nodes if present; keep previous value if missing
+                    if (totalNodes) document.getElementById('pipe-data-nodes').textContent = Number(totalNodes).toLocaleString();
+                    if (newConns != null) document.getElementById('pipe-data-conns').textContent = Number(newConns).toLocaleString();
+                    if (newDns != null) document.getElementById('pipe-data-dns').textContent = Number(newDns).toLocaleString();
+                    if (newNtlm != null) document.getElementById('pipe-data-ntlm').textContent = Number(newNtlm).toLocaleString();
 
                     const detailEl = document.getElementById('pipe-data-detail');
                     if (result.total_events) {
