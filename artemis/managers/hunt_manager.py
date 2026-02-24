@@ -15,6 +15,7 @@ import os
 import asyncio
 import logging
 import signal
+import time as _time
 from datetime import datetime
 from typing import Optional
 
@@ -1466,13 +1467,26 @@ class HuntManager:
 
                     # For continuous ingestion, reload the map from disk
                     # periodically so the API serves up-to-date graph data.
+                    # Triggers on cycle change OR node-count change (backfill),
+                    # throttled to at most once per 30 seconds (file can be large).
                     if is_continuous and row['stage'] == 'running':
                         data = row.get('data') or {}
-                        cur_cycle = data.get('cycle', 0) if isinstance(data, dict) else 0
-                        last_key = f'_last_reload_cycle_{hunt_id}'
-                        prev_cycle = getattr(self, last_key, 0)
-                        if cur_cycle and cur_cycle != prev_cycle:
-                            setattr(self, last_key, cur_cycle)
+                        if not isinstance(data, dict):
+                            data = {}
+                        cur_cycle = data.get('cycle', 0)
+                        cur_nodes = data.get('total_nodes', 0)
+
+                        prev_key = f'_last_reload_{hunt_id}'
+                        prev = getattr(self, prev_key, (0, 0, 0))  # (cycle, nodes, timestamp)
+                        prev_cycle, prev_nodes, prev_ts = prev
+
+                        now_ts = _time.time()
+                        state_changed = (
+                            (cur_cycle and cur_cycle != prev_cycle) or
+                            (cur_nodes and cur_nodes != prev_nodes)
+                        )
+                        if state_changed and (now_ts - prev_ts) > 30:
+                            setattr(self, prev_key, (cur_cycle, cur_nodes, now_ts))
                             try:
                                 plugin_manager.reload_from_disk(
                                     ['network_mapper']
