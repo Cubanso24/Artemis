@@ -114,16 +114,16 @@ if __name__ == "__main__":
     print("=" * 80)
     print("\nStarting server on all network interfaces...")
     print("\nAccess Artemis from:")
-    print(f"   Local:      http://localhost:8000")
-    print(f"   LAN:        http://{lan_ip}:8000")
-    print(f"   API Docs:   http://{lan_ip}:8000/docs")
+    print(f"   Local:      http://localhost:6969")
+    print(f"   LAN:        http://{lan_ip}:6969")
+    print(f"   API Docs:   http://{lan_ip}:6969/docs")
     print(f"\nAnyone on your network can access Artemis at the LAN address")
     print("=" * 80 + "\n")
 
     uvicorn.run(
         "artemis_server:app",
         host="0.0.0.0",
-        port=8000,
+        port=6969,
         log_level="info",
         reload=True,
         reload_dirs=["."],
