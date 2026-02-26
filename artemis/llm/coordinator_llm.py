@@ -48,9 +48,12 @@ class CoordinatorLLM:
     a unified threat assessment from all agent outputs.
     """
 
-    def __init__(self, client: LLMClient, rag_store=None):
+    def __init__(self, client: LLMClient, rag_store=None,
+                 adaptive_learner=None, db_manager=None):
         self.client = client
         self.rag_store = rag_store
+        self.adaptive_learner = adaptive_learner
+        self.db_manager = db_manager
         self.logger = ArtemisLogger.setup_logger("artemis.llm.coordinator")
 
     @property
@@ -91,16 +94,23 @@ class CoordinatorLLM:
             if rag_context:
                 rag_context = f"\n{rag_context}\n"
 
+        # Technique precision context from self-learning feedback loop
+        precision_context = self._build_precision_context()
+
         user_message = (
             f"{state_text}\n\n"
             f"{signals_text}\n\n"
             f"{data_text}\n\n"
             f"{rag_context}"
-            "Based on this network state, signals, data summary, and "
-            "any historical context above, generate threat hypotheses. "
+            f"{precision_context}"
+            "Based on this network state, signals, data summary, "
+            "historical context, and technique precision data above, "
+            "generate threat hypotheses. "
             "Consider what attacks could be in progress, what kill chain "
             "stages might be active, which agents should investigate, and "
-            "whether similar patterns were seen in the past."
+            "whether similar patterns were seen in the past. "
+            "Prioritize techniques with high historical precision (confirmed TP) "
+            "and deprioritize techniques that frequently produce false positives."
         )
 
         result = self.client.coordinator_json(
@@ -147,6 +157,55 @@ class CoordinatorLLM:
         )
 
         return hypotheses
+
+    def _build_precision_context(self) -> str:
+        """Build technique precision context from the self-learning feedback loop.
+
+        Queries the technique_precision table and formats it for the LLM
+        prompt, helping it weight hypotheses by historical reliability.
+        """
+        if not self.db_manager:
+            return ""
+
+        try:
+            precision_data = self.db_manager.get_technique_precision()
+            if not precision_data:
+                return ""
+
+            lines = [
+                "=== TECHNIQUE PRECISION (from past case outcomes) ==="
+            ]
+
+            # Group by reliability tier
+            high = []
+            low = []
+            for tech_id, data in precision_data.items():
+                total = data["true_positives"] + data["false_positives"]
+                if total < 2:
+                    continue  # Not enough data
+                p = data["precision"]
+                label = f"{tech_id} (precision={p:.0%}, TP={data['true_positives']}, FP={data['false_positives']})"
+                if p >= 0.7:
+                    high.append(label)
+                elif p < 0.3:
+                    low.append(label)
+
+            if high:
+                lines.append("High-precision (reliable indicators):")
+                for h in high[:10]:
+                    lines.append(f"  + {h}")
+            if low:
+                lines.append("Low-precision (frequent false positives):")
+                for l in low[:10]:
+                    lines.append(f"  - {l}")
+
+            if len(lines) <= 1:
+                return ""
+
+            return "\n".join(lines) + "\n\n"
+        except Exception as e:
+            self.logger.debug(f"Could not build precision context: {e}")
+            return ""
 
     # ------------------------------------------------------------------
     # Stage 3.5: Agent Directive Generation

@@ -28,6 +28,7 @@ from artemis.meta_learner.adaptive_learner import AdaptiveLearner, FeedbackType
 from artemis.llm.client import LLMClient
 from artemis.llm.coordinator_llm import CoordinatorLLM
 from artemis.llm.agent_llm import AgentLLM
+from artemis.managers.case_generator import CaseGenerator
 from artemis.utils.logging_config import ArtemisLogger
 
 
@@ -98,6 +99,9 @@ class MetaLearnerCoordinator:
 
         # Baseline agents (always running)
         self.baseline_agents = ["c2_hunter", "reconnaissance_hunter"]
+
+        # Case generator (initialized lazily when db_manager is available)
+        self.case_generator: Optional[CaseGenerator] = None
 
         # Per-hunt state (set during hunt())
         self._current_directives: Dict[str, Dict] = {}
@@ -245,6 +249,9 @@ class MetaLearnerCoordinator:
 
         # Stage 7: Index findings into RAG for future hunts
         self._index_to_rag(agent_outputs, data)
+
+        # Stage 8: Autonomous case generation
+        assessment = self._generate_cases(assessment, data)
 
         self.logger.info(
             f"Hunt complete: confidence={assessment['final_confidence']:.2f}, "
@@ -645,6 +652,59 @@ class MetaLearnerCoordinator:
 
         if assessment["final_confidence"] >= 0.7:
             self.stats["high_confidence_detections"] += 1
+
+    def init_case_generator(
+        self,
+        db_manager,
+        auto_respond_threshold: float = 0.95,
+        auto_investigate_threshold: float = 0.80,
+        auto_case_threshold: float = 0.60,
+        dedup_window_hours: int = 1,
+    ):
+        """Initialize the case generator with a database manager.
+
+        Called by the server after both the coordinator and db_manager
+        are created, since the coordinator may be initialised before
+        the database layer.
+        """
+        rag = getattr(self, 'rag_store', None)
+        self.case_generator = CaseGenerator(
+            db_manager=db_manager,
+            rag_store=rag,
+            auto_respond_threshold=auto_respond_threshold,
+            auto_investigate_threshold=auto_investigate_threshold,
+            auto_case_threshold=auto_case_threshold,
+            dedup_window_hours=dedup_window_hours,
+        )
+        self.logger.info("Case generator initialized — autonomous case creation enabled")
+
+    def _generate_cases(
+        self,
+        assessment: Dict[str, Any],
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Stage 8: Auto-generate a case from the hunt assessment."""
+        if not self.case_generator:
+            return assessment
+
+        try:
+            hunt_cycle = data.get("_cycle", 0)
+            source = data.get("_source", "autonomous")
+            case = self.case_generator.evaluate_and_create(
+                assessment, hunt_cycle=hunt_cycle, source=source,
+            )
+            if case:
+                assessment["auto_case"] = case.to_dict()
+                self.logger.info(
+                    f"Stage 8: Auto-created case {case.case_id}: {case.title} "
+                    f"[{case.escalation_level.value}]"
+                )
+            else:
+                self.logger.debug("Stage 8: No case created (below threshold)")
+        except Exception as e:
+            self.logger.error(f"Stage 8: Case generation failed: {e}")
+
+        return assessment
 
     def _index_to_rag(
         self,

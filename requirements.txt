@@ -26,8 +26,12 @@ uvicorn[standard]>=0.24.0      # ASGI server
 websockets>=12.0               # Real-time communication
 pydantic>=2.0.0                # Data validation
 
+# Autonomous hunting scheduler
+apscheduler>=3.10.0             # Job scheduling for autonomous hunt cadence
+
 # Optional dependencies for enhanced functionality
 # Uncomment if needed:
 # pyshark>=0.5.3               # Alternative PCAP parser
 # elasticsearch>=8.0.0         # Elasticsearch integration
 # python-logstash>=0.4.8       # Logstash integration
+# river>=0.21.0                # ADWIN drift detection for self-learning loop

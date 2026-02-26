@@ -249,8 +249,486 @@ class DatabaseManager:
             )
         """)
 
+        # ------------------------------------------------------------------
+        # Autonomous case management
+        # ------------------------------------------------------------------
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cases (
+                case_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'new',
+                severity TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                description TEXT DEFAULT '',
+                mitre_techniques TEXT DEFAULT '[]',
+                affected_assets TEXT DEFAULT '[]',
+                kill_chain_stages TEXT DEFAULT '[]',
+                recommended_actions TEXT DEFAULT '[]',
+                hunt_cycle INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'autonomous',
+                escalation_level TEXT DEFAULT 'human_review',
+                iris_case_id TEXT,
+                analyst_verdict TEXT,
+                analyst_notes TEXT DEFAULT '',
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                resolved_at TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cases_status "
+            "ON cases(status)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cases_severity "
+            "ON cases(severity)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cases_created "
+            "ON cases(created_at)"
+        )
+
+        # Junction table: case <-> finding (many-to-many)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS case_findings (
+                case_id TEXT NOT NULL,
+                finding_id TEXT NOT NULL,
+                added_at TIMESTAMP NOT NULL,
+                PRIMARY KEY (case_id, finding_id),
+                FOREIGN KEY (case_id) REFERENCES cases(case_id),
+                FOREIGN KEY (finding_id) REFERENCES agent_findings(finding_id)
+            )
+        """)
+
+        # Technique precision tracking (for self-learning feedback loop)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS technique_precision (
+                technique_id TEXT PRIMARY KEY,
+                true_positives INTEGER DEFAULT 0,
+                false_positives INTEGER DEFAULT 0,
+                uncertain INTEGER DEFAULT 0,
+                precision REAL DEFAULT 0.5,
+                last_updated TIMESTAMP
+            )
+        """)
+
+        # Hunt scheduler state
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scheduler_state (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                status TEXT DEFAULT 'stopped',
+                last_run_at TIMESTAMP,
+                last_run_result TEXT,
+                next_run_at TIMESTAMP,
+                total_hunts INTEGER DEFAULT 0,
+                total_cases_created INTEGER DEFAULT 0,
+                updated_at TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Cases
+    # ------------------------------------------------------------------
+
+    def create_case(self, case_id: str, title: str, severity: str,
+                    confidence: float, description: str = "",
+                    mitre_techniques: list = None,
+                    affected_assets: list = None,
+                    kill_chain_stages: list = None,
+                    recommended_actions: list = None,
+                    hunt_cycle: int = 0, source: str = "autonomous",
+                    escalation_level: str = "human_review",
+                    finding_ids: list = None) -> Dict:
+        """Create a new case and link findings to it."""
+        now = datetime.now().isoformat()
+
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO cases "
+                "(case_id, title, status, severity, confidence, description, "
+                "mitre_techniques, affected_assets, kill_chain_stages, "
+                "recommended_actions, hunt_cycle, source, escalation_level, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (case_id, title, severity, confidence, description,
+                 _dumps(mitre_techniques or []),
+                 _dumps(affected_assets or []),
+                 _dumps(kill_chain_stages or []),
+                 _dumps(recommended_actions or []),
+                 hunt_cycle, source, escalation_level, now, now),
+            )
+            # Link findings
+            if finding_ids:
+                for fid in finding_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO case_findings "
+                        "(case_id, finding_id, added_at) VALUES (?, ?, ?)",
+                        (case_id, fid, now),
+                    )
+            return {"case_id": case_id, "title": title, "created_at": now}
+        return self._exec_with_retry(_do)
+
+    def get_cases(self, limit: int = 100, status: str = None,
+                  severity: str = None, escalation_level: str = None,
+                  source: str = None) -> List[Dict]:
+        """Get cases with optional filtering."""
+        conn = self._connect()
+        try:
+            query = "SELECT * FROM cases WHERE 1=1"
+            params = []
+
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            if severity:
+                query += " AND severity = ?"
+                params.append(severity)
+            if escalation_level:
+                query += " AND escalation_level = ?"
+                params.append(escalation_level)
+            if source:
+                query += " AND source = ?"
+                params.append(source)
+
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for r in rows:
+                case_dict = self._row_to_case_dict(r)
+                # Attach linked finding IDs
+                findings = conn.execute(
+                    "SELECT finding_id FROM case_findings WHERE case_id = ?",
+                    (r["case_id"],),
+                ).fetchall()
+                case_dict["findings"] = [f[0] for f in findings]
+                results.append(case_dict)
+            return results
+        finally:
+            conn.close()
+
+    def get_case(self, case_id: str) -> Dict | None:
+        """Get a single case by ID with linked findings."""
+        conn = self._connect()
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            if not row:
+                return None
+            case_dict = self._row_to_case_dict(row)
+            findings = conn.execute(
+                "SELECT finding_id FROM case_findings WHERE case_id = ?",
+                (case_id,),
+            ).fetchall()
+            case_dict["findings"] = [f[0] for f in findings]
+            return case_dict
+        finally:
+            conn.close()
+
+    def update_case(self, case_id: str, **kwargs) -> bool:
+        """Update case fields. Accepts any column name as keyword argument."""
+        conn = self._connect()
+        try:
+            updates = []
+            params = []
+            json_fields = {
+                "mitre_techniques", "affected_assets", "kill_chain_stages",
+                "recommended_actions",
+            }
+            for key, value in kwargs.items():
+                if key in json_fields:
+                    updates.append(f"{key} = ?")
+                    params.append(_dumps(value))
+                else:
+                    updates.append(f"{key} = ?")
+                    params.append(value)
+            if not updates:
+                return False
+            updates.append("updated_at = ?")
+            params.append(datetime.now().isoformat())
+            params.append(case_id)
+            conn.execute(
+                f"UPDATE cases SET {', '.join(updates)} WHERE case_id = ?",
+                params,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def resolve_case(self, case_id: str, verdict: str,
+                     notes: str = "") -> bool:
+        """Resolve a case with an analyst verdict (tp, fp, uncertain)."""
+        now = datetime.now().isoformat()
+        status_map = {"tp": "confirmed_tp", "fp": "confirmed_fp",
+                      "uncertain": "closed"}
+        status = status_map.get(verdict, "closed")
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE cases SET status = ?, analyst_verdict = ?, "
+                "analyst_notes = ?, resolved_at = ?, updated_at = ? "
+                "WHERE case_id = ?",
+                (status, verdict, notes, now, now, case_id),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def link_finding_to_case(self, case_id: str, finding_id: str) -> bool:
+        """Add a finding to an existing case."""
+        now = datetime.now().isoformat()
+
+        def _do(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO case_findings "
+                "(case_id, finding_id, added_at) VALUES (?, ?, ?)",
+                (case_id, finding_id, now),
+            )
+            conn.execute(
+                "UPDATE cases SET updated_at = ? WHERE case_id = ?",
+                (now, case_id),
+            )
+            return True
+        return self._exec_with_retry(_do)
+
+    def get_case_stats(self) -> Dict:
+        """Get summary statistics for cases."""
+        conn = self._connect()
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM cases"
+            ).fetchone()[0]
+
+            by_status = {}
+            for row in conn.execute(
+                "SELECT status, COUNT(*) FROM cases GROUP BY status"
+            ).fetchall():
+                by_status[row[0]] = row[1]
+
+            by_severity = {}
+            for row in conn.execute(
+                "SELECT severity, COUNT(*) FROM cases GROUP BY severity"
+            ).fetchall():
+                by_severity[row[0]] = row[1]
+
+            by_escalation = {}
+            for row in conn.execute(
+                "SELECT escalation_level, COUNT(*) FROM cases "
+                "GROUP BY escalation_level"
+            ).fetchall():
+                by_escalation[row[0]] = row[1]
+
+            # TP/FP rates
+            resolved = conn.execute(
+                "SELECT analyst_verdict, COUNT(*) FROM cases "
+                "WHERE analyst_verdict IS NOT NULL "
+                "GROUP BY analyst_verdict"
+            ).fetchall()
+            verdict_counts = {r[0]: r[1] for r in resolved}
+
+            return {
+                "total": total,
+                "by_status": by_status,
+                "by_severity": by_severity,
+                "by_escalation": by_escalation,
+                "verdicts": verdict_counts,
+            }
+        finally:
+            conn.close()
+
+    def get_open_cases_for_dedup(self, mitre_techniques: list,
+                                 affected_assets: list,
+                                 window_hours: int = 1) -> List[Dict]:
+        """Find open cases matching techniques/assets within a time window.
+
+        Used by CaseGenerator to deduplicate findings into existing cases.
+        """
+        conn = self._connect()
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(hours=window_hours)).isoformat()
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM cases "
+                "WHERE status IN ('new', 'investigating') "
+                "AND created_at >= ? "
+                "ORDER BY created_at DESC",
+                (cutoff,),
+            ).fetchall()
+
+            technique_set = set(mitre_techniques)
+            asset_set = set(affected_assets)
+            matches = []
+            for r in rows:
+                case_techniques = set(json.loads(r["mitre_techniques"]))
+                case_assets = set(json.loads(r["affected_assets"]))
+                # Match if overlapping techniques AND overlapping assets
+                if (technique_set & case_techniques) and (asset_set & case_assets):
+                    matches.append(self._row_to_case_dict(r))
+            return matches
+        finally:
+            conn.close()
+
+    def _row_to_case_dict(self, r) -> Dict:
+        """Convert a sqlite3.Row from cases table to a dict."""
+        return {
+            "case_id": r["case_id"],
+            "title": r["title"],
+            "status": r["status"],
+            "severity": r["severity"],
+            "confidence": r["confidence"],
+            "description": r["description"],
+            "mitre_techniques": json.loads(r["mitre_techniques"]),
+            "affected_assets": json.loads(r["affected_assets"]),
+            "kill_chain_stages": json.loads(r["kill_chain_stages"]),
+            "recommended_actions": json.loads(r["recommended_actions"]),
+            "hunt_cycle": r["hunt_cycle"],
+            "source": r["source"],
+            "escalation_level": r["escalation_level"],
+            "iris_case_id": r["iris_case_id"],
+            "analyst_verdict": r["analyst_verdict"],
+            "analyst_notes": r["analyst_notes"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "resolved_at": r["resolved_at"],
+        }
+
+    # ------------------------------------------------------------------
+    # Technique precision (self-learning feedback)
+    # ------------------------------------------------------------------
+
+    def update_technique_precision(self, technique_id: str,
+                                   verdict: str) -> Dict:
+        """Update precision tracking for a MITRE technique after a case verdict.
+
+        Args:
+            technique_id: MITRE technique ID (e.g. T1071)
+            verdict: tp, fp, or uncertain
+        """
+        now = datetime.now().isoformat()
+
+        def _do(conn):
+            # Ensure row exists
+            conn.execute(
+                "INSERT OR IGNORE INTO technique_precision "
+                "(technique_id, last_updated) VALUES (?, ?)",
+                (technique_id, now),
+            )
+            # Increment the appropriate counter
+            col = {"tp": "true_positives", "fp": "false_positives",
+                    "uncertain": "uncertain"}.get(verdict, "uncertain")
+            conn.execute(
+                f"UPDATE technique_precision SET {col} = {col} + 1, "
+                "last_updated = ? WHERE technique_id = ?",
+                (now, technique_id),
+            )
+            # Recalculate precision = tp / (tp + fp) or 0.5 if no data
+            row = conn.execute(
+                "SELECT true_positives, false_positives "
+                "FROM technique_precision WHERE technique_id = ?",
+                (technique_id,),
+            ).fetchone()
+            tp, fp = row[0], row[1]
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.5
+            conn.execute(
+                "UPDATE technique_precision SET precision = ? "
+                "WHERE technique_id = ?",
+                (precision, technique_id),
+            )
+            return {"technique_id": technique_id, "precision": precision,
+                    "tp": tp, "fp": fp}
+        return self._exec_with_retry(_do)
+
+    def get_technique_precision(self, technique_ids: list = None) -> Dict[str, Dict]:
+        """Get precision data for techniques. Returns all if no IDs specified."""
+        conn = self._connect()
+        try:
+            if technique_ids:
+                placeholders = ",".join("?" for _ in technique_ids)
+                rows = conn.execute(
+                    f"SELECT technique_id, true_positives, false_positives, "
+                    f"uncertain, precision, last_updated "
+                    f"FROM technique_precision "
+                    f"WHERE technique_id IN ({placeholders})",
+                    technique_ids,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT technique_id, true_positives, false_positives, "
+                    "uncertain, precision, last_updated "
+                    "FROM technique_precision"
+                ).fetchall()
+            return {
+                r[0]: {"true_positives": r[1], "false_positives": r[2],
+                       "uncertain": r[3], "precision": r[4],
+                       "last_updated": r[5]}
+                for r in rows
+            }
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Scheduler state
+    # ------------------------------------------------------------------
+
+    def get_scheduler_state(self) -> Dict | None:
+        """Get current scheduler state."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT status, last_run_at, last_run_result, next_run_at, "
+                "total_hunts, total_cases_created, updated_at "
+                "FROM scheduler_state WHERE id = 1"
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "status": row[0], "last_run_at": row[1],
+                "last_run_result": row[2], "next_run_at": row[3],
+                "total_hunts": row[4], "total_cases_created": row[5],
+                "updated_at": row[6],
+            }
+        finally:
+            conn.close()
+
+    def update_scheduler_state(self, **kwargs) -> bool:
+        """Update scheduler state fields."""
+        conn = self._connect()
+        try:
+            # Ensure row exists
+            conn.execute(
+                "INSERT OR IGNORE INTO scheduler_state (id, updated_at) "
+                "VALUES (1, ?)",
+                (datetime.now().isoformat(),),
+            )
+            updates = []
+            params = []
+            for key, value in kwargs.items():
+                updates.append(f"{key} = ?")
+                params.append(value)
+            if not updates:
+                return False
+            updates.append("updated_at = ?")
+            params.append(datetime.now().isoformat())
+            conn.execute(
+                f"UPDATE scheduler_state SET {', '.join(updates)} WHERE id = 1",
+                params,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Agent findings

@@ -241,6 +241,172 @@ class AdaptiveLearner:
             "playbook_count": len(self.playbooks)
         }
 
+    # ------------------------------------------------------------------
+    # Autonomous case-based learning
+    # ------------------------------------------------------------------
+
+    def learn_from_case(
+        self,
+        case_dict: Dict[str, Any],
+        verdict: str,
+        db_manager=None,
+        rag_store=None,
+    ):
+        """Closed-loop learning from a resolved case.
+
+        This is the core of the self-learning feedback loop.  When an
+        analyst (or IRIS sync) resolves a case as TP/FP/uncertain, this
+        method updates all learning systems:
+
+        1. Agent performance via existing ``integrate_feedback()``
+        2. Per-technique precision in the database
+        3. Episodic memory in ChromaDB (case outcome for future RAG)
+        4. Confidence calibration curve
+
+        Args:
+            case_dict: The full case dictionary (from ``Case.to_dict()``
+                or ``db_manager.get_case()``).
+            verdict: ``"tp"``, ``"fp"``, or ``"uncertain"``.
+            db_manager: Database manager for technique precision updates.
+            rag_store: RAG store for episodic memory indexing.
+        """
+        feedback_type = {
+            "tp": FeedbackType.TRUE_POSITIVE,
+            "fp": FeedbackType.FALSE_POSITIVE,
+            "uncertain": FeedbackType.UNCERTAIN,
+        }.get(verdict, FeedbackType.UNCERTAIN)
+
+        # 1. Update agent performance metrics
+        pseudo_assessment = {
+            "final_confidence": case_dict.get("confidence", 0.0),
+            "severity": case_dict.get("severity", "medium"),
+            "mitre_techniques": case_dict.get("mitre_techniques", []),
+            "agent_outputs": [],  # No per-agent data from case resolution
+        }
+        self.integrate_feedback(
+            pseudo_assessment, feedback_type,
+            analyst_notes=case_dict.get("analyst_notes", ""),
+        )
+
+        # 2. Update per-technique precision in the DB
+        if db_manager:
+            for technique in case_dict.get("mitre_techniques", []):
+                db_manager.update_technique_precision(technique, verdict)
+
+        # 3. Index case outcome to RAG episodic memory
+        if rag_store and rag_store.available:
+            outcome_text = {
+                "tp": "confirmed malicious / true positive",
+                "fp": "confirmed benign / false positive",
+                "uncertain": "uncertain / requires further investigation",
+            }.get(verdict, "unknown")
+
+            rag_store.index_finding({
+                "activity_type": "case_outcome",
+                "description": (
+                    f"Case {case_dict.get('case_id', '?')}: "
+                    f"{case_dict.get('title', '')} — "
+                    f"RESOLVED as {outcome_text}. "
+                    f"{case_dict.get('description', '')}"
+                ),
+                "indicators": case_dict.get("affected_assets", []),
+                "severity": case_dict.get("severity", "medium"),
+                "mitre_techniques": case_dict.get("mitre_techniques", []),
+                "agent_name": "feedback_loop",
+                "confidence": case_dict.get("confidence", 0.0),
+                "analyst_feedback": verdict,
+            })
+
+        # 4. Update confidence calibration history
+        self._update_calibration(
+            predicted=case_dict.get("confidence", 0.0),
+            actual=1.0 if verdict == "tp" else (0.0 if verdict == "fp" else 0.5),
+        )
+
+        self.logger.info(
+            f"Learned from case {case_dict.get('case_id', '?')}: "
+            f"verdict={verdict}, techniques={case_dict.get('mitre_techniques', [])}"
+        )
+
+    def _update_calibration(self, predicted: float, actual: float):
+        """Track predicted vs actual outcomes for confidence calibration.
+
+        Over time this builds a calibration curve: if Artemis predicts
+        confidence=0.85, how often is the case really a TP?
+
+        The calibration data is stored in-memory (feedback_history) and
+        can be used to apply a correction factor to future confidence
+        scores.
+        """
+        if not hasattr(self, '_calibration_data'):
+            self._calibration_data = []
+
+        self._calibration_data.append({
+            "predicted": predicted,
+            "actual": actual,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+        # Keep last 500 data points
+        if len(self._calibration_data) > 500:
+            self._calibration_data = self._calibration_data[-500:]
+
+    def get_calibration_factor(self, confidence: float) -> float:
+        """Get a calibration adjustment for a given confidence score.
+
+        Returns a multiplier (0.5 to 1.5) based on historical accuracy
+        at similar confidence levels.  If insufficient data, returns 1.0
+        (no adjustment).
+        """
+        if not hasattr(self, '_calibration_data') or len(self._calibration_data) < 10:
+            return 1.0
+
+        # Find historical outcomes near this confidence level (±0.1)
+        nearby = [
+            d for d in self._calibration_data
+            if abs(d["predicted"] - confidence) <= 0.1
+        ]
+        if len(nearby) < 3:
+            return 1.0
+
+        # Average actual outcome at this confidence band
+        avg_actual = sum(d["actual"] for d in nearby) / len(nearby)
+
+        # If predicted 0.80 but average actual is 0.60 → factor = 0.75
+        if confidence > 0:
+            factor = avg_actual / confidence
+            return max(0.5, min(1.5, factor))
+        return 1.0
+
+    def get_technique_precision_summary(self, db_manager) -> Dict[str, Any]:
+        """Get a summary of technique precision data for hypothesis weighting.
+
+        Returns techniques grouped by reliability tier:
+            high_precision:   precision >= 0.7 (weight hypotheses higher)
+            medium_precision: 0.3 <= precision < 0.7 (standard weight)
+            low_precision:    precision < 0.3 (likely false positive source)
+        """
+        precision_data = db_manager.get_technique_precision()
+        result = {"high_precision": [], "medium_precision": [],
+                  "low_precision": []}
+
+        for tech_id, data in precision_data.items():
+            p = data["precision"]
+            entry = {"technique_id": tech_id, "precision": p,
+                     "tp": data["true_positives"], "fp": data["false_positives"]}
+            if p >= 0.7:
+                result["high_precision"].append(entry)
+            elif p >= 0.3:
+                result["medium_precision"].append(entry)
+            else:
+                result["low_precision"].append(entry)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Playbook export/import
+    # ------------------------------------------------------------------
+
     def export_playbooks(self, filepath: str):
         """Export playbooks to file."""
         with open(filepath, 'w') as f:
