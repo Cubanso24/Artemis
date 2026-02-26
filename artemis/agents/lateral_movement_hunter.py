@@ -1,16 +1,18 @@
 """
-Agent 5: Lateral Movement Hunter
+Agent: Lateral Movement Hunter
 
-Detects:
-- Remote service session establishment (RDP, SSH, WinRM)
-- SMB/admin share access patterns
-- Remote execution (PsExec, WMI, DCOM)
-- Pass-the-hash lateral movement
-- Unusual service account activity
+Network-observable lateral movement using Zeek conn/dns/ntlm data:
+- Internal RDP fan-out (one source -> many internal hosts on 3389)
+- Internal SMB fan-out (one source -> many internal hosts on 445)
+- SSH lateral movement (internal-to-internal SSH connections)
+- WinRM/DCOM lateral movement (port 5985/5986/135)
+- NTLM relay patterns (from ntlm_logs)
+- Unusual internal-to-internal traffic spikes
 """
 
 from typing import Dict, List, Any
-from datetime import datetime, timedelta
+from datetime import datetime
+from collections import defaultdict
 
 from artemis.agents.base_agent import BaseAgent
 from artemis.models.agent_output import AgentOutput, Severity, Finding, Evidence
@@ -18,21 +20,31 @@ from artemis.models.network_state import NetworkState
 from artemis.utils.mitre_attack import KillChainStage
 
 
+# Ports associated with remote access / lateral movement
+_RDP_PORTS = {3389}
+_SMB_PORTS = {445, 139}
+_SSH_PORTS = {22}
+_WINRM_PORTS = {5985, 5986}
+_DCOM_PORTS = {135}
+
+
 class LateralMovementHunter(BaseAgent):
-    """Specialized agent for detecting lateral movement."""
+    """Detects lateral movement through network connection analysis."""
 
     def __init__(self):
         super().__init__(
             name="lateral_movement_hunter",
             tactics=[KillChainStage.LATERAL_MOVEMENT],
-            description="Detects lateral movement and pivoting activities"
+            description="Detects lateral movement and pivoting via network patterns"
         )
 
     def _get_default_config(self) -> Dict[str, Any]:
         return {
-            "rdp_threshold": 3,
-            "smb_admin_share_threshold": 5,
-            "lateral_movement_time_window": 600,
+            "rdp_fan_out_threshold": 5,
+            "smb_fan_out_threshold": 5,
+            "ssh_fan_out_threshold": 4,
+            "winrm_fan_out_threshold": 3,
+            "ntlm_relay_threshold": 3,
         }
 
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
@@ -40,26 +52,71 @@ class LateralMovementHunter(BaseAgent):
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
 
-        # Detect RDP lateral movement
-        rdp_result = self._detect_rdp_lateral_movement(data.get("rdp_sessions", []))
-        if rdp_result:
-            findings.append(rdp_result["finding"])
-            all_evidence.extend(rdp_result["evidence"])
-            confidence_scores.append(rdp_result["confidence"])
+        connections = data.get("network_connections", [])
+        ntlm_logs = data.get("ntlm_logs", [])
 
-        # Detect SMB lateral movement
-        smb_result = self._detect_smb_lateral_movement(data.get("smb_sessions", []))
-        if smb_result:
-            findings.append(smb_result["finding"])
-            all_evidence.extend(smb_result["evidence"])
-            confidence_scores.append(smb_result["confidence"])
+        # Only internal-to-internal connections for lateral movement
+        internal_conns = [
+            c for c in connections
+            if self._is_internal(c.get("source_ip", ""), context)
+            and self._is_internal(c.get("destination_ip", ""), context)
+        ]
 
-        # Detect remote execution
-        remote_exec_result = self._detect_remote_execution(data.get("process_logs", []))
-        if remote_exec_result:
-            findings.append(remote_exec_result["finding"])
-            all_evidence.extend(remote_exec_result["evidence"])
-            confidence_scores.append(remote_exec_result["confidence"])
+        # 1. RDP fan-out
+        for result in self._detect_fan_out(
+            internal_conns, _RDP_PORTS,
+            "rdp_lateral_movement", "RDP",
+            self.config["rdp_fan_out_threshold"],
+            ["T1021.001"],
+        ):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
+
+        # 2. SMB fan-out
+        for result in self._detect_fan_out(
+            internal_conns, _SMB_PORTS,
+            "smb_lateral_movement", "SMB",
+            self.config["smb_fan_out_threshold"],
+            ["T1021.002"],
+        ):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
+
+        # 3. SSH fan-out
+        for result in self._detect_fan_out(
+            internal_conns, _SSH_PORTS,
+            "ssh_lateral_movement", "SSH",
+            self.config["ssh_fan_out_threshold"],
+            ["T1021.004"],
+        ):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
+
+        # 4. WinRM/DCOM fan-out
+        winrm_dcom_ports = _WINRM_PORTS | _DCOM_PORTS
+        for result in self._detect_fan_out(
+            internal_conns, winrm_dcom_ports,
+            "winrm_lateral_movement", "WinRM/DCOM",
+            self.config["winrm_fan_out_threshold"],
+            ["T1021.006", "T1021.003"],
+        ):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
+
+        # 5. NTLM relay patterns
+        for result in self._detect_ntlm_relay(ntlm_logs):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
+
+        # Collect near-miss diagnostics when no findings produced
+        near_misses = []
+        if not findings:
+            near_misses = self._collect_near_misses(internal_conns, connections)
 
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
         severity = Severity.HIGH if overall_confidence > 0.6 else Severity.MEDIUM
@@ -71,120 +128,194 @@ class LateralMovementHunter(BaseAgent):
             evidence=all_evidence,
             severity=severity,
             mitre_tactics=[t.value for t in self.tactics],
-            mitre_techniques=self._get_relevant_techniques(findings),
-            recommended_actions=self._generate_recommendations(findings)
+            mitre_techniques=self._collect_techniques(findings),
+            recommended_actions=self._generate_recommendations(findings),
+            metadata={"near_misses": near_misses} if near_misses else {},
         )
 
-    def _detect_rdp_lateral_movement(self, rdp_sessions: List[Dict]) -> Dict[str, Any]:
-        if not rdp_sessions:
-            return None
+    # ------------------------------------------------------------------
+    # Generic fan-out detection
+    # ------------------------------------------------------------------
 
-        # Track RDP sessions by source
-        source_sessions = {}
-        for session in rdp_sessions:
-            src = session.get("source_ip")
-            if src not in source_sessions:
-                source_sessions[src] = []
-            source_sessions[src].append(session)
+    def _detect_fan_out(
+        self,
+        connections: List[Dict],
+        target_ports: set,
+        activity_type: str,
+        protocol_label: str,
+        threshold: int,
+        techniques: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Detect one source connecting to many internal hosts on specific ports."""
+        # Group by source IP
+        src_targets: Dict[str, set] = defaultdict(set)
+        src_counts: Dict[str, int] = defaultdict(int)
+        for conn in connections:
+            port = conn.get("destination_port")
+            if port not in target_ports:
+                continue
+            src = conn.get("source_ip", "")
+            dst = conn.get("destination_ip", "")
+            if src and dst and src != dst:
+                src_targets[src].add(dst)
+                src_counts[src] += 1
 
-        for src, sessions in source_sessions.items():
-            if len(sessions) >= self.config["rdp_threshold"]:
-                unique_targets = len(set(s.get("target_hostname") for s in sessions))
+        results = []
+        for src_ip, targets in src_targets.items():
+            target_count = len(targets)
+            if target_count < threshold:
+                continue
 
-                confidence = min(0.6 + (unique_targets / 10.0), 0.95)
+            conn_count = src_counts[src_ip]
+            confidence = min(0.55 + (target_count - threshold) * 0.05 + conn_count * 0.002, 0.93)
 
-                finding = Finding(
-                    activity_type="rdp_lateral_movement",
-                    description=f"RDP lateral movement from {src} to {unique_targets} hosts",
-                    indicators=[src, f"targets:{unique_targets}"],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="rdp_sessions",
-                            data={"source": src, "target_count": unique_targets},
-                            description="Multiple RDP connections detected",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1021.001"]  # Remote Desktop Protocol
+            finding = Finding(
+                activity_type=activity_type,
+                description=(
+                    f"{protocol_label} lateral movement from {src_ip}: "
+                    f"connected to {target_count} internal hosts "
+                    f"({conn_count} total connections)"
+                ),
+                indicators=[src_ip, f"targets:{target_count}"],
+                affected_assets=[src_ip] + sorted(targets)[:10],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections",
+                    data={
+                        "source_ip": src_ip,
+                        "target_count": target_count,
+                        "connection_count": conn_count,
+                        "targets": sorted(targets)[:20],
+                        "protocol": protocol_label,
+                    },
+                    description=f"{protocol_label} fan-out from {src_ip}",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=techniques,
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
+
+        return results
+
+    # ------------------------------------------------------------------
+    # NTLM relay detection
+    # ------------------------------------------------------------------
+
+    def _detect_ntlm_relay(self, ntlm_logs: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect NTLM relay: same hostname authenticating to many targets rapidly."""
+        if not ntlm_logs:
+            return []
+
+        threshold = self.config["ntlm_relay_threshold"]
+
+        # Group by hostname -> destination IPs
+        host_targets: Dict[str, set] = defaultdict(set)
+        host_counts: Dict[str, int] = defaultdict(int)
+        for log in ntlm_logs:
+            hostname = log.get("hostname", "")
+            dest = log.get("dest_ip", "")
+            if hostname and dest:
+                host_targets[hostname].add(dest)
+                host_counts[hostname] += 1
+
+        results = []
+        for hostname, targets in host_targets.items():
+            if len(targets) < threshold:
+                continue
+
+            confidence = min(0.60 + len(targets) * 0.05, 0.88)
+
+            finding = Finding(
+                activity_type="ntlm_relay",
+                description=(
+                    f"Possible NTLM relay: {hostname} authenticated to "
+                    f"{len(targets)} different targets"
+                ),
+                indicators=[hostname] + sorted(targets)[:5],
+                affected_assets=[hostname],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="ntlm_logs",
+                    data={
+                        "hostname": hostname,
+                        "target_count": len(targets),
+                        "targets": sorted(targets)[:10],
+                        "auth_count": host_counts[hostname],
+                    },
+                    description=f"NTLM relay pattern from {hostname}",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1557.001"],
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    def _collect_near_misses(
+        self, internal_conns: List[Dict], all_conns: List[Dict]
+    ) -> List[str]:
+        """Summarize closest-to-threshold lateral movement for diagnostics."""
+        misses = [f"{len(internal_conns)}/{len(all_conns)} conns are internal-to-internal"]
+
+        for label, ports, thresh_key in [
+            ("RDP", _RDP_PORTS, "rdp_fan_out_threshold"),
+            ("SMB", _SMB_PORTS, "smb_fan_out_threshold"),
+            ("SSH", _SSH_PORTS, "ssh_fan_out_threshold"),
+        ]:
+            src_targets: Dict[str, set] = defaultdict(set)
+            for conn in internal_conns:
+                if conn.get("destination_port") in ports:
+                    src = conn.get("source_ip", "")
+                    dst = conn.get("destination_ip", "")
+                    if src and dst and src != dst:
+                        src_targets[src].add(dst)
+            if src_targets:
+                top_src = max(src_targets, key=lambda s: len(src_targets[s]))
+                top_count = len(src_targets[top_src])
+                thresh = self.config[thresh_key]
+                misses.append(
+                    f"{label}: max {top_count} targets from {top_src} "
+                    f"(need {thresh})"
                 )
+            else:
+                misses.append(f"{label}: 0 connections")
 
-                return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
+        return misses
 
-        return None
+    @staticmethod
+    def _collect_techniques(findings: List[Finding]) -> List[str]:
+        techniques: set = set()
+        for f in findings:
+            techniques.update(f.mitre_techniques)
+        return sorted(techniques)
 
-    def _detect_smb_lateral_movement(self, smb_sessions: List[Dict]) -> Dict[str, Any]:
-        if not smb_sessions:
-            return None
-
-        admin_shares = ["C$", "ADMIN$", "IPC$"]
-
-        for session in smb_sessions:
-            share = session.get("share_name")
-            if share in admin_shares:
-                confidence = 0.7
-
-                finding = Finding(
-                    activity_type="smb_admin_share_access",
-                    description=f"Admin share access: {share} from {session.get('source_ip')}",
-                    indicators=[session.get("source_ip"), share],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="smb_sessions",
-                            data=session,
-                            description="Administrative share access",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1021.002"]  # SMB/Windows Admin Shares
-                )
-
-                return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
-
-        return None
-
-    def _detect_remote_execution(self, process_logs: List[Dict]) -> Dict[str, Any]:
-        if not process_logs:
-            return None
-
-        remote_exec_indicators = ["psexec", "wmic", "winrm", "wmiprvse"]
-
-        for log in process_logs:
-            process = log.get("process_name", "").lower()
-            if any(indicator in process for indicator in remote_exec_indicators):
-                confidence = 0.75
-
-                finding = Finding(
-                    activity_type="remote_execution",
-                    description=f"Remote execution detected: {process}",
-                    indicators=[process],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="process_logs",
-                            data=log,
-                            description="Remote execution tool detected",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1569", "T1047"]  # System Services, WMI
-                )
-
-                return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
-
-        return None
-
-    def _get_relevant_techniques(self, findings: List[Finding]) -> List[str]:
-        techniques = set()
-        for finding in findings:
-            techniques.update(finding.mitre_techniques)
-        return list(techniques)
-
-    def _generate_recommendations(self, findings: List[Finding]) -> List[str]:
-        return [
-            "Isolate affected systems",
-            "Review authentication logs for compromised accounts",
-            "Enable network segmentation",
-            "Monitor for additional lateral movement"
-        ]
+    @staticmethod
+    def _generate_recommendations(findings: List[Finding]) -> List[str]:
+        if not findings:
+            return []
+        types = {f.activity_type for f in findings}
+        recs = []
+        if "rdp_lateral_movement" in types:
+            recs.append("Restrict RDP access via network segmentation and MFA")
+        if "smb_lateral_movement" in types:
+            recs.append("Limit SMB lateral movement — disable SMBv1, restrict admin shares")
+        if "ssh_lateral_movement" in types:
+            recs.append("Review SSH key distribution and restrict internal SSH access")
+        if "winrm_lateral_movement" in types:
+            recs.append("Restrict WinRM/DCOM to management workstations only")
+        if "ntlm_relay" in types:
+            recs.append("Enable SMB signing and LDAP signing to prevent NTLM relay")
+        recs.append("Isolate affected hosts and investigate for compromised credentials")
+        return recs

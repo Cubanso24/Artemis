@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Any
 from datetime import datetime
+import hashlib
 
 
 class Severity(Enum):
@@ -46,6 +47,24 @@ class Finding:
     mitre_techniques: List[str] = field(default_factory=list)
     affected_assets: List[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.utcnow)
+
+    @property
+    def fingerprint(self) -> str:
+        """
+        Generate a stable fingerprint for deduplication.
+
+        Based on activity_type, sorted indicators, sorted affected_assets,
+        and sorted MITRE techniques. Two findings with the same fingerprint
+        describe the same underlying threat activity.
+        """
+        parts = [
+            self.activity_type,
+            "|".join(sorted(self.indicators)),
+            "|".join(sorted(self.affected_assets)),
+            "|".join(sorted(self.mitre_techniques)),
+        ]
+        raw = "::".join(parts)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -94,7 +113,8 @@ class AgentOutput:
                     "indicators": f.indicators,
                     "mitre_techniques": f.mitre_techniques,
                     "affected_assets": f.affected_assets,
-                    "timestamp": f.timestamp.isoformat()
+                    "timestamp": f.timestamp.isoformat(),
+                    "fingerprint": f.fingerprint,
                 }
                 for f in self.findings
             ],

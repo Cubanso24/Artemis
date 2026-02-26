@@ -165,27 +165,27 @@ class ContextAssessor:
                     hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
                     description="Initial reconnaissance activity detected",
                     initial_indicators=[signal_type],
-                    suggested_agents=["reconnaissance_hunter", "initial_access_hunter"],
+                    suggested_agents=["reconnaissance_hunter", "c2_hunter"],
                     priority=0.7,
                     confidence=confidence,
-                    kill_chain_stages=["TA0043", "TA0001"]
+                    kill_chain_stages=["TA0043", "TA0011"]
                 )
                 hypotheses.append(hypothesis)
 
-            elif "execution" in signal_type.lower():
+            elif "lateral" in signal_type.lower() or "execution" in signal_type.lower():
                 hypothesis = ThreatHypothesis(
                     hypothesis_id=f"hyp_{datetime.utcnow().timestamp()}",
                     hypothesis_type=HypothesisType.CHAIN_OF_EVENTS,
-                    description="Execution detected, checking for persistence and lateral movement",
+                    description="Lateral movement or execution detected, checking network patterns",
                     initial_indicators=[signal_type],
                     suggested_agents=[
-                        "execution_persistence_hunter",
-                        "credential_access_hunter",
-                        "lateral_movement_hunter"
+                        "lateral_movement_hunter",
+                        "collection_exfiltration_hunter",
+                        "c2_hunter"
                     ],
                     priority=0.8,
                     confidence=confidence,
-                    kill_chain_stages=["TA0002", "TA0003", "TA0006"]
+                    kill_chain_stages=["TA0008", "TA0010", "TA0011"]
                 )
                 hypotheses.append(hypothesis)
 
@@ -193,45 +193,83 @@ class ContextAssessor:
                 hypothesis = ThreatHypothesis(
                     hypothesis_id=f"hyp_{datetime.utcnow().timestamp()}",
                     hypothesis_type=HypothesisType.ANOMALY_INVESTIGATION,
-                    description="Credential access anomaly detected",
+                    description="Credential access anomaly detected, checking for lateral movement",
                     initial_indicators=[signal_type],
                     suggested_agents=[
-                        "credential_access_hunter",
                         "lateral_movement_hunter",
-                        "defense_evasion_hunter"
+                        "collection_exfiltration_hunter"
                     ],
                     priority=0.85,
                     confidence=confidence,
-                    kill_chain_stages=["TA0006", "TA0008"]
+                    kill_chain_stages=["TA0008", "TA0010"]
                 )
                 hypotheses.append(hypothesis)
 
-            # Check threat intelligence for known campaigns
-            if context.threat_intel.active_campaigns:
-                hypothesis = ThreatHypothesis(
-                    hypothesis_id=f"hyp_{datetime.utcnow().timestamp()}_intel",
-                    hypothesis_type=HypothesisType.APT_CAMPAIGN,
-                    description=f"Activity matches known campaign: {context.threat_intel.active_campaigns[0]}",
-                    initial_indicators=context.threat_intel.active_campaigns,
-                    suggested_agents=self._get_agents_for_campaign(context.threat_intel.active_campaigns[0]),
-                    priority=0.9,
-                    confidence=0.6,
-                    threat_actor_profile=context.threat_intel.active_campaigns[0]
-                )
-                hypotheses.append(hypothesis)
+        # Check threat intelligence for known campaigns (outside signal loop)
+        if context.threat_intel.active_campaigns:
+            hypothesis = ThreatHypothesis(
+                hypothesis_id=f"hyp_{datetime.utcnow().timestamp()}_intel",
+                hypothesis_type=HypothesisType.APT_CAMPAIGN,
+                description=f"Activity matches known campaign: {context.threat_intel.active_campaigns[0]}",
+                initial_indicators=context.threat_intel.active_campaigns,
+                suggested_agents=self._get_agents_for_campaign(context.threat_intel.active_campaigns[0]),
+                priority=0.9,
+                confidence=0.6,
+                threat_actor_profile=context.threat_intel.active_campaigns[0]
+            )
+            hypotheses.append(hypothesis)
+
+        # Continuous monitoring: generate baseline hypotheses when no
+        # signals are present so all agents are activated with purpose.
+        if not hypotheses:
+            ts = datetime.utcnow().timestamp()
+            hypotheses.append(ThreatHypothesis(
+                hypothesis_id=f"hyp_{ts}_baseline_c2",
+                hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
+                description="Continuous monitoring: scan for C2 beaconing and covert channels",
+                initial_indicators=["continuous_monitoring"],
+                suggested_agents=["c2_hunter"],
+                priority=0.6,
+                confidence=0.4,
+                kill_chain_stages=["TA0011"],
+            ))
+            hypotheses.append(ThreatHypothesis(
+                hypothesis_id=f"hyp_{ts}_baseline_recon",
+                hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
+                description="Continuous monitoring: scan for reconnaissance and scanning activity",
+                initial_indicators=["continuous_monitoring"],
+                suggested_agents=["reconnaissance_hunter"],
+                priority=0.6,
+                confidence=0.4,
+                kill_chain_stages=["TA0043"],
+            ))
+            hypotheses.append(ThreatHypothesis(
+                hypothesis_id=f"hyp_{ts}_baseline_lateral",
+                hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
+                description="Continuous monitoring: scan for lateral movement and privilege escalation",
+                initial_indicators=["continuous_monitoring"],
+                suggested_agents=[
+                    "lateral_movement_hunter",
+                    "collection_exfiltration_hunter",
+                    "impact_hunter",
+                ],
+                priority=0.5,
+                confidence=0.4,
+                kill_chain_stages=["TA0008", "TA0009", "TA0010", "TA0040"],
+            ))
 
         self.logger.info(f"Generated {len(hypotheses)} threat hypotheses")
         return hypotheses
 
     def _get_agents_for_campaign(self, campaign: str) -> List[str]:
         """Get recommended agents for a known threat campaign."""
-        # Simplified mapping - in production, use threat intel database
+        # Activate all agents for campaign-related hunts
         return [
             "reconnaissance_hunter",
-            "initial_access_hunter",
-            "execution_persistence_hunter",
             "c2_hunter",
-            "defense_evasion_hunter"
+            "lateral_movement_hunter",
+            "collection_exfiltration_hunter",
+            "impact_hunter"
         ]
 
     def detect_anomalies(self, current_state: NetworkState) -> List[Dict[str, Any]]:

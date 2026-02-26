@@ -87,14 +87,10 @@ class HuntAnalyzer:
 
         agent_descriptions = {
             "ReconnaissanceHunter": "Scanning for port scans, network sweeps, DNS recon",
-            "C2Hunter": "Detecting beaconing, DGA domains, suspicious callbacks",
-            "LateralMovementHunter": "Tracking SMB/RDP lateral movement patterns",
-            "CollectionExfiltrationHunter": "Monitoring large data transfers and exfil",
-            "InitialAccessHunter": "Analyzing authentication patterns and access",
-            "ExecutionPersistenceHunter": "Checking process execution and persistence",
-            "CredentialAccessHunter": "Detecting credential theft attempts",
-            "DefenseEvasionHunter": "Finding evasion techniques and anti-forensics",
-            "ImpactHunter": "Identifying destructive activities and impacts"
+            "C2Hunter": "Detecting beaconing, DGA domains, DNS tunneling, suspicious callbacks",
+            "LateralMovementHunter": "Tracking SMB/RDP/SSH/WinRM fan-out and NTLM relay",
+            "CollectionExfiltrationHunter": "Monitoring large transfers, DNS exfil, cloud uploads",
+            "ImpactHunter": "Detecting cryptomining, ransomware spread, DDoS participation",
         }
 
         for agent in selected_agents:
@@ -174,6 +170,36 @@ class HuntAnalyzer:
             for rec in assessment['recommendations']:
                 print(f"  • {rec}")
 
+        # Display LLM synthesis if available
+        synthesis = assessment.get('llm_synthesis')
+        if synthesis:
+            self.print_section("🤖 LLM THREAT NARRATIVE")
+            if synthesis.get('threat_narrative'):
+                print(f"\n{synthesis['threat_narrative']}")
+
+            if synthesis.get('kill_chain_progression'):
+                print(f"\n📊 Kill Chain Progression:")
+                for stage in synthesis['kill_chain_progression']:
+                    print(f"  • {stage.get('stage', '?')}: {stage.get('description', '')} "
+                          f"(confidence: {stage.get('confidence', 0):.2f})")
+
+            if synthesis.get('correlated_findings'):
+                print(f"\n🔗 Correlated Findings:")
+                for cf in synthesis['correlated_findings']:
+                    agents = ', '.join(cf.get('agents', []))
+                    print(f"  • [{agents}] {cf.get('description', '')}")
+
+            if synthesis.get('likely_false_positives'):
+                print(f"\n✓ Likely False Positives:")
+                for fp in synthesis['likely_false_positives']:
+                    print(f"  • {fp.get('finding', '')}: {fp.get('reason', '')}")
+
+            if synthesis.get('recommended_actions'):
+                print(f"\n🎯 LLM Recommended Actions:")
+                for ra in synthesis['recommended_actions']:
+                    priority = ra.get('priority', 'monitor').upper()
+                    print(f"  [{priority}] {ra.get('action', '')}")
+
     def save_results(self, assessment: dict, network_state: NetworkState):
         """Save hunt results to JSON for later analysis."""
         output_file = self.output_dir / f"hunt_{self.hunt_timestamp}.json"
@@ -199,7 +225,8 @@ class HuntAnalyzer:
             "alert_level": assessment.get('alert_level', 'none'),
             "mitre_techniques": assessment.get('mitre_techniques', []),
             "agent_outputs": assessment.get('agent_outputs', []),
-            "recommendations": assessment.get('recommendations', [])
+            "recommendations": assessment.get('recommendations', []),
+            "llm_synthesis": assessment.get('llm_synthesis'),
         }
 
         with open(output_file, 'w') as f:
@@ -260,9 +287,13 @@ def main():
 
     pipeline = DataPipeline(config)
 
-    # Initialize meta-learner coordinator
-    print("🧠 Initializing Meta-Learner Coordinator...")
-    coordinator = MetaLearnerCoordinator()
+    # Initialize meta-learner coordinator (LLM-enhanced if ANTHROPIC_API_KEY is set)
+    llm_key = os.getenv('ANTHROPIC_API_KEY')
+    if llm_key:
+        print("🧠 Initializing Meta-Learner Coordinator (LLM-enhanced)...")
+    else:
+        print("🧠 Initializing Meta-Learner Coordinator (threshold-only, set ANTHROPIC_API_KEY for LLM)...")
+    coordinator = MetaLearnerCoordinator(llm_api_key=llm_key)
 
     # Collect network data
     analyzer.print_section("📡 COLLECTING NETWORK DATA")

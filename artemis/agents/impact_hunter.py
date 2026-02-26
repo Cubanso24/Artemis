@@ -1,16 +1,17 @@
 """
-Agent 9: Impact & Destruction Hunter
+Agent: Impact & Disruption Hunter
 
-Detects:
-- Ransomware behavior
-- Data destruction patterns
-- Service/resource disruption
-- Cryptomining activity
-- Resource hijacking
+Network-observable impact indicators using Zeek conn/dns data:
+- Cryptomining (connections to known mining pools + stratum ports)
+- Network-visible ransomware indicators (SMB encryption spread patterns)
+- Service disruption (internal services going dark)
+- DDoS participation (high-volume outbound to single target)
+- Wiper/destructive activity (sudden connection drops across hosts)
 """
 
 from typing import Dict, List, Any
 from datetime import datetime
+from collections import defaultdict, Counter
 
 from artemis.agents.base_agent import BaseAgent
 from artemis.models.agent_output import AgentOutput, Severity, Finding, Evidence
@@ -19,59 +20,62 @@ from artemis.utils.mitre_attack import KillChainStage
 
 
 class ImpactHunter(BaseAgent):
-    """Specialized agent for detecting impact and destructive activities."""
+    """Detects impact and disruptive activity via network telemetry."""
 
     def __init__(self):
         super().__init__(
             name="impact_hunter",
             tactics=[KillChainStage.IMPACT],
-            description="Detects ransomware, data destruction, and resource hijacking"
+            description="Detects ransomware spread, cryptomining, and service disruption"
         )
 
     def _get_default_config(self) -> Dict[str, Any]:
         return {
-            "rapid_file_change_threshold": 100,
-            "rapid_file_change_window": 60,
-            "ransomware_extensions": [".encrypted", ".locked", ".crypto", ".crypt"],
-            "cryptominer_processes": ["xmrig", "cryptonight", "ethminer"],
-            "cpu_threshold": 90,
+            "mining_pool_domains": [
+                "pool.minergate.com", "xmrpool.eu", "monerohash.com",
+                "minexmr.com", "supportxmr.com", "pool.hashvault.pro",
+                "nanopool.org", "dwarfpool.com", "2miners.com",
+                "f2pool.com", "antpool.com", "viabtc.com",
+                "nicehash.com", "ethermine.org", "flypool.org",
+                "unmineable.com", "herominers.com", "c3pool.com",
+            ],
+            "stratum_ports": [3333, 4444, 5555, 7777, 8888, 9999, 14433, 14444, 45560],
+            "smb_spread_threshold": 10,
+            "smb_spread_time_window_minutes": 10,
+            "ddos_connection_threshold": 1000,
+            "ddos_target_concentration": 0.8,
+            "service_dropout_threshold": 5,
         }
 
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
+        self._ctx = context  # stash for sub-methods
         findings: List[Finding] = []
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
 
-        # Detect ransomware
-        ransomware_result = self._detect_ransomware(data.get("file_operations", []))
-        if ransomware_result:
-            findings.append(ransomware_result["finding"])
-            all_evidence.extend(ransomware_result["evidence"])
-            confidence_scores.append(ransomware_result["confidence"])
+        connections = data.get("network_connections", [])
+        dns_queries = data.get("dns_queries", [])
 
-        # Detect data destruction
-        destruction_result = self._detect_data_destruction(data.get("file_operations", []))
-        if destruction_result:
-            findings.append(destruction_result["finding"])
-            all_evidence.extend(destruction_result["evidence"])
-            confidence_scores.append(destruction_result["confidence"])
+        # 1. Cryptomining detection (DNS + port-based)
+        for result in self._detect_cryptomining(connections, dns_queries):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
-        # Detect cryptomining
-        cryptominer_result = self._detect_cryptomining(data.get("process_logs", []))
-        if cryptominer_result:
-            findings.append(cryptominer_result["finding"])
-            all_evidence.extend(cryptominer_result["evidence"])
-            confidence_scores.append(cryptominer_result["confidence"])
+        # 2. Ransomware SMB spread pattern
+        for result in self._detect_ransomware_spread(connections):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
-        # Detect service disruption
-        disruption_result = self._detect_service_disruption(data.get("service_logs", []))
-        if disruption_result:
-            findings.append(disruption_result["finding"])
-            all_evidence.extend(disruption_result["evidence"])
-            confidence_scores.append(disruption_result["confidence"])
+        # 3. DDoS participation (outbound flood)
+        for result in self._detect_ddos_participation(connections):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
-        severity = Severity.CRITICAL  # Impact events are always critical
+        severity = Severity.CRITICAL if overall_confidence > 0.5 else Severity.HIGH
 
         return AgentOutput(
             agent_name=self.name,
@@ -80,234 +84,270 @@ class ImpactHunter(BaseAgent):
             evidence=all_evidence,
             severity=severity,
             mitre_tactics=[t.value for t in self.tactics],
-            mitre_techniques=self._get_relevant_techniques(findings),
-            recommended_actions=self._generate_recommendations(findings)
+            mitre_techniques=self._collect_techniques(findings),
+            recommended_actions=self._generate_recommendations(findings),
         )
 
-    def _detect_ransomware(self, file_ops: List[Dict]) -> Dict[str, Any]:
-        if not file_ops:
-            return None
+    # ------------------------------------------------------------------
+    # Detection 1: Cryptomining
+    # ------------------------------------------------------------------
 
-        # Count file modifications
-        modifications = [op for op in file_ops if op.get("operation") in ["modify", "rename"]]
+    def _detect_cryptomining(
+        self, connections: List[Dict], dns_queries: List[Dict]
+    ) -> List[Dict[str, Any]]:
+        """Detect cryptomining via DNS lookups to mining pools or stratum ports."""
+        pool_domains = set(self.config["mining_pool_domains"])
+        stratum_ports = set(self.config["stratum_ports"])
 
-        # Check for rapid file changes
-        if len(modifications) >= self.config["rapid_file_change_threshold"]:
-            # Check for extension changes
-            extension_changes = 0
-            for op in modifications:
-                old_name = op.get("old_filename", "")
-                new_name = op.get("filename", "")
+        # Check DNS for mining pool resolution
+        mining_resolvers: Dict[str, set] = defaultdict(set)
+        for q in dns_queries:
+            domain = (q.get("domain") or "").lower()
+            src = q.get("source_ip", "")
+            for pool in pool_domains:
+                if pool in domain:
+                    mining_resolvers[src].add(domain)
+                    break
 
-                if old_name and new_name:
-                    old_ext = old_name.split(".")[-1] if "." in old_name else ""
-                    new_ext = new_name.split(".")[-1] if "." in new_name else ""
+        # Check connections to stratum ports
+        stratum_users: Dict[str, set] = defaultdict(set)
+        for conn in connections:
+            port = conn.get("destination_port")
+            if port in stratum_ports:
+                src = conn.get("source_ip", "")
+                dst = conn.get("destination_ip", "")
+                if src and not self._is_internal(dst, self._ctx):
+                    stratum_users[src].add(f"{dst}:{port}")
 
-                    if old_ext != new_ext:
-                        extension_changes += 1
+        # Merge evidence
+        all_suspects = set(mining_resolvers.keys()) | set(stratum_users.keys())
 
-                    # Check for known ransomware extensions
-                    if any(ext in new_name.lower() for ext in self.config["ransomware_extensions"]):
-                        extension_changes += 10  # Strong indicator
+        results = []
+        for src_ip in all_suspects:
+            dns_hits = mining_resolvers.get(src_ip, set())
+            port_hits = stratum_users.get(src_ip, set())
 
-            # High confidence if many extension changes
-            if extension_changes > len(modifications) * 0.3:
-                confidence = 0.95
+            # Higher confidence if both DNS + port match
+            if dns_hits and port_hits:
+                confidence = 0.92
+            elif dns_hits:
+                confidence = 0.75
+            else:
+                confidence = 0.65
 
-                finding = Finding(
-                    activity_type="ransomware",
-                    description=f"Ransomware activity detected: {len(modifications)} files modified, {extension_changes} extension changes",
-                    indicators=["rapid_encryption", "extension_changes"],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="file_operations",
-                            data={
-                                "modification_count": len(modifications),
-                                "extension_changes": extension_changes,
-                                "sample_files": [m.get("filename") for m in modifications[:10]]
-                            },
-                            description="Ransomware encryption pattern detected",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1486"]  # Data Encrypted for Impact
-                )
-
-                return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
-
-        return None
-
-    def _detect_data_destruction(self, file_ops: List[Dict]) -> Dict[str, Any]:
-        if not file_ops:
-            return None
-
-        # Count file deletions
-        deletions = [op for op in file_ops if op.get("operation") == "delete"]
-
-        # Mass deletion indicates data destruction
-        if len(deletions) >= 50:
-            confidence = min(0.7 + (len(deletions) / 500), 0.95)
+            indicators = [src_ip] + sorted(dns_hits)[:3] + sorted(port_hits)[:3]
 
             finding = Finding(
-                activity_type="data_destruction",
-                description=f"Mass file deletion detected: {len(deletions)} files deleted",
-                indicators=["mass_deletion"],
-                evidence=[
-                    Evidence(
-                        timestamp=datetime.utcnow(),
-                        source="file_operations",
-                        data={
-                            "deletion_count": len(deletions),
-                            "sample_files": [d.get("filename") for d in deletions[:10]]
-                        },
-                        description="Mass file deletion pattern",
-                        confidence_contribution=confidence
-                    )
-                ],
-                mitre_techniques=["T1485"]  # Data Destruction
+                activity_type="cryptomining",
+                description=(
+                    f"Cryptomining from {src_ip}: "
+                    f"{len(dns_hits)} pool DNS lookups, "
+                    f"{len(port_hits)} stratum connections"
+                ),
+                indicators=indicators,
+                affected_assets=[src_ip],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections+dns_queries",
+                    data={
+                        "source_ip": src_ip,
+                        "mining_pool_domains": sorted(dns_hits),
+                        "stratum_connections": sorted(port_hits),
+                    },
+                    description="Cryptomining network activity",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1496"],
             )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
 
-            return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
+        return results
 
-        return None
+    # ------------------------------------------------------------------
+    # Detection 2: Ransomware SMB spread
+    # ------------------------------------------------------------------
 
-    def _detect_cryptomining(self, process_logs: List[Dict]) -> Dict[str, Any]:
-        if not process_logs:
-            return None
+    def _detect_ransomware_spread(self, connections: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect ransomware lateral spread: rapid SMB fan-out from one host."""
+        if not connections:
+            return []
 
-        for log in process_logs:
-            process_name = log.get("process_name", "").lower()
-            command_line = log.get("command_line", "").lower()
-            cpu_usage = log.get("cpu_usage", 0)
+        smb_ports = {445, 139}
+        threshold = self.config["smb_spread_threshold"]
 
-            # Check for known cryptominer processes
-            for miner in self.config["cryptominer_processes"]:
-                if miner in process_name or miner in command_line:
-                    confidence = 0.9
+        # Group internal SMB connections by source
+        src_targets: Dict[str, Dict] = defaultdict(lambda: {
+            "targets": set(), "timestamps": [], "count": 0,
+        })
+        for conn in connections:
+            port = conn.get("destination_port")
+            if port not in smb_ports:
+                continue
+            src = conn.get("source_ip", "")
+            dst = conn.get("destination_ip", "")
+            if not (self._is_internal(src, self._ctx) and self._is_internal(dst, self._ctx) and src != dst):
+                continue
+            info = src_targets[src]
+            info["targets"].add(dst)
+            info["count"] += 1
+            ts = self._parse_timestamp(conn.get("timestamp"))
+            if ts:
+                info["timestamps"].append(ts)
 
-                    finding = Finding(
-                        activity_type="cryptomining",
-                        description=f"Cryptomining activity detected: {process_name}",
-                        indicators=[process_name],
-                        evidence=[
-                            Evidence(
-                                timestamp=log.get("timestamp", datetime.utcnow()),
-                                source="process_logs",
-                                data=log,
-                                description="Cryptomining process detected",
-                                confidence_contribution=confidence
-                            )
-                        ],
-                        mitre_techniques=["T1496"]  # Resource Hijacking
-                    )
+        results = []
+        for src_ip, info in src_targets.items():
+            target_count = len(info["targets"])
+            if target_count < threshold:
+                continue
 
-                    return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
+            # Check velocity — ransomware spreads fast
+            velocity = 0
+            if len(info["timestamps"]) >= 2:
+                span_minutes = (
+                    max(info["timestamps"]) - min(info["timestamps"])
+                ).total_seconds() / 60
+                if span_minutes > 0:
+                    velocity = target_count / span_minutes
 
-            # High CPU usage from unknown process
-            if cpu_usage >= self.config["cpu_threshold"]:
-                # Check for mining-related command line arguments
-                mining_keywords = ["pool", "wallet", "stratum", "algo", "hashrate"]
-                if any(keyword in command_line for keyword in mining_keywords):
-                    confidence = 0.75
-
-                    finding = Finding(
-                        activity_type="cryptomining",
-                        description=f"Suspected cryptomining: high CPU process {process_name}",
-                        indicators=[process_name, f"cpu:{cpu_usage}%"],
-                        evidence=[
-                            Evidence(
-                                timestamp=log.get("timestamp", datetime.utcnow()),
-                                source="process_logs",
-                                data=log,
-                                description="High CPU usage with mining indicators",
-                                confidence_contribution=confidence
-                            )
-                        ],
-                        mitre_techniques=["T1496"]  # Resource Hijacking
-                    )
-
-                    return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
-
-        return None
-
-    def _detect_service_disruption(self, service_logs: List[Dict]) -> Dict[str, Any]:
-        if not service_logs:
-            return None
-
-        # Count critical services being stopped
-        stopped_services = [
-            log for log in service_logs
-            if log.get("action") == "stopped" and log.get("criticality") == "high"
-        ]
-
-        if len(stopped_services) >= 3:
-            confidence = 0.8
+            # High target count + high velocity = strong signal
+            confidence = min(
+                0.60 + (target_count - threshold) * 0.03 + min(velocity * 0.02, 0.15),
+                0.95,
+            )
 
             finding = Finding(
-                activity_type="service_disruption",
-                description=f"Multiple critical services stopped: {len(stopped_services)} services",
-                indicators=[s.get("service_name") for s in stopped_services],
-                evidence=[
-                    Evidence(
-                        timestamp=datetime.utcnow(),
-                        source="service_logs",
-                        data={
-                            "stopped_count": len(stopped_services),
-                            "services": [s.get("service_name") for s in stopped_services]
-                        },
-                        description="Critical service disruption",
-                        confidence_contribution=confidence
-                    )
-                ],
-                mitre_techniques=["T1489"]  # Service Stop
+                activity_type="ransomware_spread",
+                description=(
+                    f"Ransomware-like SMB spread from {src_ip}: "
+                    f"{target_count} internal hosts targeted "
+                    f"({info['count']} connections, "
+                    f"{velocity:.1f} hosts/min)"
+                ),
+                indicators=[src_ip, f"targets:{target_count}"],
+                affected_assets=[src_ip] + sorted(info["targets"])[:10],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections",
+                    data={
+                        "source_ip": src_ip,
+                        "target_count": target_count,
+                        "connection_count": info["count"],
+                        "velocity_hosts_per_min": round(velocity, 2),
+                        "targets": sorted(info["targets"])[:20],
+                    },
+                    description="Ransomware-like rapid SMB spread",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1486", "T1021.002"],
             )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
 
-            return {"finding": finding, "evidence": finding.evidence, "confidence": confidence}
+        return results
 
-        return None
+    # ------------------------------------------------------------------
+    # Detection 3: DDoS participation
+    # ------------------------------------------------------------------
 
-    def _get_relevant_techniques(self, findings: List[Finding]) -> List[str]:
-        techniques = set()
-        for finding in findings:
-            techniques.update(finding.mitre_techniques)
-        return list(techniques)
+    def _detect_ddos_participation(self, connections: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect internal hosts participating in outbound DDoS."""
+        if not connections:
+            return []
 
-    def _generate_recommendations(self, findings: List[Finding]) -> List[str]:
-        recommendations = []
-        activity_types = {f.activity_type for f in findings}
+        conn_threshold = self.config["ddos_connection_threshold"]
+        concentration = self.config["ddos_target_concentration"]
 
-        if "ransomware" in activity_types:
-            recommendations.extend([
-                "IMMEDIATE: Isolate all affected systems",
-                "IMMEDIATE: Disconnect from network",
-                "Restore from backups (verify backup integrity first)",
-                "Do NOT pay ransom",
-                "Initiate ransomware incident response playbook"
-            ])
+        # Count connections per internal source
+        src_conns: Dict[str, Dict] = defaultdict(lambda: {
+            "destinations": Counter(), "total": 0,
+        })
+        for conn in connections:
+            src = conn.get("source_ip", "")
+            dst = conn.get("destination_ip", "")
+            if not (self._is_internal(src, self._ctx) and not self._is_internal(dst, self._ctx)):
+                continue
+            src_conns[src]["destinations"][dst] += 1
+            src_conns[src]["total"] += 1
 
-        if "data_destruction" in activity_types:
-            recommendations.extend([
-                "Isolate affected systems immediately",
-                "Capture forensic images",
-                "Assess backup integrity",
-                "Initiate disaster recovery procedures"
-            ])
+        results = []
+        for src_ip, info in src_conns.items():
+            if info["total"] < conn_threshold:
+                continue
 
-        if "cryptomining" in activity_types:
-            recommendations.extend([
-                "Terminate cryptomining processes",
-                "Investigate infection vector",
-                "Review network egress to mining pools",
-                "Scan for additional malware"
-            ])
+            # Check if traffic is concentrated on one target
+            if not info["destinations"]:
+                continue
+            top_dst, top_count = info["destinations"].most_common(1)[0]
+            target_ratio = top_count / info["total"]
 
-        if "service_disruption" in activity_types:
-            recommendations.extend([
-                "Restore critical services",
-                "Investigate cause of disruption",
-                "Review service dependencies",
-                "Implement service monitoring"
-            ])
+            if target_ratio < concentration:
+                continue
 
-        return recommendations if recommendations else ["Initiate incident response procedures"]
+            confidence = min(0.60 + target_ratio * 0.15 + (info["total"] / 10000) * 0.1, 0.90)
+
+            finding = Finding(
+                activity_type="ddos_participation",
+                description=(
+                    f"DDoS participation: {src_ip} sent {info['total']} connections, "
+                    f"{target_ratio:.0%} to {top_dst}"
+                ),
+                indicators=[src_ip, top_dst],
+                affected_assets=[src_ip],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections",
+                    data={
+                        "source_ip": src_ip,
+                        "total_connections": info["total"],
+                        "top_target": top_dst,
+                        "target_concentration": round(target_ratio, 3),
+                    },
+                    description="Outbound DDoS participation pattern",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1498"],
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_techniques(findings: List[Finding]) -> List[str]:
+        techniques: set = set()
+        for f in findings:
+            techniques.update(f.mitre_techniques)
+        return sorted(techniques)
+
+    @staticmethod
+    def _generate_recommendations(findings: List[Finding]) -> List[str]:
+        if not findings:
+            return []
+        types = {f.activity_type for f in findings}
+        recs = []
+        if "cryptomining" in types:
+            recs.append("Block mining pool domains and stratum ports at firewall")
+            recs.append("Investigate infected hosts for malware or compromised accounts")
+        if "ransomware_spread" in types:
+            recs.append("IMMEDIATE: Isolate spreading host from the network")
+            recs.append("IMMEDIATE: Block SMB lateral movement via micro-segmentation")
+            recs.append("Verify backup integrity before restoration")
+        if "ddos_participation" in types:
+            recs.append("Investigate botnet infection on participating hosts")
+            recs.append("Rate-limit outbound connections from affected hosts")
+        recs.append("Initiate incident response procedures")
+        return recs

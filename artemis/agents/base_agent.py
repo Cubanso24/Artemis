@@ -105,6 +105,60 @@ class BaseAgent(ABC):
         """
         pass
 
+    # RFC1918 prefixes used as a fast first-pass check for internal IPs.
+    _RFC1918_PREFIXES = (
+        "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+        "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+        "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+        "172.30.", "172.31.", "192.168.",
+    )
+
+    @staticmethod
+    def _parse_timestamp(ts) -> Optional[datetime]:
+        """Convert a timestamp value to a datetime object.
+
+        Handles datetime objects (pass-through), ISO-format strings
+        (as returned by ``parse_splunk_timestamp``), epoch floats/ints,
+        and ``None``.
+        """
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts
+        if isinstance(ts, (int, float)):
+            try:
+                return datetime.fromtimestamp(ts)
+            except (OSError, OverflowError, ValueError):
+                return None
+        if isinstance(ts, str):
+            try:
+                return datetime.fromisoformat(ts)
+            except ValueError:
+                pass
+            try:
+                return datetime.fromtimestamp(float(ts))
+            except (ValueError, TypeError, OSError):
+                pass
+        return None
+
+    def _is_internal(self, ip: str, context: NetworkState = None) -> bool:
+        """Check whether *ip* belongs to the monitored network.
+
+        Uses RFC1918 prefix matching first.  When the dataset contains
+        only public IPs (common with Splunk data from cloud or DMZ
+        environments), falls back to checking whether the IP is a known
+        node in the network map provided via *context*.
+        """
+        if not ip:
+            return False
+        # Fast path: standard private ranges
+        if any(ip.startswith(p) for p in self._RFC1918_PREFIXES):
+            return True
+        # Fallback: the network mapper tracks this IP as a node
+        if context and context.network_map and context.network_map.ip_to_device_type:
+            return ip in context.network_map.ip_to_device_type
+        return False
+
     @abstractmethod
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
         """

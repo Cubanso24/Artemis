@@ -1,5 +1,5 @@
 [Unit]
-Description=Artemis Threat Hunting Platform (LAN-accessible on port 8000)
+Description=Artemis Threat Hunting Platform (LAN-accessible on port 6969)
 After=network.target
 
 [Service]

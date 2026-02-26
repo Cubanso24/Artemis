@@ -373,7 +373,8 @@ class SigmaEnginePlugin(ArtemisPlugin):
                             matched_events.append(event)
                             if len(matched_events) >= 100:
                                 break  # Cap per rule to avoid flooding
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Rule '{rule.title}' eval error on event: {e}")
                         continue
 
                 if matched_events:
@@ -452,8 +453,8 @@ class SigmaEnginePlugin(ArtemisPlugin):
             try:
                 with open(self.results_file) as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to read Sigma results from {self.results_file}: {e}")
         return {'matches': [], 'rules_checked': 0, 'total_matches': 0}
 
     def cleanup(self):

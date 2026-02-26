@@ -125,7 +125,7 @@ class AgentSelector:
             agent_scores[agent] = score
 
         # Always include baseline monitoring agents
-        baseline_agents = ["c2_hunter", "reconnaissance_hunter", "defense_evasion_hunter"]
+        baseline_agents = ["c2_hunter", "reconnaissance_hunter"]
         for agent in baseline_agents:
             if agent in available_agents:
                 agent_scores[agent] = max(agent_scores.get(agent, 0), 0.5)

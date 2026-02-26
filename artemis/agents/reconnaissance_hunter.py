@@ -1,33 +1,25 @@
 """
-Agent 1: Reconnaissance & Discovery Hunter
+Agent: Reconnaissance & Discovery Hunter
 
-Detects:
-- Network scanning (port sweeps, host enumeration)
-- Active Directory enumeration
-- Cloud resource discovery
-- DNS query patterns indicating reconnaissance
-- LDAP queries for domain mapping
-- Service discovery attempts
+Network-observable reconnaissance using Zeek conn/dns data:
+- Port scanning (vertical scan, host sweep, aggressive scan)
+- DNS reconnaissance (high NXDOMAIN ratio, zone transfer attempts)
+- Service enumeration (rapid probing of multiple services)
+- Network mapping (ICMP sweeps, ARP scans via connection patterns)
 """
 
 from typing import Dict, List, Any
 from datetime import datetime, timedelta
-import re
+from collections import defaultdict
 
 from artemis.agents.base_agent import BaseAgent
 from artemis.models.agent_output import AgentOutput, Severity, Finding, Evidence
 from artemis.models.network_state import NetworkState
-from artemis.utils.mitre_attack import KillChainStage, MITREAttack
+from artemis.utils.mitre_attack import KillChainStage
 
 
 class ReconnaissanceHunter(BaseAgent):
-    """
-    Specialized agent for detecting reconnaissance and discovery activities.
-
-    Focuses on MITRE ATT&CK Tactics:
-    - TA0043 (Reconnaissance)
-    - TA0007 (Discovery)
-    """
+    """Detects reconnaissance and network discovery using Zeek telemetry."""
 
     def __init__(self):
         super().__init__(
@@ -37,86 +29,50 @@ class ReconnaissanceHunter(BaseAgent):
         )
 
     def _get_default_config(self) -> Dict[str, Any]:
-        """Default configuration for reconnaissance detection."""
         return {
-            # Port scan thresholds
-            "port_scan_threshold": 50,  # ports per minute
-            "host_scan_threshold": 20,  # hosts per minute
-            "aggressive_scan_threshold": 100,  # very fast scanning
-
-            # DNS query thresholds
-            "dns_query_threshold": 100,  # queries per minute
-            "dns_nxdomain_ratio": 0.3,  # ratio of failed lookups
-
-            # AD enumeration
-            "ldap_query_threshold": 50,  # LDAP queries per session
-            "ad_object_enum_threshold": 100,  # AD objects queried
-
-            # Time window for pattern detection (seconds)
-            "time_window": 300,  # 5 minutes
-
-            # Confidence scoring weights
-            "weights": {
-                "volume": 0.3,
-                "velocity": 0.25,
-                "pattern": 0.25,
-                "timing": 0.2
-            }
+            "port_scan_unique_ports": 25,
+            "host_sweep_unique_hosts": 15,
+            "aggressive_scan_ports_per_min": 100,
+            "dns_query_volume_threshold": 200,
+            "dns_nxdomain_ratio_threshold": 0.3,
+            "service_enum_threshold": 10,
+            "rejected_conn_ratio": 0.6,
+            "time_window_seconds": 300,
         }
 
     def _analyze_data(self, data: Dict[str, Any], context: NetworkState) -> AgentOutput:
-        """
-        Analyze data for reconnaissance activities.
-
-        Expected data format:
-        {
-            "network_connections": [...],
-            "dns_queries": [...],
-            "ldap_queries": [...],
-            "service_queries": [...],
-            "cloud_api_calls": [...]
-        }
-        """
         findings: List[Finding] = []
         all_evidence: List[Evidence] = []
         confidence_scores: List[float] = []
 
-        # Detect port scanning
-        port_scan_result = self._detect_port_scanning(data.get("network_connections", []))
-        if port_scan_result:
-            findings.append(port_scan_result["finding"])
-            all_evidence.extend(port_scan_result["evidence"])
-            confidence_scores.append(port_scan_result["confidence"])
+        connections = data.get("network_connections", [])
+        dns_queries = data.get("dns_queries", [])
 
-        # Detect DNS reconnaissance
-        dns_recon_result = self._detect_dns_reconnaissance(data.get("dns_queries", []))
-        if dns_recon_result:
-            findings.append(dns_recon_result["finding"])
-            all_evidence.extend(dns_recon_result["evidence"])
-            confidence_scores.append(dns_recon_result["confidence"])
+        # 1. Port scanning detection
+        for result in self._detect_port_scanning(connections):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
-        # Detect AD enumeration
-        ad_enum_result = self._detect_ad_enumeration(data.get("ldap_queries", []))
-        if ad_enum_result:
-            findings.append(ad_enum_result["finding"])
-            all_evidence.extend(ad_enum_result["evidence"])
-            confidence_scores.append(ad_enum_result["confidence"])
+        # 2. DNS reconnaissance
+        for result in self._detect_dns_reconnaissance(dns_queries):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
-        # Detect cloud resource discovery
-        cloud_disco_result = self._detect_cloud_discovery(data.get("cloud_api_calls", []))
-        if cloud_disco_result:
-            findings.append(cloud_disco_result["finding"])
-            all_evidence.extend(cloud_disco_result["evidence"])
-            confidence_scores.append(cloud_disco_result["confidence"])
+        # 3. Service enumeration via connection state analysis
+        for result in self._detect_service_enumeration(connections):
+            findings.append(result["finding"])
+            all_evidence.extend(result["evidence"])
+            confidence_scores.append(result["confidence"])
 
-        # Calculate overall confidence
+        # Collect near-miss diagnostics when no findings produced
+        near_misses = []
+        if not findings:
+            near_misses = self._collect_near_misses(connections, dns_queries)
+
         overall_confidence = max(confidence_scores) if confidence_scores else 0.0
-
-        # Determine severity
         severity = self._determine_severity(overall_confidence, findings)
-
-        # Generate recommendations
-        recommendations = self._generate_recommendations(findings, context)
 
         return AgentOutput(
             agent_name=self.name,
@@ -125,374 +81,346 @@ class ReconnaissanceHunter(BaseAgent):
             evidence=all_evidence,
             severity=severity,
             mitre_tactics=[t.value for t in self.tactics],
-            mitre_techniques=self._get_relevant_techniques(findings),
-            recommended_actions=recommendations,
-            metadata={
-                "detection_count": len(findings),
-                "context": context.get_context_summary()
-            }
+            mitre_techniques=self._collect_techniques(findings),
+            recommended_actions=self._generate_recommendations(findings),
+            metadata={"near_misses": near_misses} if near_misses else {},
         )
 
-    def _detect_port_scanning(self, connections: List[Dict]) -> Dict[str, Any]:
-        """Detect port scanning patterns."""
+    # ------------------------------------------------------------------
+    # Detection 1: Port scanning
+    # ------------------------------------------------------------------
+
+    def _detect_port_scanning(self, connections: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect port scanning via unique port/host counts per source IP."""
         if not connections:
-            return None
+            return []
 
-        # Analyze connection patterns
-        source_ips = {}
+        # Aggregate per source IP
+        sources: Dict[str, Dict] = defaultdict(lambda: {
+            "ports": set(),
+            "hosts": set(),
+            "timestamps": [],
+            "rejected": 0,
+            "total": 0,
+        })
         for conn in connections:
-            src_ip = conn.get("source_ip")
-            dst_port = conn.get("destination_port")
-            timestamp = conn.get("timestamp", datetime.utcnow())
+            src = conn.get("source_ip")
+            if not src:
+                continue
+            info = sources[src]
+            info["ports"].add(conn.get("destination_port"))
+            info["hosts"].add(conn.get("destination_ip"))
+            info["total"] += 1
+            ts = self._parse_timestamp(conn.get("timestamp"))
+            if ts:
+                info["timestamps"].append(ts)
+            # Zeek conn_state: REJ = rejected, S0 = SYN with no reply
+            state = conn.get("conn_state", "")
+            if state in ("REJ", "S0", "RSTOS0", "RSTRH"):
+                info["rejected"] += 1
 
-            if src_ip not in source_ips:
-                source_ips[src_ip] = {
-                    "ports": set(),
-                    "hosts": set(),
-                    "timestamps": [],
-                    "connections": []
-                }
+        port_thresh = self.config["port_scan_unique_ports"]
+        host_thresh = self.config["host_sweep_unique_hosts"]
 
-            source_ips[src_ip]["ports"].add(dst_port)
-            source_ips[src_ip]["hosts"].add(conn.get("destination_ip"))
-            source_ips[src_ip]["timestamps"].append(timestamp)
-            source_ips[src_ip]["connections"].append(conn)
+        results = []
+        for src_ip, info in sources.items():
+            port_count = len(info["ports"])
+            host_count = len(info["hosts"])
 
-        # Identify scanners
-        for src_ip, data in source_ips.items():
-            port_count = len(data["ports"])
-            host_count = len(data["hosts"])
+            if port_count < port_thresh and host_count < host_thresh:
+                continue
 
-            # Calculate velocity (ports/hosts per minute)
-            if len(data["timestamps"]) >= 2:
-                time_span = (max(data["timestamps"]) - min(data["timestamps"])).total_seconds() / 60
-                if time_span > 0:
-                    ports_per_min = port_count / time_span
-                    hosts_per_min = host_count / time_span
+            # Calculate velocity
+            ports_per_min = 0.0
+            hosts_per_min = 0.0
+            if len(info["timestamps"]) >= 2:
+                span = (max(info["timestamps"]) - min(info["timestamps"])).total_seconds() / 60
+                if span > 0:
+                    ports_per_min = port_count / span
+                    hosts_per_min = host_count / span
 
-                    # Check thresholds
-                    if ports_per_min > self.config["port_scan_threshold"] or \
-                       hosts_per_min > self.config["host_scan_threshold"]:
+            # Classify scan type
+            if ports_per_min > self.config["aggressive_scan_ports_per_min"]:
+                scan_type = "Aggressive scan"
+            elif host_count > port_count:
+                scan_type = "Host sweep"
+            elif port_count > host_count * 5:
+                scan_type = "Vertical port scan"
+            else:
+                scan_type = "Network scan"
 
-                        # Determine scan type
-                        scan_type = self._classify_scan_type(port_count, host_count, ports_per_min)
+            # Rejection ratio increases confidence
+            reject_ratio = info["rejected"] / info["total"] if info["total"] > 0 else 0
+            velocity_factor = min(ports_per_min / 100, 0.15) if ports_per_min > 0 else 0
+            volume_factor = min(port_count / 200, 0.15)
+            reject_factor = reject_ratio * 0.15
 
-                        confidence = self._calculate_scan_confidence(
-                            ports_per_min,
-                            hosts_per_min,
-                            port_count,
-                            host_count
-                        )
+            confidence = min(0.55 + velocity_factor + volume_factor + reject_factor, 0.95)
 
-                        finding = Finding(
-                            activity_type="port_scanning",
-                            description=f"{scan_type} detected from {src_ip}: {port_count} ports, {host_count} hosts",
-                            indicators=[src_ip, f"ports_scanned:{port_count}", f"hosts_scanned:{host_count}"],
-                            evidence=[
-                                Evidence(
-                                    timestamp=datetime.utcnow(),
-                                    source="network_connections",
-                                    data={
-                                        "source_ip": src_ip,
-                                        "port_count": port_count,
-                                        "host_count": host_count,
-                                        "ports_per_min": ports_per_min,
-                                        "scan_type": scan_type
-                                    },
-                                    description=f"Detected {scan_type} from {src_ip}",
-                                    confidence_contribution=confidence
-                                )
-                            ],
-                            mitre_techniques=["T1595", "T1046"]  # Active Scanning, Network Service Discovery
-                        )
+            finding = Finding(
+                activity_type="port_scanning",
+                description=(
+                    f"{scan_type} from {src_ip}: {port_count} ports, "
+                    f"{host_count} hosts, {reject_ratio:.0%} rejected "
+                    f"({ports_per_min:.0f} ports/min)"
+                ),
+                indicators=[src_ip, f"ports:{port_count}", f"hosts:{host_count}"],
+                affected_assets=[src_ip],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections",
+                    data={
+                        "source_ip": src_ip,
+                        "unique_ports": port_count,
+                        "unique_hosts": host_count,
+                        "ports_per_min": round(ports_per_min, 1),
+                        "hosts_per_min": round(hosts_per_min, 1),
+                        "rejection_ratio": round(reject_ratio, 3),
+                        "total_connections": info["total"],
+                        "scan_type": scan_type,
+                    },
+                    description=f"{scan_type} detected from {src_ip}",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1595", "T1046"],
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
 
-                        return {
-                            "finding": finding,
-                            "evidence": finding.evidence,
-                            "confidence": confidence
-                        }
+        return results
 
-        return None
+    # ------------------------------------------------------------------
+    # Detection 2: DNS reconnaissance
+    # ------------------------------------------------------------------
 
-    def _detect_dns_reconnaissance(self, dns_queries: List[Dict]) -> Dict[str, Any]:
-        """Detect DNS-based reconnaissance."""
+    def _detect_dns_reconnaissance(self, dns_queries: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect DNS-based recon: high query volume, high NXDOMAIN ratio."""
         if not dns_queries:
-            return None
+            return []
 
-        # Group queries by source
-        source_queries = {}
-        for query in dns_queries:
-            src = query.get("source_ip")
-            if src not in source_queries:
-                source_queries[src] = {
-                    "queries": [],
-                    "domains": set(),
-                    "nxdomain": 0,
-                    "total": 0
-                }
+        # Group by source IP
+        sources: Dict[str, Dict] = defaultdict(lambda: {
+            "total": 0, "nxdomain": 0, "domains": set(),
+        })
+        for q in dns_queries:
+            src = q.get("source_ip")
+            if not src:
+                continue
+            info = sources[src]
+            info["total"] += 1
+            info["domains"].add(q.get("domain", ""))
+            if q.get("response_code") == "NXDOMAIN":
+                info["nxdomain"] += 1
 
-            source_queries[src]["queries"].append(query)
-            source_queries[src]["domains"].add(query.get("domain", ""))
-            source_queries[src]["total"] += 1
+        vol_threshold = self.config["dns_query_volume_threshold"]
+        nx_threshold = self.config["dns_nxdomain_ratio_threshold"]
 
-            if query.get("response_code") == "NXDOMAIN":
-                source_queries[src]["nxdomain"] += 1
+        results = []
+        for src_ip, info in sources.items():
+            total = info["total"]
+            nx_ratio = info["nxdomain"] / total if total > 0 else 0
+            unique = len(info["domains"])
 
-        # Analyze patterns
-        for src, data in source_queries.items():
-            query_count = data["total"]
-            unique_domains = len(data["domains"])
-            nxdomain_ratio = data["nxdomain"] / query_count if query_count > 0 else 0
+            if total < vol_threshold and nx_ratio < nx_threshold:
+                continue
 
-            # High volume or high NXDOMAIN ratio indicates reconnaissance
-            if query_count > self.config["dns_query_threshold"] or \
-               nxdomain_ratio > self.config["dns_nxdomain_ratio"]:
+            # Scale confidence
+            vol_factor = min(total / vol_threshold, 1.0) * 0.3
+            nx_factor = min(nx_ratio / nx_threshold, 1.0) * 0.4
+            diversity_factor = min(unique / 100, 0.2)
+            confidence = min(0.40 + vol_factor + nx_factor + diversity_factor, 0.93)
 
-                confidence = min(
-                    (query_count / self.config["dns_query_threshold"]) * 0.5 +
-                    (nxdomain_ratio / self.config["dns_nxdomain_ratio"]) * 0.5,
-                    1.0
-                )
+            finding = Finding(
+                activity_type="dns_reconnaissance",
+                description=(
+                    f"DNS recon from {src_ip}: {total} queries, "
+                    f"{nx_ratio:.0%} NXDOMAIN, {unique} unique domains"
+                ),
+                indicators=[src_ip, f"dns_queries:{total}", f"nxdomain_ratio:{nx_ratio:.2f}"],
+                affected_assets=[src_ip],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="dns_queries",
+                    data={
+                        "source_ip": src_ip,
+                        "total_queries": total,
+                        "nxdomain_count": info["nxdomain"],
+                        "nxdomain_ratio": round(nx_ratio, 3),
+                        "unique_domains": unique,
+                    },
+                    description=f"Unusual DNS query pattern from {src_ip}",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1595.002"],
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
 
-                finding = Finding(
-                    activity_type="dns_reconnaissance",
-                    description=f"DNS reconnaissance from {src}: {query_count} queries, {nxdomain_ratio:.1%} NXDOMAIN",
-                    indicators=[src, f"dns_queries:{query_count}", f"nxdomain_ratio:{nxdomain_ratio:.2f}"],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="dns_queries",
-                            data={
-                                "source_ip": src,
-                                "query_count": query_count,
-                                "unique_domains": unique_domains,
-                                "nxdomain_ratio": nxdomain_ratio
-                            },
-                            description=f"Unusual DNS query pattern from {src}",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1595.002"]  # Active Scanning: Vulnerability Scanning
-                )
+        return results
 
-                return {
-                    "finding": finding,
-                    "evidence": finding.evidence,
-                    "confidence": confidence
-                }
+    # ------------------------------------------------------------------
+    # Detection 3: Service enumeration via failed connections
+    # ------------------------------------------------------------------
 
-        return None
+    def _detect_service_enumeration(self, connections: List[Dict]) -> List[Dict[str, Any]]:
+        """Detect service enumeration: single source probing many ports on one host with rejects."""
+        if not connections:
+            return []
 
-    def _detect_ad_enumeration(self, ldap_queries: List[Dict]) -> Dict[str, Any]:
-        """Detect Active Directory enumeration."""
-        if not ldap_queries:
-            return None
+        reject_states = {"REJ", "S0", "RSTOS0", "RSTRH"}
+        enum_threshold = self.config["service_enum_threshold"]
+        reject_ratio_threshold = self.config["rejected_conn_ratio"]
 
-        # Group by source account
-        account_queries = {}
-        for query in ldap_queries:
-            account = query.get("account")
-            if account not in account_queries:
-                account_queries[account] = {
-                    "queries": [],
-                    "objects_queried": set(),
-                    "query_types": set()
-                }
+        # Group by (source, destination) pair
+        pairs: Dict[str, Dict] = defaultdict(lambda: {
+            "ports": set(), "rejected": 0, "total": 0, "src": "", "dst": "",
+        })
+        for conn in connections:
+            src = conn.get("source_ip")
+            dst = conn.get("destination_ip")
+            if not (src and dst):
+                continue
+            key = f"{src}|{dst}"
+            info = pairs[key]
+            info["src"] = src
+            info["dst"] = dst
+            info["ports"].add(conn.get("destination_port"))
+            info["total"] += 1
+            if conn.get("conn_state", "") in reject_states:
+                info["rejected"] += 1
 
-            account_queries[account]["queries"].append(query)
-            account_queries[account]["objects_queried"].add(query.get("object_dn", ""))
-            account_queries[account]["query_types"].add(query.get("query_type", ""))
+        results = []
+        for key, info in pairs.items():
+            port_count = len(info["ports"])
+            if port_count < enum_threshold:
+                continue
+            reject_ratio = info["rejected"] / info["total"] if info["total"] > 0 else 0
+            if reject_ratio < reject_ratio_threshold:
+                continue
 
-        # Analyze for enumeration
-        for account, data in account_queries.items():
-            object_count = len(data["objects_queried"])
-            query_count = len(data["queries"])
+            confidence = min(0.55 + port_count * 0.01 + reject_ratio * 0.15, 0.90)
 
-            if object_count > self.config["ad_object_enum_threshold"] or \
-               query_count > self.config["ldap_query_threshold"]:
+            finding = Finding(
+                activity_type="service_enumeration",
+                description=(
+                    f"Service enumeration: {info['src']} probed {port_count} ports "
+                    f"on {info['dst']} ({reject_ratio:.0%} rejected)"
+                ),
+                indicators=[info["src"], info["dst"], f"ports_probed:{port_count}"],
+                affected_assets=[info["dst"]],
+                evidence=[Evidence(
+                    timestamp=datetime.utcnow(),
+                    source="network_connections",
+                    data={
+                        "source_ip": info["src"],
+                        "target_ip": info["dst"],
+                        "ports_probed": port_count,
+                        "rejection_ratio": round(reject_ratio, 3),
+                        "total_connections": info["total"],
+                    },
+                    description=f"Service enumeration against {info['dst']}",
+                    confidence_contribution=confidence,
+                )],
+                mitre_techniques=["T1046"],
+            )
+            results.append({
+                "finding": finding,
+                "evidence": finding.evidence,
+                "confidence": confidence,
+            })
 
-                confidence = min(object_count / self.config["ad_object_enum_threshold"], 1.0)
+        return results
 
-                finding = Finding(
-                    activity_type="ad_enumeration",
-                    description=f"Active Directory enumeration by {account}: {object_count} objects queried",
-                    indicators=[account, f"ad_objects:{object_count}", f"ldap_queries:{query_count}"],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="ldap_queries",
-                            data={
-                                "account": account,
-                                "object_count": object_count,
-                                "query_count": query_count,
-                                "query_types": list(data["query_types"])
-                            },
-                            description=f"Extensive AD enumeration by {account}",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1087", "T1069"]  # Account Discovery, Permission Groups Discovery
-                )
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
 
-                return {
-                    "finding": finding,
-                    "evidence": finding.evidence,
-                    "confidence": confidence
-                }
-
-        return None
-
-    def _detect_cloud_discovery(self, api_calls: List[Dict]) -> Dict[str, Any]:
-        """Detect cloud resource discovery attempts."""
-        if not api_calls:
-            return None
-
-        # Discovery API patterns
-        discovery_apis = [
-            "List", "Describe", "Get", "Enumerate",
-            "ec2:Describe", "s3:List", "iam:List", "lambda:List"
-        ]
-
-        # Group by account/role
-        account_calls = {}
-        for call in api_calls:
-            account = call.get("account_id")
-            api_name = call.get("api_name", "")
-
-            # Check if it's a discovery API
-            if any(pattern in api_name for pattern in discovery_apis):
-                if account not in account_calls:
-                    account_calls[account] = {
-                        "calls": [],
-                        "api_types": set(),
-                        "resources": set()
-                    }
-
-                account_calls[account]["calls"].append(call)
-                account_calls[account]["api_types"].add(api_name)
-                account_calls[account]["resources"].add(call.get("resource_type", ""))
-
-        # Analyze for suspicious discovery
-        for account, data in account_calls.items():
-            call_count = len(data["calls"])
-            api_diversity = len(data["api_types"])
-
-            # High volume or diverse discovery indicates reconnaissance
-            if call_count > 20 and api_diversity > 5:
-                confidence = min(call_count / 100.0, 0.9)
-
-                finding = Finding(
-                    activity_type="cloud_discovery",
-                    description=f"Cloud resource discovery by {account}: {call_count} API calls, {api_diversity} different APIs",
-                    indicators=[account, f"api_calls:{call_count}", f"api_diversity:{api_diversity}"],
-                    evidence=[
-                        Evidence(
-                            timestamp=datetime.utcnow(),
-                            source="cloud_api_calls",
-                            data={
-                                "account": account,
-                                "call_count": call_count,
-                                "api_diversity": api_diversity,
-                                "apis": list(data["api_types"])[:10]  # First 10
-                            },
-                            description=f"Extensive cloud resource enumeration by {account}",
-                            confidence_contribution=confidence
-                        )
-                    ],
-                    mitre_techniques=["T1580", "T1526"]  # Cloud Infrastructure Discovery, Cloud Service Discovery
-                )
-
-                return {
-                    "finding": finding,
-                    "evidence": finding.evidence,
-                    "confidence": confidence
-                }
-
-        return None
-
-    def _classify_scan_type(self, port_count: int, host_count: int, velocity: float) -> str:
-        """Classify the type of scanning detected."""
-        if velocity > self.config["aggressive_scan_threshold"]:
-            return "Aggressive port scan"
-        elif host_count > port_count:
-            return "Host sweep"
-        elif port_count > host_count * 10:
-            return "Vertical port scan"
-        else:
-            return "Network scan"
-
-    def _calculate_scan_confidence(
-        self,
-        ports_per_min: float,
-        hosts_per_min: float,
-        total_ports: int,
-        total_hosts: int
-    ) -> float:
-        """Calculate confidence score for port scanning detection."""
-        # Weight different factors
-        velocity_score = min(
-            (ports_per_min / self.config["port_scan_threshold"]) * 0.5 +
-            (hosts_per_min / self.config["host_scan_threshold"]) * 0.5,
-            1.0
-        )
-
-        volume_score = min(
-            (total_ports / 100.0) * 0.5 + (total_hosts / 50.0) * 0.5,
-            1.0
-        )
-
-        return min((velocity_score * 0.6 + volume_score * 0.4), 1.0)
-
-    def _determine_severity(self, confidence: float, findings: List[Finding]) -> Severity:
-        """Determine overall severity based on confidence and findings."""
+    @staticmethod
+    def _determine_severity(confidence: float, findings: List[Finding]) -> Severity:
         if confidence >= 0.8 or len(findings) >= 3:
             return Severity.HIGH
         elif confidence >= 0.6 or len(findings) >= 2:
             return Severity.MEDIUM
-        elif confidence >= 0.4:
-            return Severity.LOW
-        else:
-            return Severity.LOW
+        return Severity.LOW
 
-    def _get_relevant_techniques(self, findings: List[Finding]) -> List[str]:
-        """Extract all MITRE techniques from findings."""
-        techniques = set()
-        for finding in findings:
-            techniques.update(finding.mitre_techniques)
-        return list(techniques)
+    def _collect_near_misses(
+        self, connections: List[Dict], dns_queries: List[Dict]
+    ) -> List[str]:
+        """Summarize closest-to-threshold recon activity for diagnostics."""
+        misses = []
+        port_thresh = self.config["port_scan_unique_ports"]
+        host_thresh = self.config["host_sweep_unique_hosts"]
 
-    def _generate_recommendations(self, findings: List[Finding], context: NetworkState) -> List[str]:
-        """Generate recommended actions based on findings."""
+        # Port scan: find source with the most unique destination ports
+        src_ports: Dict[str, set] = defaultdict(set)
+        for conn in connections:
+            src = conn.get("source_ip")
+            if src:
+                src_ports[src].add(conn.get("destination_port"))
+        if src_ports:
+            top_src = max(src_ports, key=lambda s: len(src_ports[s]))
+            top_port_count = len(src_ports[top_src])
+            misses.append(
+                f"port_scan: max {top_port_count} unique ports from {top_src} "
+                f"(need {port_thresh})"
+            )
+
+        # Host sweep: find source with the most unique destination hosts
+        src_hosts: Dict[str, set] = defaultdict(set)
+        for conn in connections:
+            src = conn.get("source_ip")
+            if src:
+                src_hosts[src].add(conn.get("destination_ip"))
+        if src_hosts:
+            top_src = max(src_hosts, key=lambda s: len(src_hosts[s]))
+            top_host_count = len(src_hosts[top_src])
+            misses.append(
+                f"host_sweep: max {top_host_count} unique hosts from {top_src} "
+                f"(need {host_thresh})"
+            )
+
+        # DNS recon: top query volume per source
+        dns_thresh = self.config["dns_query_volume_threshold"]
+        src_dns: Dict[str, int] = defaultdict(int)
+        for q in dns_queries:
+            src = q.get("source_ip")
+            if src:
+                src_dns[src] += 1
+        if src_dns:
+            top_src = max(src_dns, key=src_dns.get)
+            misses.append(
+                f"dns_recon: max {src_dns[top_src]} queries from {top_src} "
+                f"(need {dns_thresh})"
+            )
+
+        return misses
+
+    @staticmethod
+    def _collect_techniques(findings: List[Finding]) -> List[str]:
+        techniques: set = set()
+        for f in findings:
+            techniques.update(f.mitre_techniques)
+        return sorted(techniques)
+
+    @staticmethod
+    def _generate_recommendations(findings: List[Finding]) -> List[str]:
         if not findings:
             return []
-
-        recommendations = []
-
-        # Check for specific activity types
-        activity_types = {f.activity_type for f in findings}
-
-        if "port_scanning" in activity_types:
-            recommendations.append("Block source IP at firewall")
-            recommendations.append("Review network segmentation controls")
-            recommendations.append("Enable IDS/IPS signatures for port scanning")
-
-        if "dns_reconnaissance" in activity_types:
-            recommendations.append("Investigate DNS query patterns")
-            recommendations.append("Review DNS sinkhole configuration")
-            recommendations.append("Check for data exfiltration via DNS tunneling")
-
-        if "ad_enumeration" in activity_types:
-            recommendations.append("Review account permissions")
-            recommendations.append("Enable advanced AD auditing")
-            recommendations.append("Investigate account for compromise")
-
-        if "cloud_discovery" in activity_types:
-            recommendations.append("Review cloud IAM permissions")
-            recommendations.append("Enable CloudTrail/Azure Activity Log analysis")
-            recommendations.append("Check for compromised credentials")
-
-        # General recommendations
-        recommendations.append("Correlate with other security events")
-        recommendations.append("Check threat intelligence for source IPs")
-
-        return recommendations
+        types = {f.activity_type for f in findings}
+        recs = []
+        if "port_scanning" in types:
+            recs.append("Block scanning source at firewall if external")
+            recs.append("Review network segmentation — limit internal scan surface")
+        if "dns_reconnaissance" in types:
+            recs.append("Investigate DNS query patterns for data exfiltration or recon")
+            recs.append("Consider DNS sinkholing for high-NXDOMAIN sources")
+        if "service_enumeration" in types:
+            recs.append("Harden exposed services and restrict unnecessary ports")
+        recs.append("Check threat intelligence for source IPs")
+        return recs

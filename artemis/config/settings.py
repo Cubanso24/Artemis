@@ -25,8 +25,7 @@ class ArtemisConfig:
     enable_all_agents: bool = True
     baseline_agents: List[str] = field(default_factory=lambda: [
         "c2_hunter",
-        "reconnaissance_hunter",
-        "defense_evasion_hunter"
+        "reconnaissance_hunter"
     ])
 
     # Confidence thresholds
@@ -52,6 +51,41 @@ class ArtemisConfig:
     # Performance
     cache_enabled: bool = True
     cache_ttl_seconds: int = 300
+
+    # LLM layer
+    llm_enabled: bool = True  # Set False to disable LLM entirely
+    llm_api_key: str = ""  # Defaults to ANTHROPIC_API_KEY env var
+    llm_coordinator_model: str = "claude-sonnet-4-5-20250929"
+    llm_agent_model: str = "claude-haiku-4-5-20251001"
+
+    # GPU LLM (Ollama) — for local inference on GPU server
+    llm_backend: str = "auto"  # "auto", "ollama", "anthropic"
+    ollama_url: str = "http://localhost:11434"
+    ollama_coordinator_model: str = "qwen2.5:72b"
+    ollama_agent_model: str = "qwen2.5:32b"
+    ollama_num_gpu: int = -1  # -1 = all layers on GPU
+    ollama_context_length: int = 32768
+
+    # Autonomous case generation
+    auto_case_enabled: bool = True
+    auto_case_threshold: float = 0.60       # min confidence to create any case
+    auto_respond_threshold: float = 0.95    # auto-escalate + notify SOC
+    auto_investigate_threshold: float = 0.80  # auto-create + recommend actions
+    case_dedup_window_hours: int = 1        # group findings within window
+
+    # Hunt scheduler
+    scheduler_enabled: bool = True
+    scheduler_interval_minutes: int = 15
+    scheduler_auto_start: bool = False      # auto-start on server boot
+    scheduler_max_concurrent_hunts: int = 1
+
+    # DFIR-IRIS integration
+    iris_enabled: bool = False
+    iris_url: str = ""                      # e.g., https://iris.company.com
+    iris_api_key: str = ""
+    iris_sync_interval_minutes: int = 5
+    iris_auto_push_cases: bool = True       # auto-push high-confidence cases
+    iris_auto_push_threshold: float = 0.80
 
     @classmethod
     def from_file(cls, filepath: str) -> 'ArtemisConfig':
@@ -88,7 +122,32 @@ class ArtemisConfig:
             "historical_state_limit": self.historical_state_limit,
             "anomaly_detection_enabled": self.anomaly_detection_enabled,
             "cache_enabled": self.cache_enabled,
-            "cache_ttl_seconds": self.cache_ttl_seconds
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+            "llm_enabled": self.llm_enabled,
+            "llm_api_key": self.llm_api_key,
+            "llm_coordinator_model": self.llm_coordinator_model,
+            "llm_agent_model": self.llm_agent_model,
+            "llm_backend": self.llm_backend,
+            "ollama_url": self.ollama_url,
+            "ollama_coordinator_model": self.ollama_coordinator_model,
+            "ollama_agent_model": self.ollama_agent_model,
+            "ollama_num_gpu": self.ollama_num_gpu,
+            "ollama_context_length": self.ollama_context_length,
+            "auto_case_enabled": self.auto_case_enabled,
+            "auto_case_threshold": self.auto_case_threshold,
+            "auto_respond_threshold": self.auto_respond_threshold,
+            "auto_investigate_threshold": self.auto_investigate_threshold,
+            "case_dedup_window_hours": self.case_dedup_window_hours,
+            "scheduler_enabled": self.scheduler_enabled,
+            "scheduler_interval_minutes": self.scheduler_interval_minutes,
+            "scheduler_auto_start": self.scheduler_auto_start,
+            "scheduler_max_concurrent_hunts": self.scheduler_max_concurrent_hunts,
+            "iris_enabled": self.iris_enabled,
+            "iris_url": self.iris_url,
+            "iris_api_key": self.iris_api_key,
+            "iris_sync_interval_minutes": self.iris_sync_interval_minutes,
+            "iris_auto_push_cases": self.iris_auto_push_cases,
+            "iris_auto_push_threshold": self.iris_auto_push_threshold,
         }
 
     def save(self, filepath: str):

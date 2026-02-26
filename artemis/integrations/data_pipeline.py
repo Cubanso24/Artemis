@@ -105,28 +105,62 @@ class DataPipeline:
         time_range: str = "-1h",
         include_pcap: bool = False,
         suspicious_ips: Optional[List[str]] = None,
-        progress_callback=None
+        progress_callback=None,
+        storage_mode: str = "ram",
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
+        target_hosts: Optional[List[str]] = None,
+        per_window_callback=None,
     ) -> Dict[str, Any]:
         """
         Collect comprehensive hunting data from all sources.
 
         Args:
-            time_range: Time range for data collection (e.g., "-1h", "-24h")
+            time_range: Time range for data collection (e.g., "-1h", "-24h").
+                        Ignored when *earliest_time*/*latest_time* are set.
             include_pcap: Whether to retrieve and analyze PCAP
             suspicious_ips: Optional list of IPs to focus on
             progress_callback: Optional callable(info_dict) for live progress updates
+            storage_mode: "ram" (default) keeps events in Python lists.
+                          "sqlite" spills to a temp SQLite file so very
+                          large collections don't exhaust memory.
+            earliest_time: Absolute start time (ISO 8601, e.g. "2025-01-15T08:00:00").
+                           When set, overrides *time_range*.
+            latest_time: Absolute end time (ISO 8601).
+            target_hosts: Optional list of host/sensor names to restrict queries.
+            per_window_callback: Optional callable(window_data_dict) called after
+                each time window is collected, enabling incremental processing
+                (e.g. building the network map) before the full collection finishes.
 
         Returns:
-            Comprehensive hunting data dictionary
+            Hunting data (dict or SqliteEventStore).
         """
-        self.logger.info(f"Collecting hunting data for time range: {time_range}")
+        label = (f"{earliest_time} → {latest_time}"
+                 if earliest_time and latest_time else time_range)
+        self.logger.info(
+            f"Collecting hunting data for time range: {label} "
+            f"(storage={storage_mode})"
+        )
 
-        hunting_data = {}
+        use_sqlite = storage_mode == "sqlite"
+        if use_sqlite:
+            from artemis.integrations.event_store import SqliteEventStore
+            hunting_data = SqliteEventStore()
+        else:
+            hunting_data = {}
 
-        # Collect from Splunk (if available)
+        # Collect from Splunk (if available).
+        # When using SQLite storage the Splunk collector writes directly
+        # into the store so per-window data is freed immediately.
         if self.splunk:
-            splunk_data = self._collect_from_splunk(time_range, progress_callback=progress_callback)
-            hunting_data.update(splunk_data)
+            self._collect_from_splunk(
+                time_range, progress_callback=progress_callback,
+                store=hunting_data,
+                earliest_time=earliest_time,
+                latest_time=latest_time,
+                target_hosts=target_hosts,
+                per_window_callback=per_window_callback,
+            )
 
         # Collect from Security Onion
         if self.security_onion:
@@ -137,13 +171,18 @@ class DataPipeline:
             )
             hunting_data.update(so_data)
 
-        # Merge and deduplicate
-        hunting_data = self._merge_data_sources(hunting_data)
+        # Merge and deduplicate (only for plain dicts — the SQLite store
+        # accumulates via extend() and doesn't need a separate merge pass).
+        if isinstance(hunting_data, dict):
+            hunting_data = self._merge_data_sources(hunting_data)
 
-        total_events = sum(
-            len(v) if isinstance(v, list) else 0
-            for v in hunting_data.values()
-        )
+        if hasattr(hunting_data, 'total_count'):
+            total_events = hunting_data.total_count()
+        else:
+            total_events = sum(
+                len(v) if isinstance(v, list) else 0
+                for v in hunting_data.values()
+            )
         self.logger.info(f"Collected {total_events} total events")
 
         return hunting_data
@@ -179,37 +218,48 @@ class DataPipeline:
     @staticmethod
     def _generate_time_windows(
         time_range: str,
-        window_hours: int = 24,
+        window_hours: int = 1,
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
     ) -> List[Tuple[str, str]]:
         """
         Split a large time range into fixed-size windows.
 
         Returns a list of (earliest_iso, latest_iso) pairs that Splunk
         accepts as absolute timestamps.  Windows are generated from the
-        oldest time forward to "now".
+        oldest time forward to "now" (or *latest_time*).
+
+        When *earliest_time* and *latest_time* are provided they take
+        precedence over the relative *time_range* string.
         """
-        m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
-        if not m:
-            # Cannot parse — return as single window
-            return [(time_range, "now")]
-
-        value = int(m.group(1))
-        unit = m.group(2)
-        unit_seconds = {
-            's': 1, 'm': 60, 'h': 3600,
-            'd': 86400, 'w': 604800, 'mon': 2592000,
-        }
-
-        total_seconds = value * unit_seconds.get(unit, 3600)
-        window_seconds = window_hours * 3600
-
         now = datetime.utcnow()
-        start = now - timedelta(seconds=total_seconds)
+
+        if earliest_time and latest_time:
+            # Absolute range provided — parse ISO timestamps
+            start = datetime.fromisoformat(earliest_time)
+            end = datetime.fromisoformat(latest_time)
+        else:
+            m = re.match(r'^-(\d+)(s|m|h|d|w|mon)$', time_range.strip())
+            if not m:
+                # Cannot parse — return as single window
+                return [(time_range, "now")]
+
+            value = int(m.group(1))
+            unit = m.group(2)
+            unit_seconds = {
+                's': 1, 'm': 60, 'h': 3600,
+                'd': 86400, 'w': 604800, 'mon': 2592000,
+            }
+            total_seconds = value * unit_seconds.get(unit, 3600)
+            start = now - timedelta(seconds=total_seconds)
+            end = now
+
+        window_seconds = window_hours * 3600
 
         windows = []
         cursor = start
-        while cursor < now:
-            window_end = min(cursor + timedelta(seconds=window_seconds), now)
+        while cursor < end:
+            window_end = min(cursor + timedelta(seconds=window_seconds), end)
             windows.append((
                 cursor.strftime('%Y-%m-%dT%H:%M:%S'),
                 window_end.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -222,36 +272,64 @@ class DataPipeline:
     # Splunk collection
     # ------------------------------------------------------------------
 
-    def _collect_from_splunk(self, time_range: str, progress_callback=None) -> Dict[str, Any]:
+    def _collect_from_splunk(self, time_range: str, progress_callback=None,
+                             store=None, earliest_time: Optional[str] = None,
+                             latest_time: Optional[str] = None,
+                             target_hosts: Optional[List[str]] = None,
+                             per_window_callback=None) -> None:
         """
-        Collect data from Splunk.
+        Collect data from Splunk and merge into *store*.
 
-        For time ranges > 24 hours, the query is broken into 24-hour
-        windows so the Splunk search head isn't overwhelmed by a single
-        massive job.  Each window's 8 data-type queries run in parallel,
-        then results are merged before returning.
+        For time ranges > 1 hour, the query is broken into 1-hour
+        windows so data appears incrementally.  Each window's per-type
+        queries run in parallel,
+        then results are merged into *store* before the next window so
+        that per-window memory is freed immediately (important when
+        *store* is a SqliteEventStore).
 
         Args:
-            time_range: Time range for queries (e.g. "-1h", "-30d")
+            time_range: Time range for queries (e.g. "-1h", "-30d").
+                        Ignored when *earliest_time*/*latest_time* are set.
             progress_callback: Optional callable(info_dict) for progress updates
-
-        Returns:
-            Splunk data dictionary
+            store: Dict-like container to merge results into.  Must support
+                   ``.update(dict)`` and, for count helpers,
+                   ``.count(key)`` / ``.total_count()``.
+            earliest_time: Absolute start (ISO 8601).  Overrides *time_range*.
+            latest_time: Absolute end (ISO 8601).
         """
-        total_hours = self._parse_time_range_hours(time_range)
+        if earliest_time and latest_time:
+            # Compute the span from absolute timestamps
+            dt_start = datetime.fromisoformat(earliest_time)
+            dt_end = datetime.fromisoformat(latest_time)
+            total_hours = (dt_end - dt_start).total_seconds() / 3600
+        else:
+            total_hours = self._parse_time_range_hours(time_range)
 
-        if total_hours <= 24:
-            # Short range — single pass (existing fast path)
-            return self._collect_splunk_window(time_range, "now", progress_callback=progress_callback)
+        if total_hours <= 1:
+            # Short range — single pass
+            if earliest_time and latest_time:
+                window = self._collect_splunk_window(
+                    earliest_time, latest_time,
+                    progress_callback=progress_callback,
+                    target_hosts=target_hosts,
+                )
+            else:
+                window = self._collect_splunk_window(
+                    time_range, "now", progress_callback=progress_callback,
+                    target_hosts=target_hosts,
+                )
+            store.update(window)
+            return
 
-        # Long range — split into 24h windows
-        windows = self._generate_time_windows(time_range, window_hours=24)
+        # Long range — split into 1h windows for incremental results
+        windows = self._generate_time_windows(
+            time_range, window_hours=1,
+            earliest_time=earliest_time, latest_time=latest_time,
+        )
         self.logger.info(
             f"Large time range ({time_range} = {total_hours:.0f}h): "
-            f"splitting into {len(windows)} x 24h windows"
+            f"splitting into {len(windows)} x 1h windows"
         )
-
-        merged: Dict[str, List] = {}
 
         for idx, (earliest, latest) in enumerate(windows, 1):
             self.logger.info(
@@ -263,19 +341,29 @@ class DataPipeline:
                 progress_callback=progress_callback,
                 window_index=idx,
                 total_windows=len(windows),
+                target_hosts=target_hosts,
             )
-
-            # Merge into combined result
-            for key, events in window_data.items():
-                if key not in merged:
-                    merged[key] = []
-                if isinstance(events, list):
-                    merged[key].extend(events)
 
             window_total = sum(
                 len(v) for v in window_data.values() if isinstance(v, list)
             )
-            running_total = sum(len(v) for v in merged.values())
+
+            # Merge into the caller's store — for SqliteEventStore this
+            # writes to disk and frees the per-window dict.
+            store.update(window_data)
+
+            # Compute running total from the store
+            if hasattr(store, 'total_count'):
+                running_total = store.total_count()
+                events_by_type = store.counts_by_type()
+            else:
+                running_total = sum(
+                    len(v) for v in store.values() if isinstance(v, list)
+                )
+                events_by_type = {
+                    k: len(v) for k, v in store.items() if isinstance(v, list)
+                }
+
             self.logger.info(
                 f"    Window {idx} returned {window_total} events "
                 f"(running total: {running_total})"
@@ -288,10 +376,18 @@ class DataPipeline:
                     'total_windows': len(windows),
                     'window_events': window_total,
                     'running_total': running_total,
-                    'events_by_type': {k: len(v) for k, v in merged.items()},
+                    'events_by_type': events_by_type,
                 })
 
-        return merged
+            # Allow caller to process each window's data incrementally
+            # (e.g. build the network map before all windows are done)
+            if per_window_callback and window_total > 0:
+                try:
+                    per_window_callback(window_data)
+                except Exception as pwc_err:
+                    self.logger.warning(
+                        f"per_window_callback error on window {idx}: {pwc_err}"
+                    )
 
     def _collect_splunk_window(
         self,
@@ -300,6 +396,7 @@ class DataPipeline:
         progress_callback=None,
         window_index: int = 1,
         total_windows: int = 1,
+        target_hosts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Collect all data types from Splunk for a single time window.
@@ -310,6 +407,7 @@ class DataPipeline:
             progress_callback: Optional callable for progress updates
             window_index: Current window number (1-based)
             total_windows: Total number of windows
+            target_hosts: Optional list of host/sensor names to restrict queries
 
         Returns:
             Dict keyed by data type, values are event lists
@@ -327,37 +425,43 @@ class DataPipeline:
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
                 futures = {
                     "network_connections": executor.submit(
-                        self.splunk.get_network_connections, earliest, None, latest
+                        self.splunk.get_network_connections, earliest, None, latest, target_hosts
                     ),
                     "dns_queries": executor.submit(
-                        self.splunk.get_dns_queries, earliest, latest
+                        self.splunk.get_dns_queries, earliest, latest, target_hosts
                     ),
                     "ntlm_logs": executor.submit(
-                        self.splunk.get_ntlm_logs, earliest, latest
+                        self.splunk.get_ntlm_logs, earliest, latest, target_hosts
                     ),
                     "authentication_logs": executor.submit(
-                        self.splunk.get_authentication_logs, earliest, latest
+                        self.splunk.get_authentication_logs, earliest, latest, target_hosts
                     ),
                     "process_logs": executor.submit(
-                        self.splunk.get_process_logs, earliest, None, latest
+                        self.splunk.get_process_logs, earliest, None, latest, target_hosts
                     ),
                     "powershell_logs": executor.submit(
-                        self.splunk.get_powershell_logs, earliest, latest
+                        self.splunk.get_powershell_logs, earliest, latest, target_hosts
                     ),
                     "file_operations": executor.submit(
-                        self.splunk.get_file_operations, earliest, latest
+                        self.splunk.get_file_operations, earliest, latest, target_hosts
                     ),
                     "scheduled_tasks": executor.submit(
-                        self.splunk.get_scheduled_tasks, earliest, latest
+                        self.splunk.get_scheduled_tasks, earliest, latest, target_hosts
                     ),
                     "registry_changes": executor.submit(
-                        self.splunk.get_registry_changes, earliest, latest
+                        self.splunk.get_registry_changes, earliest, latest, target_hosts
                     ),
                 }
 
-                for key, future in futures.items():
+                # Map future -> key so we can process in completion order
+                future_to_key = {f: k for k, f in futures.items()}
+
+                for future in concurrent.futures.as_completed(
+                    future_to_key.keys(), timeout=3600
+                ):
+                    key = future_to_key[future]
                     try:
-                        data[key] = future.result(timeout=3600)
+                        data[key] = future.result()
                         completed_queries[key] = len(data[key])
 
                         # Report per-query progress
@@ -474,6 +578,27 @@ class DataPipeline:
 
         return pcap_data
 
+    @staticmethod
+    def _dedup_events(events: List[Dict], key_fields: List[str]) -> List[Dict]:
+        """
+        Deduplicate a list of event dicts by a composite key.
+
+        Args:
+            events: List of event dicts
+            key_fields: Fields to use as the dedup key
+
+        Returns:
+            Deduplicated list (preserves first occurrence)
+        """
+        seen = set()
+        deduped = []
+        for event in events:
+            key = tuple(str(event.get(f, '')) for f in key_fields)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(event)
+        return deduped
+
     def _merge_data_sources(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Merge and deduplicate data from multiple sources.
@@ -508,6 +633,32 @@ class DataPipeline:
         if "suricata_alerts" in data:
             data["initial_signals"] = self._convert_suricata_alerts(
                 data["suricata_alerts"]
+            )
+
+        # Deduplicate merged event lists
+        conn_keys = ["source_ip", "destination_ip", "destination_port", "timestamp"]
+        dns_keys = ["source_ip", "domain", "timestamp"]
+
+        before_conns = len(data.get("network_connections", []))
+        before_dns = len(data.get("dns_queries", []))
+
+        if "network_connections" in data:
+            data["network_connections"] = self._dedup_events(
+                data["network_connections"], conn_keys
+            )
+        if "dns_queries" in data:
+            data["dns_queries"] = self._dedup_events(
+                data["dns_queries"], dns_keys
+            )
+
+        after_conns = len(data.get("network_connections", []))
+        after_dns = len(data.get("dns_queries", []))
+        removed = (before_conns - after_conns) + (before_dns - after_dns)
+        if removed > 0:
+            self.logger.info(
+                f"Event dedup: removed {removed} duplicates "
+                f"(connections: {before_conns}->{after_conns}, "
+                f"dns: {before_dns}->{after_dns})"
             )
 
         return data
