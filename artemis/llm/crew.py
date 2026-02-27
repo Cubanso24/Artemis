@@ -139,7 +139,9 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
     def run_detector(agent_name: str) -> str:
         """Run a threshold-based hunting detector and return its findings.
         Valid agent names: c2_hunter, reconnaissance_hunter,
-        lateral_movement_hunter, collection_exfiltration_hunter,
+        initial_access_hunter, execution_persistence_hunter,
+        credential_access_hunter, lateral_movement_hunter,
+        collection_exfiltration_hunter, defense_evasion_hunter,
         impact_hunter."""
         det = detectors.get(agent_name)
         if det is None:
@@ -235,6 +237,27 @@ def _build_agents(llm, tools: list) -> Dict[str, Any]:
                 "service enumeration, DNS recon, and network sweeps."
             ),
         },
+        "initial_access_hunter": {
+            "role": "Initial Access Hunter",
+            "goal": (
+                "Detect initial access attempts including phishing indicators, "
+                "exploit delivery, drive-by downloads, and supply chain compromise."
+            ),
+        },
+        "execution_persistence_hunter": {
+            "role": "Execution & Persistence Hunter",
+            "goal": (
+                "Detect malicious execution and persistence mechanisms including "
+                "PowerShell abuse, LOLBins, scheduled tasks, and registry modifications."
+            ),
+        },
+        "credential_access_hunter": {
+            "role": "Credential Access Hunter",
+            "goal": (
+                "Detect credential theft and abuse including credential dumping, "
+                "Kerberoasting, pass-the-hash, brute force, and password spraying."
+            ),
+        },
         "lateral_movement_hunter": {
             "role": "Lateral Movement Hunter",
             "goal": (
@@ -247,6 +270,13 @@ def _build_agents(llm, tools: list) -> Dict[str, Any]:
             "goal": (
                 "Detect data collection and exfiltration including staging, "
                 "cloud uploads, DNS exfiltration, and covert channels."
+            ),
+        },
+        "defense_evasion_hunter": {
+            "role": "Defense Evasion Hunter",
+            "goal": (
+                "Detect defense evasion techniques including log deletion, "
+                "security tool tampering, process injection, and timestomping."
             ),
         },
         "impact_hunter": {
@@ -309,8 +339,10 @@ def _build_tasks(
     # 2. Specialist investigations (one task per hunter)
     specialist_tasks = []
     for name in ("c2_hunter", "reconnaissance_hunter",
-                 "lateral_movement_hunter",
-                 "collection_exfiltration_hunter", "impact_hunter"):
+                 "initial_access_hunter", "execution_persistence_hunter",
+                 "credential_access_hunter", "lateral_movement_hunter",
+                 "collection_exfiltration_hunter", "defense_evasion_hunter",
+                 "impact_hunter"):
         agent = agents.get(name)
         if agent is None:
             continue
