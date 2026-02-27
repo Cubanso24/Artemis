@@ -4,11 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=administrator
 WorkingDirectory=/home/user/Artemis
 Environment="SPLUNK_HOST=10.25.11.86"
-Environment="SPLUNK_TOKEN=your-token-here"
-# Server binds to 0.0.0.0:8000 (accessible from LAN)
+# Splunk token is read from .token file in the project root
 ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
 Restart=always
 RestartSec=10
