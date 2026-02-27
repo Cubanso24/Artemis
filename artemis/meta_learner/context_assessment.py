@@ -254,26 +254,40 @@ class ContextAssessor:
             hypotheses.append(ThreatHypothesis(
                 hypothesis_id=f"hyp_{ts}_baseline_recon",
                 hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
-                description="Continuous monitoring: scan for reconnaissance and scanning activity",
+                description="Continuous monitoring: scan for reconnaissance and initial access indicators",
                 initial_indicators=["continuous_monitoring"],
-                suggested_agents=["reconnaissance_hunter"],
+                suggested_agents=["reconnaissance_hunter", "initial_access_hunter"],
                 priority=0.6,
                 confidence=0.4,
-                kill_chain_stages=["TA0043"],
+                kill_chain_stages=["TA0043", "TA0001"],
             ))
             hypotheses.append(ThreatHypothesis(
                 hypothesis_id=f"hyp_{ts}_baseline_lateral",
                 hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
-                description="Continuous monitoring: scan for lateral movement and privilege escalation",
+                description="Continuous monitoring: scan for lateral movement, credential abuse, and data exfiltration",
                 initial_indicators=["continuous_monitoring"],
                 suggested_agents=[
                     "lateral_movement_hunter",
+                    "credential_access_hunter",
                     "collection_exfiltration_hunter",
                     "impact_hunter",
                 ],
                 priority=0.5,
                 confidence=0.4,
-                kill_chain_stages=["TA0008", "TA0009", "TA0010", "TA0040"],
+                kill_chain_stages=["TA0006", "TA0008", "TA0009", "TA0010", "TA0040"],
+            ))
+            hypotheses.append(ThreatHypothesis(
+                hypothesis_id=f"hyp_{ts}_baseline_exec",
+                hypothesis_type=HypothesisType.KILL_CHAIN_STAGE,
+                description="Continuous monitoring: scan for execution, persistence, and defense evasion",
+                initial_indicators=["continuous_monitoring"],
+                suggested_agents=[
+                    "execution_persistence_hunter",
+                    "defense_evasion_hunter",
+                ],
+                priority=0.5,
+                confidence=0.4,
+                kill_chain_stages=["TA0002", "TA0003", "TA0005"],
             ))
 
         self.logger.info(f"Generated {len(hypotheses)} threat hypotheses")

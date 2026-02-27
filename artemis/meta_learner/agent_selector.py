@@ -22,7 +22,7 @@ class AgentSelector:
     Implements the priority scoring system and kill chain progression logic.
     """
 
-    def __init__(self):
+    def __init__(self, baseline_agents: Optional[List[str]] = None):
         self.logger = ArtemisLogger.setup_logger("artemis.meta_learner.selector")
 
         # Priority scoring weights
@@ -32,6 +32,13 @@ class AgentSelector:
             "temporal_urgency": 0.2,
             "agent_confidence_history": 0.1
         }
+
+        # Baseline agents that always receive a minimum priority boost
+        self.baseline_agents = baseline_agents or [
+            "c2_hunter",
+            "reconnaissance_hunter",
+            "defense_evasion_hunter",
+        ]
 
         # Agent performance history (for adaptive weighting)
         self.agent_history: Dict[str, Dict[str, float]] = {}
@@ -125,8 +132,7 @@ class AgentSelector:
             agent_scores[agent] = score
 
         # Always include baseline monitoring agents
-        baseline_agents = ["c2_hunter", "reconnaissance_hunter"]
-        for agent in baseline_agents:
+        for agent in self.baseline_agents:
             if agent in available_agents:
                 agent_scores[agent] = max(agent_scores.get(agent, 0), 0.5)
 

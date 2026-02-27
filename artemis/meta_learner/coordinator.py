@@ -82,9 +82,12 @@ class MetaLearnerCoordinator:
         self.enable_parallel_execution = enable_parallel_execution
         self.max_workers = max_workers
 
+        # Baseline agents (always running in adaptive mode)
+        self.baseline_agents = ["c2_hunter", "reconnaissance_hunter", "defense_evasion_hunter"]
+
         # Initialize components
         self.context_assessor = ContextAssessor()
-        self.agent_selector = AgentSelector()
+        self.agent_selector = AgentSelector(baseline_agents=self.baseline_agents)
         self.confidence_aggregator = ConfidenceAggregator()
         self.adaptive_learner = AdaptiveLearner()
 
@@ -100,9 +103,6 @@ class MetaLearnerCoordinator:
 
         # Initialize all hunting agents
         self.agents: Dict[str, BaseAgent] = self._initialize_agents()
-
-        # Baseline agents (always running)
-        self.baseline_agents = ["c2_hunter", "reconnaissance_hunter", "defense_evasion_hunter"]
 
         # Case generator (initialized lazily when db_manager is available)
         self.case_generator: Optional[CaseGenerator] = None
