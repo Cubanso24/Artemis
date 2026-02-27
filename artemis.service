@@ -7,7 +7,8 @@ Type=simple
 User=administrator
 WorkingDirectory=/home/user/Artemis
 Environment="SPLUNK_HOST=10.25.11.86"
-# Splunk token is read from .token file in the project root
+# Load SPLUNK_TOKEN (and any other secrets) from .env file
+EnvironmentFile=/home/user/Artemis/.env
 ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
 Restart=always
 RestartSec=10
