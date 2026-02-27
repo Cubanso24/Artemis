@@ -13,9 +13,13 @@ import concurrent.futures
 from artemis.agents.base_agent import BaseAgent, AgentPriority
 from artemis.agents import (
     ReconnaissanceHunter,
+    InitialAccessHunter,
+    ExecutionPersistenceHunter,
+    CredentialAccessHunter,
     LateralMovementHunter,
     CollectionExfiltrationHunter,
     C2Hunter,
+    DefenseEvasionHunter,
     ImpactHunter
 )
 from artemis.models.network_state import NetworkState, TimeFeatures
@@ -98,7 +102,7 @@ class MetaLearnerCoordinator:
         self.agents: Dict[str, BaseAgent] = self._initialize_agents()
 
         # Baseline agents (always running)
-        self.baseline_agents = ["c2_hunter", "reconnaissance_hunter"]
+        self.baseline_agents = ["c2_hunter", "reconnaissance_hunter", "defense_evasion_hunter"]
 
         # Case generator (initialized lazily when db_manager is available)
         self.case_generator: Optional[CaseGenerator] = None
@@ -157,9 +161,13 @@ class MetaLearnerCoordinator:
         # Create one specialist AgentLLM per hunting agent
         agent_names = [
             "reconnaissance_hunter",
+            "initial_access_hunter",
+            "execution_persistence_hunter",
+            "credential_access_hunter",
             "lateral_movement_hunter",
             "collection_exfiltration_hunter",
             "c2_hunter",
+            "defense_evasion_hunter",
             "impact_hunter",
         ]
         for name in agent_names:
@@ -169,9 +177,13 @@ class MetaLearnerCoordinator:
         """Initialize all specialized hunting agents."""
         agents = {
             "reconnaissance_hunter": ReconnaissanceHunter(),
+            "initial_access_hunter": InitialAccessHunter(),
+            "execution_persistence_hunter": ExecutionPersistenceHunter(),
+            "credential_access_hunter": CredentialAccessHunter(),
             "lateral_movement_hunter": LateralMovementHunter(),
             "collection_exfiltration_hunter": CollectionExfiltrationHunter(),
             "c2_hunter": C2Hunter(),
+            "defense_evasion_hunter": DefenseEvasionHunter(),
             "impact_hunter": ImpactHunter()
         }
 

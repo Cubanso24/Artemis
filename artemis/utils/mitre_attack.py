@@ -37,6 +37,18 @@ class MITREAttack:
             KillChainStage.RECONNAISSANCE,
             KillChainStage.DISCOVERY
         ],
+        "initial_access_hunter": [
+            KillChainStage.INITIAL_ACCESS,
+            KillChainStage.RESOURCE_DEVELOPMENT
+        ],
+        "execution_persistence_hunter": [
+            KillChainStage.EXECUTION,
+            KillChainStage.PERSISTENCE,
+            KillChainStage.PRIVILEGE_ESCALATION
+        ],
+        "credential_access_hunter": [
+            KillChainStage.CREDENTIAL_ACCESS
+        ],
         "lateral_movement_hunter": [
             KillChainStage.LATERAL_MOVEMENT
         ],
@@ -46,6 +58,9 @@ class MITREAttack:
         ],
         "c2_hunter": [
             KillChainStage.COMMAND_AND_CONTROL
+        ],
+        "defense_evasion_hunter": [
+            KillChainStage.DEFENSE_EVASION
         ],
         "impact_hunter": [
             KillChainStage.IMPACT
