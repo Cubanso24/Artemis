@@ -484,6 +484,14 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                 if bf_start:
                     _bf_windows_mapped = [0]
                     _bf_total_events = [0]
+                    _bf_cycle = [cycle]           # mutable current cycle
+                    _bf_cycle_events = [0]        # events in current batch
+                    _bf_batches_queued = [0]      # analysis batches queued
+
+                    # Queue analysis every 50k events so agents hunt
+                    # during long historical backfills instead of waiting
+                    # for the entire backfill to finish.
+                    _BF_ANALYSIS_THRESHOLD = 50_000
 
                     def _map_window(window_data):
                         conns = window_data.get('network_connections', [])
@@ -496,15 +504,18 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                                 ntlm_logs=ntlm_l,
                             )
                             _bf_windows_mapped[0] += 1
-                            _bf_total_events[0] += len(conns) + len(dns_q) + len(ntlm_l)
+                            window_events = len(conns) + len(dns_q) + len(ntlm_l)
+                            _bf_total_events[0] += window_events
+
+                            cur = _bf_cycle[0]
 
                             # Store events in persistent store
                             if conns:
-                                db.store_events(cycle, 'network_connections', conns)
+                                db.store_events(cur, 'network_connections', conns)
                             if dns_q:
-                                db.store_events(cycle, 'dns_queries', dns_q)
+                                db.store_events(cur, 'dns_queries', dns_q)
                             if ntlm_l:
-                                db.store_events(cycle, 'ntlm_logs', ntlm_l)
+                                db.store_events(cur, 'ntlm_logs', ntlm_l)
 
                             # Store other data types
                             for key in ('authentication_logs', 'process_logs',
@@ -512,16 +523,45 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                                         'scheduled_tasks', 'registry_changes'):
                                 events = window_data.get(key, [])
                                 if events:
-                                    db.store_events(cycle, key, events)
+                                    db.store_events(cur, key, events)
+                                    window_events += len(events)
 
-                            if _bf_windows_mapped[0] % 3 == 0:
+                            _bf_cycle_events[0] += window_events
+
+                            # When 50k events accumulate, queue for agent
+                            # analysis so hunting starts while backfill
+                            # continues.
+                            if _bf_cycle_events[0] >= _BF_ANALYSIS_THRESHOLD:
+                                nm.save_map()
+                                evt_counts = db.get_event_counts_for_cycle(cur)
+                                db.queue_analysis(cur, evt_counts)
+                                _bf_batches_queued[0] += 1
+                                log.info(
+                                    f'Cycle {cur}: queued '
+                                    f'{_bf_cycle_events[0]:,} events for '
+                                    f'analysis (batch {_bf_batches_queued[0]})')
+                                send('running',
+                                     f'Cycle {cur}: queued '
+                                     f'{_bf_cycle_events[0]:,} events for '
+                                     f'agent analysis...',
+                                     30, {'cycle': cur, 'pipeline': 'data',
+                                          'stage_detail': 'backfill_analysis_queued',
+                                          'total_nodes': len(nm.nodes),
+                                          'batch_events': _bf_cycle_events[0],
+                                          'total_events': _bf_total_events[0],
+                                          'batches_queued': _bf_batches_queued[0]})
+                                # Start a new cycle for the next batch
+                                _bf_cycle[0] += 1
+                                _bf_cycle_events[0] = 0
+
+                            elif _bf_windows_mapped[0] % 3 == 0:
                                 nm.save_map()
                                 send('running',
-                                     f'Cycle {cycle}: backfill — mapped '
+                                     f'Cycle {cur}: backfill — mapped '
                                      f'{_bf_windows_mapped[0]} windows '
                                      f'({_bf_total_events[0]:,} events, '
                                      f'{len(nm.nodes)} nodes)...',
-                                     30, {'cycle': cycle, 'pipeline': 'data',
+                                     30, {'cycle': cur, 'pipeline': 'data',
                                           'stage_detail': 'backfill_mapping',
                                           'total_nodes': len(nm.nodes),
                                           'total_events': _bf_total_events[0]})
@@ -536,10 +576,21 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                     if _bf_windows_mapped[0] > 0:
                         nm.save_map()
 
-                    conn_count = hunting_data.count('network_connections') if hasattr(hunting_data, 'count') else 0
-                    dns_count = hunting_data.count('dns_queries') if hasattr(hunting_data, 'count') else 0
-                    ntlm_count = hunting_data.count('ntlm_logs') if hasattr(hunting_data, 'count') else 0
-                    has_data = (conn_count + dns_count + ntlm_count) > 0
+                    # Update cycle to the latest used during backfill
+                    cycle = _bf_cycle[0]
+
+                    # Queue any remaining events from the last partial batch
+                    has_data = _bf_cycle_events[0] > 0
+                    conn_count = dns_count = ntlm_count = 0  # already stored
+
+                    if _bf_batches_queued[0] > 0:
+                        remaining = (f', {_bf_cycle_events[0]:,} remaining'
+                                     if has_data else '')
+                        log.info(
+                            f'Backfill complete: {_bf_total_events[0]:,} '
+                            f'total events across '
+                            f'{_bf_batches_queued[0]} batches queued'
+                            f'{remaining}')
 
                     if hasattr(hunting_data, 'close'):
                         try:
