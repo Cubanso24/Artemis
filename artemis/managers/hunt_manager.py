@@ -811,10 +811,12 @@ def _analysis_pipeline_process(job_id, db_path):
 
             if not pending:
                 # Nothing to analyze — sleep briefly and check again
+                _idle_findings = db.get_findings_summary().get('total', 0)
                 send('running',
                      f'Waiting for data (analyzed {analyses_completed} cycles)...',
                      50, {'pipeline': 'analysis',
                           'analyses_completed': analyses_completed,
+                          'findings': _idle_findings,
                           'n_agents': len(coordinator.agents),
                           'llm_backend': getattr(coordinator.llm_client, 'backend', 'none'),
                           'status': 'idle'})
@@ -933,13 +935,17 @@ def _analysis_pipeline_process(job_id, db_path):
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1
 
+                # Use the cumulative DB total so the pipeline card stays
+                # in sync with the findings tab (not just this cycle's count).
+                total_findings = db.get_findings_summary().get('total', findings_count)
+
                 msg = (f'Cycle {analysis_cycle} analyzed: '
                        f'{findings_count} findings from {total_events:,} events')
                 log.info(msg)
                 send('running', msg, 50,
                      {'pipeline': 'analysis',
                       'cycle': analysis_cycle,
-                      'findings': findings_count,
+                      'findings': total_findings,
                       'n_agents': _n_agents,
                       'llm_backend': _backend,
                       'analyses_completed': analyses_completed})
