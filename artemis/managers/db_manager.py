@@ -1326,20 +1326,37 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def cleanup_old_events(self, max_age_hours: int = 72) -> int:
-        """Delete events older than max_age_hours. Returns count deleted."""
-        conn = self._connect()
-        try:
-            from datetime import timedelta
-            cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
-            cursor = conn.execute(
-                "DELETE FROM hunt_events WHERE collected_at < ?",
-                (cutoff,),
-            )
-            conn.commit()
-            return cursor.rowcount
-        finally:
-            conn.close()
+    def cleanup_old_events(self, max_age_hours: int = 72,
+                           batch_size: int = 50_000) -> int:
+        """Delete events older than max_age_hours in batches.
+
+        Deletes in chunks of *batch_size* rows to avoid generating a
+        massive WAL file that could fill the disk.  Returns the total
+        number of rows deleted across all batches.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(hours=max_age_hours)).isoformat()
+        total_deleted = 0
+
+        while True:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM hunt_events WHERE rowid IN "
+                    "(SELECT rowid FROM hunt_events "
+                    " WHERE collected_at < ? LIMIT ?)",
+                    (cutoff, batch_size),
+                )
+                conn.commit()
+                deleted = cursor.rowcount
+            finally:
+                conn.close()
+
+            if deleted == 0:
+                break
+            total_deleted += deleted
+
+        return total_deleted
 
     # ------------------------------------------------------------------
     # Analysis queue (decoupled pipeline)

@@ -1,0 +1,5 @@
+{
+  "backend": "ollama",
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "glm-4.7-flash:bf16"
+}

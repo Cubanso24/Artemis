@@ -699,11 +699,14 @@ def _analysis_pipeline_process(job_id, db_path):
     if analysis is slow, and will catch up by processing cycles in order.
     """
     import os, logging, traceback, json, time, signal as _signal
+    import concurrent.futures as _cf
     from datetime import datetime
     from artemis.managers.db_manager import DatabaseManager
     from artemis.plugins.network_mapper import NetworkMapperPlugin
     from artemis.meta_learner.coordinator import MetaLearnerCoordinator
     from artemis.models.network_state import NetworkState
+
+    _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '600'))  # 10 min
 
     logging.basicConfig(
         level=logging.INFO,
@@ -865,13 +868,24 @@ def _analysis_pipeline_process(job_id, db_path):
                         context.network_map.analyst_annotations = ann_by_ip
                         context.recent_agent_findings['analyst_annotations'] = ann_by_ip
 
-                # Run analysis
-                if _crew_orchestrator:
-                    assessment = _crew_orchestrator.hunt(
+                # Run analysis (with timeout to prevent indefinite hangs)
+                def _run_hunt():
+                    if _crew_orchestrator:
+                        return _crew_orchestrator.hunt(
+                            data=agent_data, network_state=context)
+                    return coordinator.hunt(
                         data=agent_data, network_state=context)
-                else:
-                    assessment = coordinator.hunt(
-                        data=agent_data, network_state=context)
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                    _fut = _pool.submit(_run_hunt)
+                    try:
+                        assessment = _fut.result(timeout=_HUNT_TIMEOUT_S)
+                    except _cf.TimeoutError:
+                        log.error(
+                            f'Cycle {analysis_cycle}: hunt timed out '
+                            f'after {_HUNT_TIMEOUT_S}s — skipping')
+                        raise TimeoutError(
+                            f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
 
                 # Save findings
                 for ao in assessment.get('agent_outputs', []):
