@@ -1359,27 +1359,45 @@ class DatabaseManager:
         return total_deleted
 
     def full_reset(self) -> dict:
-        """Wipe all hunt events, analysis queue, findings, and syntheses.
+        """Wipe ALL data tables so the next pipeline run starts from zero.
+
+        Preserves only user-created organisational structure:
+        lan_groups, lan_group_members, map_layout, map_annotations.
 
         Called by the reset endpoint so the user gets a truly clean slate
         without having to manually touch the database.
         """
-        conn = self._connect()
-        try:
-            events = conn.execute(
-                "SELECT COUNT(*) FROM hunt_events").fetchone()[0]
-            findings = conn.execute(
-                "SELECT COUNT(*) FROM agent_findings").fetchone()[0]
-            syntheses = conn.execute(
-                "SELECT COUNT(*) FROM llm_syntheses").fetchone()[0]
-            queued = conn.execute(
-                "SELECT COUNT(*) FROM analysis_queue").fetchone()[0]
+        # Tables to nuke — order doesn't matter since we have no
+        # foreign-key enforcement at the SQLite level.
+        tables_to_clear = [
+            'hunt_events',
+            'analysis_queue',
+            'agent_findings',
+            'llm_syntheses',
+            'hunt_progress',
+            'plugin_results',
+            'enrichment_results',
+            'enrichment_queue',
+            'device_flags',
+            'cases',
+            'case_findings',
+            'technique_precision',
+            'scheduler_state',
+        ]
 
-            conn.execute("DELETE FROM hunt_events")
-            conn.execute("DELETE FROM analysis_queue")
-            conn.execute("DELETE FROM agent_findings")
-            conn.execute("DELETE FROM llm_syntheses")
-            conn.execute("DELETE FROM hunt_progress")
+        conn = self._connect()
+        counts = {}
+        try:
+            for table in tables_to_clear:
+                try:
+                    n = conn.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                    conn.execute(f"DELETE FROM {table}")
+                    counts[table] = n
+                except Exception:
+                    # Table might not exist yet in older DBs
+                    counts[table] = 0
             conn.commit()
         finally:
             conn.close()
@@ -1395,10 +1413,13 @@ class DatabaseManager:
             pass
 
         return {
-            'events_deleted': events,
-            'findings_deleted': findings,
-            'syntheses_deleted': syntheses,
-            'queue_deleted': queued,
+            'events_deleted': counts.get('hunt_events', 0),
+            'findings_deleted': counts.get('agent_findings', 0),
+            'syntheses_deleted': counts.get('llm_syntheses', 0),
+            'queue_deleted': counts.get('analysis_queue', 0),
+            'cases_deleted': counts.get('cases', 0),
+            'enrichment_deleted': counts.get('enrichment_results', 0),
+            'tables_cleared': [t for t, n in counts.items() if n > 0],
         }
 
     # ------------------------------------------------------------------
