@@ -418,6 +418,7 @@ class DataPipeline:
             "authentication_logs",
             "process_logs", "powershell_logs", "file_operations",
             "scheduled_tasks", "registry_changes",
+            "wazuh_alerts",
         ]
         completed_queries = {}
 
@@ -450,6 +451,9 @@ class DataPipeline:
                     ),
                     "registry_changes": executor.submit(
                         self.splunk.get_registry_changes, earliest, latest, target_hosts
+                    ),
+                    "wazuh_alerts": executor.submit(
+                        self.splunk.get_wazuh_alerts, earliest, latest, target_hosts
                     ),
                 }
 
@@ -635,6 +639,21 @@ class DataPipeline:
                 data["suricata_alerts"]
             )
 
+        # Add Wazuh EDR alerts as low-confidence initial signals.
+        # Wazuh is notoriously noisy — most alerts are false positives.
+        # We feed them as corroborating signals so the LLM layer can
+        # use them to strengthen (or ignore) findings from other agents.
+        if "wazuh_alerts" in data and data["wazuh_alerts"]:
+            wazuh_signals = self._convert_wazuh_alerts(data["wazuh_alerts"])
+            if "initial_signals" not in data:
+                data["initial_signals"] = []
+            data["initial_signals"].extend(wazuh_signals)
+            self.logger.info(
+                f"Added {len(wazuh_signals)} Wazuh EDR signals "
+                f"(low-confidence, for corroboration)"
+            )
+            del data["wazuh_alerts"]
+
         # Deduplicate merged event lists
         conn_keys = ["source_ip", "destination_ip", "destination_port", "timestamp"]
         dns_keys = ["source_ip", "domain", "timestamp"]
@@ -737,6 +756,56 @@ class DataPipeline:
                 "category": alert.get("category"),
                 "indicators": [alert.get("src_ip"), alert.get("dest_ip")]
             })
+
+        return signals
+
+    def _convert_wazuh_alerts(self, alerts: List[Dict]) -> List[Dict]:
+        """Convert Wazuh EDR alerts to low-confidence initial signals.
+
+        Wazuh is known for high false-positive rates.  We assign low base
+        confidence so the LLM layer treats these as corroborating evidence
+        rather than standalone detections.
+        """
+        signals = []
+
+        for alert in alerts:
+            indicators = list(filter(None, [
+                alert.get("source_ip"),
+                alert.get("dest_ip"),
+                alert.get("agent_hostname"),
+                alert.get("fim_path"),
+            ]))
+
+            # Build a descriptive label that includes the rule ID
+            rule_id = alert.get("rule_id", "?")
+            description = alert.get("description", "Wazuh alert")
+            label = f"[Wazuh rule {rule_id}] {description}"
+
+            # Include MITRE info if Wazuh provided it
+            mitre_ids = alert.get("mitre_ids", [])
+            mitre_tactics = alert.get("mitre_tactics", [])
+
+            signal = {
+                "type": "wazuh_edr_alert",
+                "confidence": alert.get("confidence", 0.25),
+                "description": label,
+                "category": alert.get("rule_groups", ""),
+                "indicators": indicators,
+                "source": "wazuh",
+                "rule_level": alert.get("rule_level", 0),
+            }
+
+            if mitre_ids:
+                signal["mitre_ids"] = mitre_ids
+            if mitre_tactics:
+                signal["mitre_tactics"] = mitre_tactics
+
+            # Tag FIM alerts specifically — useful for impact/exfil hunters
+            if alert.get("fim_path"):
+                signal["fim_event"] = alert.get("fim_event", "")
+                signal["category"] = "file_integrity_monitoring"
+
+            signals.append(signal)
 
         return signals
 

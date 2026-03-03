@@ -24,9 +24,20 @@ investigation.
 You have deep expertise in:
 - MITRE ATT&CK framework (all 14 tactics, hundreds of techniques)
 - Network-based threat detection (Zeek conn/dns/http/ssl logs)
+- Endpoint detection via Wazuh EDR (host-based alerts, FIM)
 - Attack kill chain progression and stage correlation
 - APT campaign patterns and threat actor TTPs
 - Lateral movement, C2, and exfiltration tradecraft
+
+IMPORTANT — Wazuh EDR signal handling:
+You may receive Wazuh EDR alerts as initial signals. Wazuh has a very high \
+false-positive rate — the majority of its alerts flag benign activity. \
+NEVER treat a standalone Wazuh alert as strong evidence of compromise. \
+Instead, use Wazuh alerts as corroborating signals: if a Wazuh alert on a \
+host aligns with suspicious network behavior detected by another agent \
+(e.g., beaconing from the same IP, lateral movement to the same host), \
+that correlation significantly increases confidence. A Wazuh alert alone \
+should not drive hypothesis confidence above 0.4.
 
 Available hunting agents you can direct:
 - reconnaissance_hunter: Port scanning, network sweeps, DNS recon, service enumeration
@@ -89,7 +100,11 @@ threat assessment. Your job is to:
 1. Identify correlated findings across agents (e.g., recon from IP X followed \
    by lateral movement from the same source)
 2. Assess kill chain progression — are we seeing multiple stages of an attack?
-3. Filter likely false positives using your domain expertise
+3. Filter likely false positives using your domain expertise. Pay special \
+   attention to Wazuh EDR alerts — they have a very high false-positive rate. \
+   A Wazuh alert that corroborates a network-based finding is valuable; a \
+   standalone Wazuh alert is almost certainly noise and should be listed \
+   under likely_false_positives unless corroborated.
 4. Produce a clear, actionable narrative for SOC analysts
 5. Recommend specific response actions prioritized by urgency
 
@@ -449,13 +464,51 @@ def format_hunting_data_summary(data: Dict[str, Any]) -> str:
 
     signals = data.get("initial_signals", [])
     if signals:
-        lines.append(f"\nInitial Signals: {len(signals)}")
-        for s in signals[:5]:
+        # Separate Wazuh EDR alerts from other signals for distinct summaries
+        wazuh_signals = [s for s in signals if s.get("source") == "wazuh"
+                         or s.get("type") == "wazuh_edr_alert"]
+        other_signals = [s for s in signals if s not in wazuh_signals]
+
+        if other_signals:
+            lines.append(f"\nInitial Signals: {len(other_signals)}")
+            for s in other_signals[:5]:
+                lines.append(
+                    f"  - [{s.get('type', 'unknown')}] "
+                    f"{s.get('description', '')} "
+                    f"(conf: {s.get('confidence', 0):.2f})"
+                )
+
+        if wazuh_signals:
             lines.append(
-                f"  - [{s.get('type', 'unknown')}] "
-                f"{s.get('description', '')} "
-                f"(conf: {s.get('confidence', 0):.2f})"
+                f"\nWazuh EDR Alerts: {len(wazuh_signals)} total "
+                f"(CAUTION: Wazuh has a high false-positive rate — "
+                f"treat as corroborating evidence, not standalone detections)"
             )
+            # Summarize by rule level distribution
+            level_buckets: Dict[str, int] = {"critical(12+)": 0,
+                                             "high(8-11)": 0,
+                                             "medium(5-7)": 0}
+            for w in wazuh_signals:
+                lvl = w.get("rule_level", 0)
+                if lvl >= 12:
+                    level_buckets["critical(12+)"] += 1
+                elif lvl >= 8:
+                    level_buckets["high(8-11)"] += 1
+                else:
+                    level_buckets["medium(5-7)"] += 1
+            lines.append(f"  Level distribution: {level_buckets}")
+
+            # Show top Wazuh alerts by confidence (limit to 5)
+            top_wazuh = sorted(wazuh_signals,
+                               key=lambda s: s.get("confidence", 0),
+                               reverse=True)[:5]
+            for s in top_wazuh:
+                mitre = ", ".join(s.get("mitre_ids", [])) or "no MITRE"
+                lines.append(
+                    f"  - {s.get('description', '')} "
+                    f"(level={s.get('rule_level', '?')}, "
+                    f"conf={s.get('confidence', 0):.2f}, {mitre})"
+                )
 
     return "\n".join(lines)
 
@@ -504,8 +557,14 @@ def format_signals(signals: List[Dict[str, Any]]) -> str:
     if not signals:
         return "No initial signals or alerts."
 
+    # Partition into high-trust signals and noisy Wazuh EDR alerts
+    wazuh = [s for s in signals if s.get("source") == "wazuh"
+             or s.get("type") == "wazuh_edr_alert"]
+    other = [s for s in signals if s not in wazuh]
+
     lines = ["=== INITIAL SIGNALS ==="]
-    for i, s in enumerate(signals, 1):
+
+    for i, s in enumerate(other, 1):
         lines.append(
             f"[{i}] Type: {s.get('type', 'unknown')} | "
             f"Confidence: {s.get('confidence', 0):.2f} | "
@@ -515,6 +574,32 @@ def format_signals(signals: List[Dict[str, Any]]) -> str:
             lines.append(f"    Source: {s['source_ip']}")
         if s.get("destination_ip"):
             lines.append(f"    Destination: {s['destination_ip']}")
+
+    if wazuh:
+        lines.append("")
+        lines.append(
+            f"=== WAZUH EDR ALERTS ({len(wazuh)} total) ===\n"
+            f"NOTE: Wazuh EDR has a very high false-positive rate. "
+            f"The majority of these alerts are benign. Use them ONLY as "
+            f"corroborating evidence when other agents or signals point "
+            f"to the same host/IP/technique. Do NOT treat a standalone "
+            f"Wazuh alert as a true positive."
+        )
+        # Show highest-level Wazuh alerts (up to 10)
+        top = sorted(wazuh, key=lambda s: s.get("rule_level", 0),
+                     reverse=True)[:10]
+        for j, s in enumerate(top, 1):
+            mitre = ", ".join(s.get("mitre_ids", [])) if s.get("mitre_ids") else ""
+            mitre_str = f" | MITRE: {mitre}" if mitre else ""
+            lines.append(
+                f"[W{j}] Level {s.get('rule_level', '?')} | "
+                f"Conf: {s.get('confidence', 0):.2f} | "
+                f"{s.get('description', 'N/A')}{mitre_str}"
+            )
+            indicators = s.get("indicators", [])
+            if indicators:
+                lines.append(f"     Indicators: {', '.join(str(i) for i in indicators[:4])}")
+
     return "\n".join(lines)
 
 

@@ -653,6 +653,119 @@ class SplunkConnector:
 
         return reg_changes
 
+    def get_wazuh_alerts(self, time_range: str = "-1h", latest_time: str = "now",
+                         target_hosts: Optional[List[str]] = None,
+                         min_level: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get Wazuh EDR alerts from Splunk.
+
+        Wazuh alerts are noisy — most are benign.  We pull level >= min_level
+        to filter out the lowest-severity informational rules, and assign a
+        deliberately low base confidence so the LLM layer treats them as
+        corroborating signals rather than standalone detections.
+
+        Args:
+            time_range: Earliest time (e.g. "-1h", or ISO timestamp)
+            latest_time: Latest time (default "now")
+            target_hosts: Optional host filter
+            min_level: Minimum Wazuh rule level to return (default 5,
+                       skips levels 0-4 which are almost always noise)
+
+        Returns:
+            Wazuh alerts in Artemis format
+        """
+        host_clause = self._build_host_filter(target_hosts)
+        query = f'''
+        search index=wazuh OR index=wazuh-alerts*{host_clause}
+        | spath
+        | where isnotnull('rule.id')
+        | eval rule_level=tonumber('rule.level')
+        | where rule_level >= {min_level}
+        | table _time agent.name agent.ip rule.id rule.level rule.description
+                rule.groups rule.mitre.id rule.mitre.tactic
+                data.srcip data.dstip data.srcuser data.dstuser
+                syscheck.path syscheck.event
+        | rename "agent.name" as agent_hostname, "agent.ip" as agent_ip,
+                 "rule.id" as rule_id, "rule.level" as rule_level,
+                 "rule.description" as description,
+                 "rule.groups" as rule_groups,
+                 "rule.mitre.id" as mitre_id, "rule.mitre.tactic" as mitre_tactic,
+                 "data.srcip" as source_ip, "data.dstip" as dest_ip,
+                 "data.srcuser" as src_user, "data.dstuser" as dst_user,
+                 "syscheck.path" as fim_path, "syscheck.event" as fim_event
+        '''
+
+        events = self.query(query, earliest_time=time_range, latest_time=latest_time)
+
+        alerts = []
+        for event in events:
+            def get_first(value, default=""):
+                if isinstance(value, list) and len(value) > 0:
+                    return value[0]
+                return value if value else default
+
+            rule_level = int(get_first(event.get("rule_level"), 0))
+
+            # Map Wazuh rule levels to base confidence.
+            # Intentionally low — Wazuh fires on a lot of benign activity.
+            #   5-7   → 0.20  (low — informational/policy)
+            #   8-10  → 0.30  (moderate-low — worth noting)
+            #   11-13 → 0.40  (moderate — merits investigation)
+            #   14-15 → 0.50  (elevated — but still needs corroboration)
+            if rule_level >= 14:
+                base_confidence = 0.50
+            elif rule_level >= 11:
+                base_confidence = 0.40
+            elif rule_level >= 8:
+                base_confidence = 0.30
+            else:
+                base_confidence = 0.20
+
+            # Parse MITRE fields (may be multi-valued)
+            mitre_ids = get_first(event.get("mitre_id"), "")
+            if isinstance(mitre_ids, str):
+                mitre_ids = [m.strip() for m in mitre_ids.split(",") if m.strip()]
+            mitre_tactics = get_first(event.get("mitre_tactic"), "")
+            if isinstance(mitre_tactics, str):
+                mitre_tactics = [t.strip() for t in mitre_tactics.split(",") if t.strip()]
+
+            indicators = []
+            src_ip = get_first(event.get("source_ip"))
+            dst_ip = get_first(event.get("dest_ip"))
+            if src_ip:
+                indicators.append(src_ip)
+            if dst_ip:
+                indicators.append(dst_ip)
+
+            fim_path = get_first(event.get("fim_path"))
+            if fim_path:
+                indicators.append(fim_path)
+
+            alerts.append({
+                "source": "wazuh",
+                "rule_id": get_first(event.get("rule_id")),
+                "rule_level": rule_level,
+                "description": get_first(event.get("description")),
+                "rule_groups": get_first(event.get("rule_groups"), ""),
+                "agent_hostname": get_first(event.get("agent_hostname")),
+                "agent_ip": get_first(event.get("agent_ip")),
+                "source_ip": src_ip,
+                "dest_ip": dst_ip,
+                "src_user": get_first(event.get("src_user")),
+                "dst_user": get_first(event.get("dst_user")),
+                "fim_path": fim_path,
+                "fim_event": get_first(event.get("fim_event")),
+                "mitre_ids": mitre_ids,
+                "mitre_tactics": mitre_tactics,
+                "confidence": base_confidence,
+                "timestamp": parse_splunk_timestamp(get_first(event.get("_time")))
+            })
+
+        self.logger.info(
+            f"Retrieved {len(alerts)} Wazuh alerts (level >= {min_level})"
+        )
+        return alerts
+
     def get_all_hunting_data(self, time_range: str = "-1h") -> Dict[str, List]:
         """
         Get hunting data from Zeek network telemetry.
