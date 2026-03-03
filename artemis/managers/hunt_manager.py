@@ -427,6 +427,17 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
+        # When starting a backfill, force a clean map — don't carry over
+        # stale nodes from a previous run's map file.
+        if backfill_from:
+            nm.nodes.clear()
+            nm.sensors.clear()
+            nm.mac_history.clear()
+            nm._dirty_nodes.clear()
+            nm._stats_cache = None
+            nm.save_map()
+            log.info('Backfill requested — cleared stale map data')
+
         # Get the latest cycle number from DB to continue sequentially
         cycle = db.get_latest_event_cycle()
         time_range = f'-{lookback_minutes}m'

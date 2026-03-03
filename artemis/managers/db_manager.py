@@ -1358,6 +1358,49 @@ class DatabaseManager:
 
         return total_deleted
 
+    def full_reset(self) -> dict:
+        """Wipe all hunt events, analysis queue, findings, and syntheses.
+
+        Called by the reset endpoint so the user gets a truly clean slate
+        without having to manually touch the database.
+        """
+        conn = self._connect()
+        try:
+            events = conn.execute(
+                "SELECT COUNT(*) FROM hunt_events").fetchone()[0]
+            findings = conn.execute(
+                "SELECT COUNT(*) FROM agent_findings").fetchone()[0]
+            syntheses = conn.execute(
+                "SELECT COUNT(*) FROM llm_syntheses").fetchone()[0]
+            queued = conn.execute(
+                "SELECT COUNT(*) FROM analysis_queue").fetchone()[0]
+
+            conn.execute("DELETE FROM hunt_events")
+            conn.execute("DELETE FROM analysis_queue")
+            conn.execute("DELETE FROM agent_findings")
+            conn.execute("DELETE FROM llm_syntheses")
+            conn.execute("DELETE FROM hunt_progress")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Reclaim disk space
+        try:
+            vconn = self._connect()
+            try:
+                vconn.execute("VACUUM")
+            finally:
+                vconn.close()
+        except Exception:
+            pass
+
+        return {
+            'events_deleted': events,
+            'findings_deleted': findings,
+            'syntheses_deleted': syntheses,
+            'queue_deleted': queued,
+        }
+
     # ------------------------------------------------------------------
     # Analysis queue (decoupled pipeline)
     # ------------------------------------------------------------------

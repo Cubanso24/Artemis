@@ -167,19 +167,50 @@ async def delete_network_map(filename: str):
 
 @router.post("/api/network-maps/reset")
 async def reset_network_map():
-    """Clear the current network map (start fresh)."""
+    """Full reset: stop pipelines, clear in-memory map, map files on
+    disk, DB events, analysis queue, findings, and syntheses.  After
+    this, the next pipeline start truly starts from zero."""
+
+    # 0. Stop any running pipelines so they don't keep writing data
+    try:
+        await hunt_manager.stop_continuous()
+    except Exception as e:
+        logger.warning(f"Error stopping pipelines during reset: {e}")
+
     plugin = plugin_manager.get_plugin('network_mapper')
-    if not plugin:
-        return {'error': 'Network mapper plugin not enabled'}
 
-    plugin.nodes.clear()
-    plugin.sensors.clear()
-    plugin._dirty_nodes.clear()
-    plugin._stats_cache = None
-    plugin.save_map()
+    # 1. Clear in-memory state (API process)
+    if plugin:
+        plugin.nodes.clear()
+        plugin.sensors.clear()
+        plugin._dirty_nodes.clear()
+        plugin.mac_history.clear()
+        plugin._stats_cache = None
+        plugin.save_map()  # writes empty map to disk
 
-    logger.info("Network map reset to empty")
-    return {'status': 'reset', 'total_nodes': 0}
+        # Remove auxiliary files so nothing stale gets reloaded
+        map_dir = plugin.output_dir
+        for pattern in ('*_summary.txt', 'mac_history.json',
+                        'current_map.json.lock'):
+            for f in map_dir.glob(pattern):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+    # 2. Clear database tables
+    db_stats = db_manager.full_reset()
+
+    logger.info(
+        f"Full reset: map cleared, {db_stats['events_deleted']} events, "
+        f"{db_stats['findings_deleted']} findings, "
+        f"{db_stats['queue_deleted']} queued cycles deleted"
+    )
+    return {
+        'status': 'reset',
+        'total_nodes': 0,
+        **db_stats,
+    }
 
 
 # --- Network graph --------------------------------------------------------
