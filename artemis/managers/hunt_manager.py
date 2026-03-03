@@ -1678,6 +1678,88 @@ class HuntManager:
         return {'status': 'stopped', 'profile_id': profile_id}
 
     # ------------------------------------------------------------------
+    # Kill all child processes (server shutdown helper)
+    # ------------------------------------------------------------------
+
+    def kill_all_processes(self) -> dict:
+        """Kill every tracked child process (SIGTERM then SIGKILL).
+
+        Returns a summary dict with counts.  This is synchronous so it
+        can be called right before the server exits.
+        """
+        killed = []
+        already_dead = []
+
+        # Collect every PID we know about
+        all_pids: dict[int, str] = {}  # pid -> label
+
+        for hunt_id, pid in list(self._monitored_hunts.items()):
+            all_pids[pid] = hunt_id
+
+        for attr, label in [
+            ('_data_pipeline_pid', 'data_pipeline'),
+            ('_analysis_pipeline_pid', 'analysis_pipeline'),
+            ('_profile_pipeline_pid', 'profile_pipeline'),
+            ('_continuous_pid', 'continuous'),
+            ('_profile_pid', 'profile'),
+            ('_bg_profile_pid', 'bg_profile'),
+        ]:
+            pid = getattr(self, attr, None)
+            if pid and pid not in all_pids:
+                all_pids[pid] = label
+
+        # SIGTERM everything first
+        for pid in all_pids:
+            if _pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+        # Wait briefly for graceful shutdown
+        deadline = _time.monotonic() + 5.0
+        while _time.monotonic() < deadline:
+            if all(not _pid_alive(p) for p in all_pids):
+                break
+            _time.sleep(0.25)
+
+        # SIGKILL anything still alive, tally results
+        for pid, label in all_pids.items():
+            if _pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                killed.append({'pid': pid, 'label': label, 'method': 'SIGKILL'})
+            else:
+                killed.append({'pid': pid, 'label': label, 'method': 'SIGTERM'})
+
+        # Clear all internal tracking
+        self._monitored_hunts.clear()
+        self.active_hunts.clear()
+        self._continuous_id = None
+        self._continuous_pid = None
+        self._data_pipeline_id = None
+        self._data_pipeline_pid = None
+        self._analysis_pipeline_id = None
+        self._analysis_pipeline_pid = None
+        self._profile_pipeline_id = None
+        self._profile_pipeline_pid = None
+        self._profile_id = None
+        self._profile_pid = None
+        self._bg_profile_id = None
+        self._bg_profile_pid = None
+
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+
+        logger.info(f"kill_all_processes: terminated {len(killed)} child process(es)")
+        return {
+            'killed': len(killed),
+            'processes': killed,
+        }
+
+    # ------------------------------------------------------------------
     # Progress polling loop
     # ------------------------------------------------------------------
 
@@ -1891,3 +1973,25 @@ def _pid_alive(pid: int) -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
+
+
+def _kill_pid(pid: int, timeout: float = 5.0) -> bool:
+    """Send SIGTERM then SIGKILL to a PID. Returns True if process was killed."""
+    if not _pid_alive(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    # Wait for graceful shutdown
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        _time.sleep(0.2)
+    # Force kill
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return True

@@ -463,6 +463,100 @@
             background: var(--bg-tertiary);
         }
 
+        /* Server shutdown button */
+        .shutdown-btn {
+            position: fixed;
+            top: 12px;
+            right: 56px;
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 1000;
+            color: var(--text-secondary);
+            font-size: 14px;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .shutdown-btn:hover {
+            color: var(--danger);
+            border-color: var(--danger);
+        }
+
+        /* Shutdown confirmation modal */
+        .shutdown-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .shutdown-modal-overlay.active {
+            display: flex;
+        }
+
+        .shutdown-modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+
+        .shutdown-modal h3 {
+            color: var(--danger);
+            margin-bottom: 12px;
+            font-size: 18px;
+        }
+
+        .shutdown-modal p {
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .shutdown-modal .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .shutdown-modal .btn-confirm-shutdown {
+            background: var(--danger);
+            color: #fff;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .shutdown-modal .btn-confirm-shutdown:hover {
+            opacity: 0.85;
+        }
+
+        .shutdown-modal .btn-cancel-shutdown {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            padding: 8px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .shutdown-modal .btn-cancel-shutdown:hover {
+            background: var(--bg-primary);
+        }
+
         /* Network graph container */
         #network-graph {
             width: 100%;
@@ -930,6 +1024,25 @@
     </style>
 </head>
 <body>
+    <!-- Server Shutdown Button -->
+    <button class="shutdown-btn" onclick="showShutdownModal()" title="Shutdown server and kill all processes">
+        <i class="fa-solid fa-power-off"></i>
+    </button>
+
+    <!-- Shutdown Confirmation Modal -->
+    <div class="shutdown-modal-overlay" id="shutdown-modal" onclick="if(event.target === this) hideShutdownModal()">
+        <div class="shutdown-modal">
+            <h3><i class="fa-solid fa-power-off" style="margin-right:8px;"></i>Shutdown Artemis</h3>
+            <p>This will <strong>kill all running child processes</strong> (data pipelines, analysis pipelines, profilers) and <strong>shut down the server</strong>.<br><br>You will need to manually restart the server afterwards.</p>
+            <div class="modal-actions">
+                <button class="btn-cancel-shutdown" onclick="hideShutdownModal()">Cancel</button>
+                <button class="btn-confirm-shutdown" onclick="confirmShutdown()">
+                    <i class="fa-solid fa-skull-crossbones" style="margin-right:6px;"></i>Shutdown
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Theme Toggle -->
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode (T)">
         <i id="theme-icon" class="fa-solid fa-moon"></i>
@@ -1729,6 +1842,41 @@
             const savedTheme = localStorage.getItem('theme') || 'dark';
             document.documentElement.setAttribute('data-theme', savedTheme);
             updateThemeIcon(savedTheme);
+        }
+
+        // ── Server Shutdown ───────────────────────────────────────────
+        function showShutdownModal() {
+            document.getElementById('shutdown-modal').classList.add('active');
+        }
+
+        function hideShutdownModal() {
+            document.getElementById('shutdown-modal').classList.remove('active');
+        }
+
+        async function confirmShutdown() {
+            const btn = document.querySelector('.btn-confirm-shutdown');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i>Shutting down...';
+
+            try {
+                const resp = await fetch('/api/server/shutdown', { method: 'POST' });
+                const data = await resp.json();
+
+                // Replace modal content with result
+                const modal = document.querySelector('.shutdown-modal');
+                modal.innerHTML = `
+                    <h3 style="color:var(--success);"><i class="fa-solid fa-check-circle" style="margin-right:8px;"></i>Server Shutting Down</h3>
+                    <p>Killed <strong>${data.children_killed || 0}</strong> child process(es).<br>The server will exit momentarily.</p>
+                    <p style="font-size:12px; opacity:0.6;">Restart with: <code>./start_artemis.sh</code> or <code>systemctl start artemis</code></p>
+                `;
+            } catch (e) {
+                // If the request fails, the server may already be dead
+                const modal = document.querySelector('.shutdown-modal');
+                modal.innerHTML = `
+                    <h3 style="color:var(--warning);"><i class="fa-solid fa-circle-exclamation" style="margin-right:8px;"></i>Connection Lost</h3>
+                    <p>The server appears to have shut down.<br>If it hasn't, try again or kill the process manually.</p>
+                `;
+            }
         }
 
         function toggleTheme() {
