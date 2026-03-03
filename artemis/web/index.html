@@ -1144,8 +1144,7 @@
             <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
             <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
             <button class="tab" onclick="showTab('llm-intel-tab')">LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
-            <button class="tab" onclick="showTab('plugins')">Plugins</button>
-            <button class="tab" onclick="showTab('ai-settings-tab')">AI Settings</button>
+            <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
             <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
             <button class="tab" onclick="showTab('logs')">Live Logs</button>
         </div>
@@ -1620,91 +1619,18 @@
         </div>
 
         <!-- Plugins Tab -->
-        <div id="plugins" class="tab-content">
+        <div id="settings-tab" class="tab-content">
+            <!-- Plugins -->
             <div class="card">
-                <h2>Available Plugins</h2>
+                <h2><i class="fa-solid fa-puzzle-piece" style="margin-right:6px;"></i> Plugins</h2>
                 <div id="plugin-list" class="plugin-list">
                     <p>Loading plugins...</p>
                 </div>
             </div>
-        </div>
 
-        <!-- Logs Tab -->
-        <!-- Threat Intel Tab -->
-        <div id="threat-intel-tab" class="tab-content">
-            <div class="card">
-                <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
-                <p style="color:var(--text-secondary); margin-bottom:12px;">
-                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs discovered during profiling.
-                </p>
-
-                <!-- Background worker status -->
-                <div id="ti-worker-status" style="margin-bottom:16px;"></div>
-
-                <!-- Lookup form -->
-                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px;">
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Indicator</label>
-                        <input type="text" id="ti-indicator" placeholder="8.8.8.8 or example.com"
-                            style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); width:280px;">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Type</label>
-                        <select id="ti-type" style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                            <option value="ip">IP Address</option>
-                            <option value="domain">Domain</option>
-                        </select>
-                    </div>
-                    <button class="btn" onclick="lookupThreatIntel()">
-                        <i class="fa-solid fa-magnifying-glass"></i> Lookup
-                    </button>
-                </div>
-
-                <!-- Results -->
-                <div id="ti-results" style="display:none;"></div>
-            </div>
-
-            <!-- API Key Configuration -->
-            <div class="card" style="margin-top:16px;">
-                <h3><i class="fa-solid fa-key"></i> API Key Configuration</h3>
-                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
-                    All sources work on free tiers. Add API keys to enable sources and increase rate limits.
-                </p>
-                <div id="ti-sources-status" style="margin-bottom:16px;"></div>
-                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AbuseIPDB Key</label>
-                        <input type="password" id="ti-key-abuseipdb" placeholder="Free: 1,000 checks/day"
-                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">VirusTotal Key</label>
-                        <input type="password" id="ti-key-virustotal" placeholder="Free: 4 req/min, 500/day"
-                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AlienVault OTX Key</label>
-                        <input type="password" id="ti-key-otx" placeholder="Optional — works without key"
-                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">GreyNoise Key</label>
-                        <input type="password" id="ti-key-greynoise" placeholder="Free: 50 lookups/day"
-                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                    </div>
-                </div>
-                <button class="btn" onclick="saveThreatIntelConfig()" style="margin-top:12px;">
-                    <i class="fa-solid fa-floppy-disk"></i> Save Keys
-                </button>
-            </div>
-
-        </div>
-
-        <!-- AI Settings Tab -->
-        <div id="ai-settings-tab" class="tab-content">
             <!-- LLM Backend Configuration -->
-            <div class="card">
-                <h2><i class="fa-solid fa-brain"></i> LLM Backend Configuration</h2>
+            <div class="card" style="margin-top:16px;">
+                <h2><i class="fa-solid fa-brain" style="margin-right:6px;"></i> LLM Backend Configuration</h2>
                 <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
                     Choose which AI backend powers threat synthesis during continuous ingestion.
                     Changes take effect on the next ingestion cycle.
@@ -1784,6 +1710,76 @@
                     RAG uses the same Ollama model configured above for embeddings. Requires <code>chromadb</code> to be installed.
                 </div>
             </div>
+        </div>
+
+        <!-- Threat Intel Tab -->
+        <div id="threat-intel-tab" class="tab-content">
+            <div class="card">
+                <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
+                <p style="color:var(--text-secondary); margin-bottom:12px;">
+                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs discovered during profiling.
+                </p>
+
+                <!-- Background worker status -->
+                <div id="ti-worker-status" style="margin-bottom:16px;"></div>
+
+                <!-- Lookup form -->
+                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Indicator</label>
+                        <input type="text" id="ti-indicator" placeholder="8.8.8.8 or example.com"
+                            style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); width:280px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Type</label>
+                        <select id="ti-type" style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="ip">IP Address</option>
+                            <option value="domain">Domain</option>
+                        </select>
+                    </div>
+                    <button class="btn" onclick="lookupThreatIntel()">
+                        <i class="fa-solid fa-magnifying-glass"></i> Lookup
+                    </button>
+                </div>
+
+                <!-- Results -->
+                <div id="ti-results" style="display:none;"></div>
+            </div>
+
+            <!-- API Key Configuration -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-key"></i> API Key Configuration</h3>
+                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
+                    All sources work on free tiers. Add API keys to enable sources and increase rate limits.
+                </p>
+                <div id="ti-sources-status" style="margin-bottom:16px;"></div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AbuseIPDB Key</label>
+                        <input type="password" id="ti-key-abuseipdb" placeholder="Free: 1,000 checks/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">VirusTotal Key</label>
+                        <input type="password" id="ti-key-virustotal" placeholder="Free: 4 req/min, 500/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AlienVault OTX Key</label>
+                        <input type="password" id="ti-key-otx" placeholder="Optional — works without key"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">GreyNoise Key</label>
+                        <input type="password" id="ti-key-greynoise" placeholder="Free: 50 lookups/day"
+                            style="width:100%; padding:6px 10px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                    </div>
+                </div>
+                <button class="btn" onclick="saveThreatIntelConfig()" style="margin-top:12px;">
+                    <i class="fa-solid fa-floppy-disk"></i> Save Keys
+                </button>
+            </div>
+
         </div>
 
         <!-- ============================================ -->
@@ -2036,7 +2032,7 @@
                     loadNetworkMaps();
                     break;
                 case 'p':
-                    showTabByName('plugins');
+                    showTabByName('settings-tab');
                     break;
                 case 'l':
                     showTabByName('logs');
@@ -5281,6 +5277,9 @@
                 loadFindings();
             } else if (tabName === 'llm-intel-tab') {
                 loadLLMSynthesis();
+            } else if (tabName === 'settings-tab') {
+                loadPlugins();
+                loadLLMSettings();
             } else if (tabName === 'analyst-tab') {
                 // Focus the chat input when switching to analyst tab
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
