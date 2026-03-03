@@ -1791,10 +1791,23 @@
         <!-- Analyst Chat & PCAP Upload Tab              -->
         <!-- ============================================ -->
         <div id="analyst-tab" class="tab-content">
+            <!-- Sub-tabs: Chat vs Agent Monitor -->
+            <div style="display:flex; gap:4px; margin-bottom:14px; border-bottom:1px solid var(--border-color); padding-bottom:0;">
+                <button class="analyst-subtab active" id="analyst-subtab-chat" onclick="showAnalystSubTab('chat')" style="padding:8px 18px; background:none; border:none; border-bottom:2px solid var(--accent-primary); color:var(--text-primary); cursor:pointer; font-size:13px; font-weight:600;">
+                    <i class="fa-solid fa-comments" style="margin-right:5px;"></i> Chat
+                </button>
+                <button class="analyst-subtab" id="analyst-subtab-monitor" onclick="showAnalystSubTab('monitor')" style="padding:8px 18px; background:none; border:none; border-bottom:2px solid transparent; color:var(--text-secondary); cursor:pointer; font-size:13px; font-weight:600;">
+                    <i class="fa-solid fa-brain" style="margin-right:5px;"></i> Agent Monitor
+                    <span id="agent-monitor-badge" style="display:none; background:#f0883e; color:#fff; padding:1px 6px; border-radius:10px; font-size:10px; margin-left:4px; font-weight:700;">0</span>
+                </button>
+            </div>
+
+            <!-- SUB-TAB: Chat -->
+            <div id="analyst-subtab-chat-content">
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start;">
 
                 <!-- LEFT: Chat Panel -->
-                <div class="card" style="display:flex; flex-direction:column; height:calc(100vh - 200px); min-height:500px;">
+                <div class="card" style="display:flex; flex-direction:column; height:calc(100vh - 250px); min-height:500px;">
                     <h2 style="margin-bottom:4px;"><i class="fa-solid fa-robot" style="margin-right:6px;"></i> ARTEMIS ANALYST</h2>
                     <p style="margin-bottom:12px; opacity:0.7; font-size:12px;">
                         Ask questions about findings, IPs, techniques, or anything about your hunts.
@@ -1903,6 +1916,65 @@
                     </div>
                 </div>
             </div>
+            </div><!-- end analyst-subtab-chat-content -->
+
+            <!-- SUB-TAB: Agent Monitor -->
+            <div id="analyst-subtab-monitor-content" style="display:none;">
+                <div style="display:grid; grid-template-columns:1fr 300px; gap:20px; align-items:start;">
+                    <!-- LEFT: Agent Activity Feed -->
+                    <div class="card" style="display:flex; flex-direction:column; height:calc(100vh - 250px); min-height:500px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                            <h2 style="margin:0;"><i class="fa-solid fa-brain" style="margin-right:6px;"></i> AGENT ACTIVITY</h2>
+                            <div style="display:flex; gap:8px;">
+                                <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
+                                    <input type="checkbox" id="agent-monitor-autoscroll" checked> Auto-scroll
+                                </label>
+                                <button class="btn btn-secondary" onclick="clearAgentMonitor()" style="padding:4px 10px; font-size:11px;">
+                                    <i class="fa-solid fa-trash"></i> Clear
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="agent-monitor-feed" style="flex:1; overflow-y:auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px; font-family:'Courier New',monospace; font-size:12px; line-height:1.6;">
+                            <div style="text-align:center; opacity:0.4; margin-top:60px;">
+                                <i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>
+                                Agent activity will appear here in real time during hunts.<br>
+                                LLM prompts, responses, enrichment results, and coordinator stages are shown live.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: Agent Status Panel -->
+                    <div style="display:flex; flex-direction:column; gap:14px;">
+                        <div class="card">
+                            <h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:10px;">
+                                <i class="fa-solid fa-circle-nodes"></i> Agent Status
+                            </h3>
+                            <div id="agent-status-list" style="font-size:12px; display:flex; flex-direction:column; gap:6px;">
+                                <div style="opacity:0.5; text-align:center; padding:10px;">No activity yet</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:10px;">
+                                <i class="fa-solid fa-filter"></i> Filter
+                            </h3>
+                            <select id="agent-monitor-filter" onchange="filterAgentMonitor()" style="width:100%; padding:6px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:12px;">
+                                <option value="all">All Agents</option>
+                                <option value="coordinator">Coordinator</option>
+                                <option value="c2_hunter">C2 Hunter</option>
+                                <option value="reconnaissance_hunter">Recon Hunter</option>
+                                <option value="defense_evasion_hunter">Defense Evasion</option>
+                                <option value="lateral_movement_hunter">Lateral Movement</option>
+                                <option value="credential_access_hunter">Credential Access</option>
+                                <option value="initial_access_hunter">Initial Access</option>
+                                <option value="execution_persistence_hunter">Exec/Persist</option>
+                                <option value="collection_exfiltration_hunter">Collection/Exfil</option>
+                                <option value="impact_hunter">Impact</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div><!-- end analyst-subtab-monitor-content -->
         </div>
 
         <div id="logs" class="tab-content">
@@ -2117,6 +2189,8 @@
 
                 if (data.type === 'server_log') {
                     addLog(data.message, data.log_type);
+                } else if (data.type === 'agent_activity') {
+                    handleAgentActivity(data);
                 } else if (data.type === 'bg_profile_progress') {
                     handleBgProfileProgress(data);
                 } else if (data.type === 'continuous_progress') {
@@ -6962,6 +7036,174 @@
             msg.textContent = content;
             container.appendChild(msg);
             container.scrollTop = container.scrollHeight;
+        }
+
+        // --- Agent Monitor ---
+
+        let _agentMonitorEvents = [];
+        let _agentMonitorActive = false;  // true when monitor sub-tab is visible
+        let _agentStatuses = {};
+        let _agentMonitorNewCount = 0;
+
+        function showAnalystSubTab(which) {
+            const chatBtn = document.getElementById('analyst-subtab-chat');
+            const monBtn = document.getElementById('analyst-subtab-monitor');
+            const chatContent = document.getElementById('analyst-subtab-chat-content');
+            const monContent = document.getElementById('analyst-subtab-monitor-content');
+
+            if (which === 'chat') {
+                chatBtn.style.borderBottomColor = 'var(--accent-primary)';
+                chatBtn.style.color = 'var(--text-primary)';
+                chatBtn.classList.add('active');
+                monBtn.style.borderBottomColor = 'transparent';
+                monBtn.style.color = 'var(--text-secondary)';
+                monBtn.classList.remove('active');
+                chatContent.style.display = '';
+                monContent.style.display = 'none';
+                _agentMonitorActive = false;
+                setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
+            } else {
+                monBtn.style.borderBottomColor = 'var(--accent-primary)';
+                monBtn.style.color = 'var(--text-primary)';
+                monBtn.classList.add('active');
+                chatBtn.style.borderBottomColor = 'transparent';
+                chatBtn.style.color = 'var(--text-secondary)';
+                chatBtn.classList.remove('active');
+                chatContent.style.display = 'none';
+                monContent.style.display = '';
+                _agentMonitorActive = true;
+                // Reset badge
+                _agentMonitorNewCount = 0;
+                const badge = document.getElementById('agent-monitor-badge');
+                badge.style.display = 'none';
+                // Load history if empty
+                if (_agentMonitorEvents.length === 0) {
+                    loadAgentActivityHistory();
+                }
+            }
+        }
+
+        async function loadAgentActivityHistory() {
+            try {
+                const resp = await fetch('/api/agent-activity');
+                if (!resp.ok) return;
+                const events = await resp.json();
+                events.forEach(ev => _appendAgentEvent(ev, false));
+                const feed = document.getElementById('agent-monitor-feed');
+                if (_agentMonitorEvents.length > 0) feed.scrollTop = feed.scrollHeight;
+            } catch(e) { /* ignore */ }
+        }
+
+        function handleAgentActivity(data) {
+            _appendAgentEvent(data, true);
+            // Update badge if monitor not active
+            if (!_agentMonitorActive) {
+                _agentMonitorNewCount++;
+                const badge = document.getElementById('agent-monitor-badge');
+                badge.textContent = _agentMonitorNewCount > 99 ? '99+' : _agentMonitorNewCount;
+                badge.style.display = 'inline';
+            }
+        }
+
+        const _agentColors = {
+            coordinator: '#58a6ff',
+            c2_hunter: '#f85149',
+            reconnaissance_hunter: '#f0883e',
+            defense_evasion_hunter: '#d2a8ff',
+            lateral_movement_hunter: '#7ee787',
+            credential_access_hunter: '#ffa657',
+            initial_access_hunter: '#ff7b72',
+            execution_persistence_hunter: '#79c0ff',
+            collection_exfiltration_hunter: '#56d4dd',
+            impact_hunter: '#ff9bce',
+        };
+
+        const _activityIcons = {
+            stage: 'fa-flag',
+            prompt: 'fa-arrow-right',
+            response: 'fa-arrow-left',
+            error: 'fa-triangle-exclamation',
+            enrichment: 'fa-wand-magic-sparkles',
+        };
+
+        function _appendAgentEvent(ev, isLive) {
+            _agentMonitorEvents.push(ev);
+
+            // Update agent status
+            _agentStatuses[ev.agent] = { activity: ev.activity, message: ev.detail?.message || '', timestamp: ev.timestamp };
+            _updateAgentStatusPanel();
+
+            const feed = document.getElementById('agent-monitor-feed');
+            // Clear placeholder on first event
+            if (_agentMonitorEvents.length === 1) {
+                feed.innerHTML = '';
+            }
+
+            const filter = document.getElementById('agent-monitor-filter').value;
+            const visible = (filter === 'all' || filter === ev.agent);
+
+            const color = _agentColors[ev.agent] || '#8b949e';
+            const icon = _activityIcons[ev.activity] || 'fa-circle';
+            const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
+            const msg = ev.detail?.message || ev.activity;
+
+            const line = document.createElement('div');
+            line.setAttribute('data-agent', ev.agent);
+            line.style.cssText = `padding:4px 8px; border-left:3px solid ${color}; margin-bottom:4px; border-radius:0 4px 4px 0; background:rgba(${ev.activity === 'error' ? '248,81,73,0.08' : '255,255,255,0.02'});${visible ? '' : ' display:none;'}`;
+            line.innerHTML = `<span style="opacity:0.5; margin-right:8px;">${ts}</span>`
+                + `<i class="fa-solid ${icon}" style="color:${color}; margin-right:6px; width:14px; text-align:center;"></i>`
+                + `<span style="color:${color}; font-weight:600; margin-right:8px;">${ev.agent}</span>`
+                + `<span style="color:var(--text-primary);">${_escHtml(msg)}</span>`;
+
+            feed.appendChild(line);
+
+            // Auto-scroll
+            if (isLive && document.getElementById('agent-monitor-autoscroll').checked) {
+                feed.scrollTop = feed.scrollHeight;
+            }
+        }
+
+        function _escHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function _updateAgentStatusPanel() {
+            const panel = document.getElementById('agent-status-list');
+            const agents = Object.keys(_agentStatuses).sort();
+            if (agents.length === 0) return;
+            panel.innerHTML = agents.map(name => {
+                const s = _agentStatuses[name];
+                const color = _agentColors[name] || '#8b949e';
+                const statusDot = s.activity === 'error'
+                    ? '<i class="fa-solid fa-circle" style="color:var(--danger); font-size:7px; margin-right:6px;"></i>'
+                    : s.activity === 'prompt'
+                    ? '<i class="fa-solid fa-circle fa-beat" style="color:#f0883e; font-size:7px; margin-right:6px;"></i>'
+                    : '<i class="fa-solid fa-circle" style="color:#7ee787; font-size:7px; margin-right:6px;"></i>';
+                return `<div style="display:flex; align-items:center; padding:4px 6px; border-radius:4px; background:var(--bg-primary);">`
+                    + statusDot
+                    + `<span style="color:${color}; font-weight:600; flex:1;">${name}</span>`
+                    + `<span style="opacity:0.5; font-size:10px;">${s.activity}</span></div>`;
+            }).join('');
+        }
+
+        function clearAgentMonitor() {
+            _agentMonitorEvents = [];
+            _agentStatuses = {};
+            document.getElementById('agent-monitor-feed').innerHTML =
+                '<div style="text-align:center; opacity:0.4; margin-top:60px;">'
+                + '<i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>'
+                + 'Agent activity will appear here in real time during hunts.</div>';
+            document.getElementById('agent-status-list').innerHTML =
+                '<div style="opacity:0.5; text-align:center; padding:10px;">No activity yet</div>';
+        }
+
+        function filterAgentMonitor() {
+            const filter = document.getElementById('agent-monitor-filter').value;
+            document.querySelectorAll('#agent-monitor-feed > div[data-agent]').forEach(el => {
+                el.style.display = (filter === 'all' || el.getAttribute('data-agent') === filter) ? '' : 'none';
+            });
         }
 
         // --- PCAP Upload ---

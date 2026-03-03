@@ -34,6 +34,7 @@ from artemis.llm.coordinator_llm import CoordinatorLLM
 from artemis.llm.agent_llm import AgentLLM
 from artemis.managers.case_generator import CaseGenerator
 from artemis.utils.logging_config import ArtemisLogger
+from artemis.ws import fire_agent_activity
 
 
 class DeploymentMode:
@@ -218,6 +219,10 @@ class MetaLearnerCoordinator:
         self.logger.info("=" * 80)
         self.logger.info("Starting threat hunting operation")
         self.stats["total_hunts"] += 1
+        fire_agent_activity("coordinator", "stage", {
+            "message": "Starting threat hunting operation",
+            "stage": 0,
+        })
 
         # Stage 1: Environmental Context Gathering
         if network_state is not None:
@@ -226,11 +231,19 @@ class MetaLearnerCoordinator:
             context = self._gather_context(context_data or {})
 
         # Stage 2: Threat Hypothesis Generation (LLM-enhanced)
+        fire_agent_activity("coordinator", "stage", {
+            "message": "Generating threat hypotheses",
+            "stage": 2,
+        })
         hypotheses = self._generate_hypotheses(
             initial_signals or [], context, data
         )
 
         # Stage 3: Agent Selection
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"Selecting agents from {len(hypotheses)} hypotheses",
+            "stage": 3,
+        })
         selected_agents = self._select_agents(hypotheses, context)
 
         # Stage 3.5: Generate agent directives (LLM)
@@ -239,9 +252,18 @@ class MetaLearnerCoordinator:
         )
 
         # Stage 4: Resource Allocation & Agent Execution
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"Executing {len(selected_agents)} agents",
+            "stage": 4,
+            "agents": [name for name, _ in selected_agents],
+        })
         agent_outputs = self._execute_agents(selected_agents, data, context)
 
         # Stage 4.5: LLM enrichment of agent outputs
+        fire_agent_activity("coordinator", "stage", {
+            "message": "LLM enrichment of agent outputs",
+            "stage": 4.5,
+        })
         agent_outputs = self._enrich_with_llm(
             agent_outputs, data, context
         )
@@ -269,6 +291,10 @@ class MetaLearnerCoordinator:
             )
 
         # Stage 5.5: LLM synthesis — unified threat narrative
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"LLM synthesis — confidence={assessment['final_confidence']:.2f}",
+            "stage": 5.5,
+        })
         assessment = self._synthesize_with_llm(
             assessment, agent_outputs, context
         )
@@ -529,6 +555,10 @@ class MetaLearnerCoordinator:
         agent = self.agents.get(agent_name)
         if not agent:
             return None
+
+        fire_agent_activity(agent_name, "stage", {
+            "message": f"Agent started (priority={priority:.2f})",
+        })
 
         # Set agent priority
         agent.set_priority(int(priority * 4))  # Scale to 0-4

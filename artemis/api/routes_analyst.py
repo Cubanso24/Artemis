@@ -43,6 +43,20 @@ def _get_llm_client():
             pass
 
     backend = cfg.get("backend") or os.environ.get("LLM_BACKEND", "auto")
+
+    # Apply config to env so LLMClient picks up the right model/URL
+    ollama_url = (
+        cfg.get("ollama_url")
+        or os.environ.get("OLLAMA_URL")
+        or "http://localhost:11434"
+    )
+    os.environ.setdefault("OLLAMA_URL", ollama_url)
+
+    if cfg.get("ollama_model"):
+        os.environ["OLLAMA_MODEL"] = cfg["ollama_model"]
+    if cfg.get("anthropic_api_key"):
+        os.environ.setdefault("ANTHROPIC_API_KEY", cfg["anthropic_api_key"])
+
     _llm_client = LLMClient(backend=backend)
     logger.info(f"Analyst LLM client initialised (backend={_llm_client.backend})")
     return _llm_client

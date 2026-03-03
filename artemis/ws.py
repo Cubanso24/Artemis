@@ -5,6 +5,7 @@ handler so every module can import a single source of truth.
 """
 
 import asyncio
+import collections
 import logging
 from datetime import datetime
 from typing import List
@@ -13,6 +14,9 @@ from fastapi import WebSocket
 
 # Shared connection list — imported by route modules and the log handler.
 active_connections: List[WebSocket] = []
+
+# Ring buffer of recent agent activity events (accessible via API).
+agent_activity_history: collections.deque = collections.deque(maxlen=200)
 
 
 async def broadcast_progress(data: dict):
@@ -58,6 +62,34 @@ class WebSocketLogHandler(logging.Handler):
                 pass  # No event loop — skip (e.g. from worker thread)
         except Exception:
             self.handleError(record)
+
+
+async def broadcast_agent_activity(agent_name: str, activity_type: str, detail: dict):
+    """Broadcast an LLM agent activity event to all connected clients.
+
+    *activity_type* is one of: ``prompt``, ``response``, ``enrichment``,
+    ``error``, ``stage``.
+    """
+    message = {
+        "type": "agent_activity",
+        "agent": agent_name,
+        "activity": activity_type,
+        "detail": detail,
+        "timestamp": datetime.now().isoformat(),
+    }
+    agent_activity_history.append(message)
+    await broadcast_progress(message)
+
+
+def fire_agent_activity(agent_name: str, activity_type: str, detail: dict):
+    """Non-async helper to fire agent activity from sync code."""
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.ensure_future(
+            broadcast_agent_activity(agent_name, activity_type, detail)
+        )
+    except RuntimeError:
+        pass  # No event loop running
 
 
 def install_log_handler():

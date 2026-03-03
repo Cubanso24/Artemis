@@ -336,7 +336,7 @@ class LLMClient:
             resp = _requests.post(
                 f"{self.ollama_url}/api/chat",
                 json=payload,
-                timeout=300,  # Local models can be slow
+                timeout=3600,  # 1 hour — local models can be very slow
             )
             if resp.status_code != 200:
                 self.logger.error(
@@ -353,7 +353,7 @@ class LLMClient:
             return content
 
         except _requests.Timeout:
-            self.logger.error("Ollama request timed out (300s)")
+            self.logger.error("Ollama request timed out (3600s)")
             return None
         except _requests.ConnectionError:
             self.logger.error(

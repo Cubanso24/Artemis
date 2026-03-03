@@ -183,6 +183,31 @@ class RAGStore:
             name=name,
             metadata={"hnsw:space": "cosine"},
         )
+        # Verify embedding dimensions match current model.  If the
+        # collection was created with a different embedding model (e.g.
+        # 384-dim fallback vs 768-dim Ollama) we must recreate it.
+        try:
+            count = col.count()
+            if count > 0:
+                probe = embed(["dimension probe"])
+                if probe:
+                    current_dim = len(probe[0])
+                    sample = col.peek(1)
+                    if sample and sample.get("embeddings") and sample["embeddings"]:
+                        stored_dim = len(sample["embeddings"][0])
+                        if stored_dim != current_dim:
+                            logger.warning(
+                                f"Embedding dimension mismatch in '{name}': "
+                                f"stored={stored_dim}, current={current_dim}. "
+                                f"Recreating collection."
+                            )
+                            self._client.delete_collection(name)
+                            col = self._client.get_or_create_collection(
+                                name=name,
+                                metadata={"hnsw:space": "cosine"},
+                            )
+        except Exception as e:
+            logger.debug(f"Dimension check skipped for '{name}': {e}")
         self._collections[name] = col
         return col
 

@@ -28,6 +28,7 @@ from artemis.llm.prompts import (
 from artemis.models.agent_output import AgentOutput, Finding, Evidence, Severity
 from artemis.models.network_state import NetworkState
 from artemis.utils.logging_config import ArtemisLogger
+from artemis.ws import fire_agent_activity
 
 
 class AgentLLM:
@@ -148,6 +149,12 @@ class AgentLLM:
             "your assessment (e.g. previously dismissed false positives)."
         )
 
+        fire_agent_activity(self.agent_name, "prompt", {
+            "message": f"Reviewing {len(output.findings)} findings "
+                       f"(confidence={output.confidence:.2f})",
+            "prompt_length": len(user_message),
+        })
+
         result = self.client.agent_json(
             messages=[{"role": "user", "content": user_message}],
             system=self.system_prompt,
@@ -158,6 +165,9 @@ class AgentLLM:
             self.logger.warning(
                 f"Agent LLM enrichment failed for {self.agent_name}"
             )
+            fire_agent_activity(self.agent_name, "error", {
+                "message": "LLM enrichment call failed",
+            })
             return None
 
         enriched_count = len(result.get("enriched_findings", []))
@@ -166,6 +176,12 @@ class AgentLLM:
             f"Agent LLM enriched {enriched_count} findings, "
             f"found {missed_count} missed patterns for {self.agent_name}"
         )
+        fire_agent_activity(self.agent_name, "response", {
+            "message": f"Enriched {enriched_count} findings, "
+                       f"found {missed_count} missed patterns",
+            "enriched_count": enriched_count,
+            "missed_count": missed_count,
+        })
         return result
 
     # ------------------------------------------------------------------

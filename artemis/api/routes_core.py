@@ -9,7 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from artemis.managers import hunt_manager, plugin_manager
-from artemis.ws import active_connections, broadcast_progress
+from artemis.ws import active_connections, broadcast_progress, agent_activity_history
 
 logger = logging.getLogger("artemis.api.routes_core")
 
@@ -42,6 +42,12 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         active_connections.remove(websocket)
+
+
+@router.get("/api/agent-activity")
+async def get_agent_activity():
+    """Return recent LLM agent activity events."""
+    return list(agent_activity_history)
 
 
 @router.get("/static/{path:path}")
