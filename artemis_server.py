@@ -38,13 +38,15 @@ app.add_middleware(
 )
 
 # ── routers ───────────────────────────────────────────────────────────
-from artemis.api.routes_core import router as core_router        # noqa: E402
-from artemis.api.routes_plugins import router as plugins_router  # noqa: E402
-from artemis.api.routes_cases import router as cases_router      # noqa: E402
+from artemis.api.routes_core import router as core_router          # noqa: E402
+from artemis.api.routes_plugins import router as plugins_router    # noqa: E402
+from artemis.api.routes_cases import router as cases_router        # noqa: E402
+from artemis.api.routes_analyst import router as analyst_router    # noqa: E402
 
 app.include_router(core_router)
 app.include_router(plugins_router)
 app.include_router(cases_router)
+app.include_router(analyst_router)
 
 # ── managers & plugins (singletons) ──────────────────────────────────
 from artemis.managers import hunt_manager, plugin_manager  # noqa: E402

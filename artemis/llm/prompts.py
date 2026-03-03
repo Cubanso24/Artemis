@@ -132,6 +132,92 @@ Respond with JSON only. Schema:
 }"""
 
 # ============================================================
+# ANALYST CHAT PROMPT
+# ============================================================
+
+ANALYST_CHAT_SYSTEM = """\
+You are Artemis, an AI threat-hunting assistant embedded in a network \
+security monitoring platform.  You are speaking directly with a human \
+SOC analyst who is reviewing findings, investigating alerts, and \
+running threat hunts.
+
+Your capabilities:
+- You have access to the current hunt findings, cases, and technique \
+  precision data shown in the context below.
+- You can reference historical findings from the RAG memory.
+- You know the MITRE ATT&CK framework, Zeek log semantics, Wazuh EDR \
+  alert patterns, and common attack kill chains.
+
+Guidelines:
+- Be concise and direct.  Analysts are busy — lead with the answer, \
+  then explain.
+- When referencing findings, include the finding ID or case ID so the \
+  analyst can look them up.
+- If you are unsure, say so.  Never fabricate indicators, IPs, or \
+  finding details.
+- Wazuh EDR alerts have a HIGH false-positive rate.  Always caveat \
+  standalone Wazuh alerts as unreliable unless corroborated by network \
+  telemetry.
+- When asked to investigate an IP or domain, check the provided \
+  findings and threat intel context first before speculating.
+- You can suggest next steps: deeper investigation, specific Splunk \
+  queries, network isolation, etc.
+"""
+
+
+def format_analyst_context(
+    recent_findings: list,
+    recent_cases: list,
+    technique_precision: dict,
+    rag_context: str = "",
+) -> str:
+    """Build context block for analyst chat from live DB state."""
+    sections = []
+
+    if recent_findings:
+        lines = [f"=== RECENT FINDINGS ({len(recent_findings)} most recent) ==="]
+        for f in recent_findings[:15]:
+            sev = f.get("severity", "?")
+            agent = f.get("agent_name", "?")
+            desc = f.get("description", "")[:200]
+            fid = f.get("finding_id", "?")[:12]
+            conf = f.get("confidence", 0)
+            lines.append(
+                f"- [{sev.upper()}] {desc} "
+                f"(agent={agent}, confidence={conf:.2f}, id={fid})"
+            )
+        sections.append("\n".join(lines))
+
+    if recent_cases:
+        lines = [f"=== OPEN CASES ({len(recent_cases)}) ==="]
+        for c in recent_cases[:10]:
+            cid = c.get("case_id", "?")[:12]
+            title = c.get("title", "?")
+            sev = c.get("severity", "?")
+            status = c.get("status", "?")
+            lines.append(f"- [{sev.upper()}] {title} (status={status}, id={cid})")
+        sections.append("\n".join(lines))
+
+    if technique_precision:
+        high_fp = [
+            f"{tid} (precision={d['precision']:.0%})"
+            for tid, d in technique_precision.items()
+            if d.get("precision", 1) < 0.3
+            and d.get("true_positives", 0) + d.get("false_positives", 0) >= 2
+        ]
+        if high_fp:
+            sections.append(
+                "=== HIGH FALSE-POSITIVE TECHNIQUES ===\n"
+                + "\n".join(f"- {t}" for t in high_fp[:10])
+            )
+
+    if rag_context:
+        sections.append(rag_context)
+
+    return "\n\n".join(sections) if sections else "(No findings or cases yet.)"
+
+
+# ============================================================
 # AGENT SPECIALIST PROMPTS
 # ============================================================
 
