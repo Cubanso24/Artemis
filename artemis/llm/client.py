@@ -52,6 +52,7 @@ class LLMClient:
         agent_model: Optional[str] = None,
         ollama_url: Optional[str] = None,
         ollama_num_ctx: Optional[int] = None,
+        priority: str = "hunt",
     ):
         """
         Initialize the LLM client.
@@ -64,9 +65,14 @@ class LLMClient:
             agent_model: Model for agent tier
             ollama_url: Ollama server URL (default http://localhost:11434)
             ollama_num_ctx: Context window size for Ollama (default 131072)
+            priority: "hunt" (default, high priority) or "chat" (low,
+                      yields to active hunts).  Only meaningful for the
+                      Ollama backend where a single model serves one
+                      request at a time.
         """
         self.logger = ArtemisLogger.setup_logger("artemis.llm.client")
         self.backend = backend.lower()
+        self.priority = priority
         self.ollama_url = (
             ollama_url
             or os.getenv("OLLAMA_URL", _DEFAULT_OLLAMA_URL)
@@ -311,7 +317,17 @@ class LLMClient:
     def _complete_ollama(
         self, messages, system, model, temperature, max_tokens,
     ) -> Optional[str]:
-        """Call the Ollama /api/chat endpoint."""
+        """Call the Ollama /api/chat endpoint.
+
+        Wraps the HTTP call in a priority lock so hunt operations are
+        never blocked by lower-priority analyst chat queries.
+        """
+        from artemis.llm.priority import (
+            llm_priority_hunt,
+            llm_priority_chat,
+            LLMBusyError,
+        )
+
         ollama_messages = []
         if system:
             ollama_messages.append({"role": "system", "content": system})
@@ -332,26 +348,22 @@ class LLMClient:
             },
         }
 
+        ctx = (
+            llm_priority_hunt()
+            if self.priority == "hunt"
+            else llm_priority_chat()
+        )
+
         try:
-            resp = _requests.post(
-                f"{self.ollama_url}/api/chat",
-                json=payload,
-                timeout=3600,  # 1 hour — local models can be very slow
-            )
-            if resp.status_code != 200:
-                self.logger.error(
-                    f"Ollama returned status {resp.status_code}: "
-                    f"{resp.text[:200]}"
+            with ctx:
+                resp = _requests.post(
+                    f"{self.ollama_url}/api/chat",
+                    json=payload,
+                    timeout=3600,  # 1 hour — local models can be very slow
                 )
-                return None
-
-            data = resp.json()
-            content = data.get("message", {}).get("content", "")
-            if not content:
-                self.logger.warning("Ollama returned empty response")
-                return None
-            return content
-
+        except LLMBusyError:
+            self.logger.warning("LLM busy with hunt operations — chat deferred")
+            raise
         except _requests.Timeout:
             self.logger.error("Ollama request timed out (3600s)")
             return None
@@ -364,6 +376,20 @@ class LLMClient:
         except Exception as e:
             self.logger.error(f"Ollama completion failed: {e}")
             return None
+
+        if resp.status_code != 200:
+            self.logger.error(
+                f"Ollama returned status {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+            return None
+
+        data = resp.json()
+        content = data.get("message", {}).get("content", "")
+        if not content:
+            self.logger.warning("Ollama returned empty response")
+            return None
+        return content
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -6960,25 +6960,32 @@
         let _analystHistory = [];  // {role, content, timestamp}
         let _pcapSelectedFile = null;
 
-        function analystSendMessage() {
+        let _analystRetryTimer = null;
+
+        function analystSendMessage(retryBody) {
             const input = document.getElementById('analyst-chat-input');
-            const question = input.value.trim();
-            if (!question) return;
-
-            input.value = '';
-            _analystAddMessage('user', question);
-
             const btn = document.getElementById('analyst-send-btn');
+
+            let body;
+            if (retryBody) {
+                // Auto-retry — body already built, user message already displayed
+                body = retryBody;
+            } else {
+                const question = input.value.trim();
+                if (!question) return;
+                input.value = '';
+                _analystAddMessage('user', question);
+                body = {
+                    question: question,
+                    include_findings: document.getElementById('analyst-inc-findings').checked,
+                    include_cases: document.getElementById('analyst-inc-cases').checked,
+                    include_rag: document.getElementById('analyst-inc-rag').checked,
+                };
+            }
+
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Thinking...';
             input.disabled = true;
-
-            const body = {
-                question: question,
-                include_findings: document.getElementById('analyst-inc-findings').checked,
-                include_cases: document.getElementById('analyst-inc-cases').checked,
-                include_rag: document.getElementById('analyst-inc-rag').checked,
-            };
 
             fetch('/api/analyst/query', {
                 method: 'POST',
@@ -6986,10 +6993,21 @@
                 body: JSON.stringify(body),
             })
             .then(resp => {
-                if (!resp.ok) return resp.json().then(e => { throw new Error(e.error || `HTTP ${resp.status}`); });
+                if (!resp.ok) {
+                    return resp.json().then(e => {
+                        if (e.busy) {
+                            // Hunt is using the LLM — show status and auto-retry
+                            btn.innerHTML = '<i class="fa-solid fa-hourglass-half fa-spin"></i> Queued — hunt active...';
+                            _analystRetryTimer = setTimeout(() => analystSendMessage(body), 5000);
+                            return null;  // Don't proceed to .then(data)
+                        }
+                        throw new Error(e.error || `HTTP ${resp.status}`);
+                    });
+                }
                 return resp.json();
             })
             .then(data => {
+                if (!data) return;  // Was a busy/retry — skip
                 _analystAddMessage('assistant', data.answer);
 
                 // Update context card
@@ -6999,11 +7017,14 @@
                 document.getElementById('analyst-ctx-techniques').textContent = ctx.techniques_tracked || 0;
                 document.getElementById('analyst-ctx-rag').textContent = ctx.rag_available ? 'Yes' : 'No';
                 document.getElementById('analyst-context-card').style.display = '';
+
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+                input.disabled = false;
+                input.focus();
             })
             .catch(err => {
                 _analystAddMessage('error', `Error: ${err.message}`);
-            })
-            .finally(() => {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
                 input.disabled = false;

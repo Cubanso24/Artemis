@@ -57,8 +57,8 @@ def _get_llm_client():
     if cfg.get("anthropic_api_key"):
         os.environ.setdefault("ANTHROPIC_API_KEY", cfg["anthropic_api_key"])
 
-    _llm_client = LLMClient(backend=backend)
-    logger.info(f"Analyst LLM client initialised (backend={_llm_client.backend})")
+    _llm_client = LLMClient(backend=backend, priority="chat")
+    logger.info(f"Analyst LLM client initialised (backend={_llm_client.backend}, priority=chat)")
     return _llm_client
 
 
@@ -158,11 +158,22 @@ async def analyst_query(body: AnalystQueryRequest):
     user_message = f"{context_text}\n\n---\nAnalyst question: {body.question}"
 
     # Use coordinator model (Sonnet) for high-quality reasoning
-    answer = client.coordinator_complete(
-        messages=[{"role": "user", "content": user_message}],
-        system=ANALYST_CHAT_SYSTEM,
-        max_tokens=2048,
-    )
+    from artemis.llm.priority import LLMBusyError
+
+    try:
+        answer = client.coordinator_complete(
+            messages=[{"role": "user", "content": user_message}],
+            system=ANALYST_CHAT_SYSTEM,
+            max_tokens=2048,
+        )
+    except LLMBusyError as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": str(e),
+                "busy": True,
+            },
+        )
 
     if answer is None:
         return JSONResponse(
