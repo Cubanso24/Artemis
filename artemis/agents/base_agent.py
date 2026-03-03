@@ -113,6 +113,85 @@ class BaseAgent(ABC):
         "172.30.", "172.31.", "192.168.",
     )
 
+    # IPs that should never appear in threat-hunting findings.
+    # Connections involving these addresses are artefacts of local OS
+    # activity, broadcast, or multicast — not real network threats.
+    _NOISE_IPS = frozenset({
+        "0.0.0.0", "255.255.255.255",
+        "127.0.0.1", "::1", "::",
+    })
+    # Prefixes that indicate noise (loopback, multicast, link-local)
+    _NOISE_IP_PREFIXES = (
+        "127.",       # loopback range (127.0.0.0/8)
+        "224.",       # multicast 224.0.0.0/4
+        "225.", "226.", "227.", "228.", "229.",
+        "230.", "231.", "232.", "233.", "234.",
+        "235.", "236.", "237.", "238.", "239.",
+        "fe80:",      # IPv6 link-local
+        "ff00:", "ff01:", "ff02:",  # IPv6 multicast
+    )
+
+    @classmethod
+    def _is_noise_ip(cls, ip: str) -> bool:
+        """Return True if *ip* is a loopback, multicast, broadcast,
+        or otherwise non-routable address that should never appear
+        in threat-hunting findings."""
+        if not ip:
+            return True
+        return ip in cls._NOISE_IPS or ip.startswith(cls._NOISE_IP_PREFIXES)
+
+    # IP field names that should be checked for noise addresses.
+    _IP_FIELDS = ("source_ip", "destination_ip", "dest_ip", "src_ip",
+                  "id.orig_h", "id.resp_h")
+
+    @classmethod
+    def _filter_noise_ips(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove events whose IP fields reference noise addresses.
+
+        An event is dropped when *any* of its IP fields is a noise IP
+        (loopback, multicast, broadcast, unspecified).  This runs once
+        before ``_analyze_data`` so every agent benefits automatically.
+
+        Returns a shallow copy of *data* with filtered lists; non-list
+        values are passed through untouched.
+        """
+        filtered = {}
+        total_removed = 0
+
+        for key, value in data.items():
+            if not isinstance(value, list):
+                filtered[key] = value
+                continue
+
+            clean = []
+            for event in value:
+                if not isinstance(event, dict):
+                    clean.append(event)
+                    continue
+
+                # Check every IP field — drop the event if any is noise
+                dominated_by_noise = False
+                for ip_field in cls._IP_FIELDS:
+                    ip_val = event.get(ip_field)
+                    if ip_val and cls._is_noise_ip(str(ip_val)):
+                        dominated_by_noise = True
+                        break
+
+                if dominated_by_noise:
+                    total_removed += 1
+                else:
+                    clean.append(event)
+
+            filtered[key] = clean
+
+        if total_removed > 0:
+            logging.getLogger("artemis.agents.base").debug(
+                f"Filtered {total_removed} events with noise IPs "
+                f"(127.x, 0.0.0.0, multicast, broadcast)"
+            )
+
+        return filtered
+
     @staticmethod
     def _parse_timestamp(ts) -> Optional[datetime]:
         """Convert a timestamp value to a datetime object.
@@ -201,6 +280,11 @@ class BaseAgent(ABC):
             # Use current context if none provided
             if context is None:
                 context = self._get_default_context()
+
+            # Strip events that reference noise IPs (loopback,
+            # multicast, broadcast) — they generate false findings
+            # like "beaconing from 127.0.0.1".
+            data = self._filter_noise_ips(data)
 
             # Perform analysis
             output = self._analyze_data(data, context)
