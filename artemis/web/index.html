@@ -1033,7 +1033,7 @@
     <div class="shutdown-modal-overlay" id="shutdown-modal" onclick="if(event.target === this) hideShutdownModal()">
         <div class="shutdown-modal">
             <h3><i class="fa-solid fa-power-off" style="margin-right:8px;"></i>Shutdown Artemis</h3>
-            <p>This will <strong>kill all running child processes</strong> (data pipelines, analysis pipelines, profilers) and <strong>shut down the server</strong>.<br><br>You will need to manually restart the server afterwards.</p>
+            <p>This will <strong>kill all running child processes</strong> (data pipelines, analysis pipelines, profilers) and <strong>shut down the server</strong>.<br><br>If running as a systemd service, use <code>systemctl start artemis</code> to restart.</p>
             <div class="modal-actions">
                 <button class="btn-cancel-shutdown" onclick="hideShutdownModal()">Cancel</button>
                 <button class="btn-confirm-shutdown" onclick="confirmShutdown()">
@@ -1863,11 +1863,15 @@
                 const data = await resp.json();
 
                 // Replace modal content with result
+                const method = data.method === 'systemctl' ? 'systemctl stop' : 'manual kill';
+                const killInfo = data.method === 'systemctl'
+                    ? 'All processes in the control group will be terminated.'
+                    : `Killed <strong>${data.children_killed || 0}</strong> child process(es).`;
                 const modal = document.querySelector('.shutdown-modal');
                 modal.innerHTML = `
                     <h3 style="color:var(--success);"><i class="fa-solid fa-check-circle" style="margin-right:8px;"></i>Server Shutting Down</h3>
-                    <p>Killed <strong>${data.children_killed || 0}</strong> child process(es).<br>The server will exit momentarily.</p>
-                    <p style="font-size:12px; opacity:0.6;">Restart with: <code>./start_artemis.sh</code> or <code>systemctl start artemis</code></p>
+                    <p>${killInfo}<br>Method: <code>${method}</code></p>
+                    <p style="font-size:12px; opacity:0.6;">Restart with: <code>sudo systemctl start artemis</code></p>
                 `;
             } catch (e) {
                 // If the request fails, the server may already be dead

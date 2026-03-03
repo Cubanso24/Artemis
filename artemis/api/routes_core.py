@@ -52,28 +52,19 @@ async def serve_static(path: str):
 
 # ── Server shutdown ──────────────────────────────────────────────────
 
+def _is_systemd() -> bool:
+    """Return True if we were launched by the artemis systemd unit."""
+    return os.environ.get('ARTEMIS_SYSTEMD') == '1'
+
+
 @router.post("/api/server/shutdown")
 async def shutdown_server():
     """Kill all child processes and shut down the Artemis server.
 
-    This kills every tracked subprocess (pipelines, profilers, etc.)
-    then sends SIGTERM to the server's own process so uvicorn exits
-    cleanly.  The response is returned before the server actually dies
-    so the UI gets confirmation.
+    Under systemd: ``systemctl stop artemis`` kills the whole cgroup.
+    Dev mode: manually SIGTERM/SIGKILL tracked children, then self-SIGTERM.
     """
-    # 1. Kill all child processes synchronously
-    result = hunt_manager.kill_all_processes()
-
-    # 2. Stop the hunt scheduler if running
-    try:
-        import artemis.managers.hunt_scheduler as _hs_mod
-        scheduler = getattr(_hs_mod, '_global_scheduler', None)
-        if scheduler and scheduler.is_running:
-            await scheduler.stop()
-    except Exception:
-        pass
-
-    # 3. Notify WS clients before we go down
+    # 1. Notify WS clients before we go down
     try:
         await broadcast_progress({
             'type': 'server_shutdown',
@@ -82,7 +73,38 @@ async def shutdown_server():
     except Exception:
         pass
 
-    # 4. Schedule the server to exit shortly (give time for HTTP response)
+    if _is_systemd():
+        # systemd will SIGTERM our entire control-group (KillMode=control-group)
+        # so every child process dies automatically — no manual PID work needed.
+        def _deferred_systemctl():
+            import subprocess, time
+            time.sleep(0.5)
+            subprocess.Popen(
+                ['sudo', 'systemctl', 'stop', 'artemis'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        threading.Thread(target=_deferred_systemctl, daemon=True).start()
+        return {
+            'status': 'shutting_down',
+            'method': 'systemctl',
+            'children_killed': 'all (control-group)',
+        }
+
+    # ── Dev / manual mode ──────────────────────────────────────────
+    result = hunt_manager.kill_all_processes()
+
+    # Stop the hunt scheduler if running
+    try:
+        import artemis.managers.hunt_scheduler as _hs_mod
+        scheduler = getattr(_hs_mod, '_global_scheduler', None)
+        if scheduler and scheduler.is_running:
+            await scheduler.stop()
+    except Exception:
+        pass
+
+    # Schedule the server to exit shortly (give time for HTTP response)
     def _deferred_exit():
         import time
         time.sleep(0.5)
@@ -92,6 +114,7 @@ async def shutdown_server():
 
     return {
         'status': 'shutting_down',
+        'method': 'manual',
         'children_killed': result['killed'],
         'processes': result['processes'],
     }

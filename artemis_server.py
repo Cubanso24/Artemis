@@ -13,6 +13,7 @@ launches uvicorn.
 """
 
 import logging
+import os
 import socket
 
 from fastapi import FastAPI
@@ -113,12 +114,19 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """Runs when uvicorn is shutting down (e.g. reload, ctrl-c).
+    """Runs when uvicorn is shutting down (e.g. systemctl stop, ctrl-c).
 
-    We intentionally do NOT wait for running jobs — they are non-daemon
-    processes that write directly to SQLite, so they keep going on their
-    own.  On the next startup we'll reconnect to them.
+    Under systemd, KillMode=control-group handles most cleanup, but we
+    also explicitly kill tracked children here so the shutdown is orderly
+    even in dev mode.
     """
+    # Kill all tracked child processes (pipelines, profilers, etc.)
+    try:
+        result = hunt_manager.kill_all_processes()
+        logger.info(f"Shutdown: killed {result['killed']} child process(es)")
+    except Exception as e:
+        logger.warning(f"Shutdown: failed to kill children: {e}")
+
     # Cancel the progress-polling task (it will restart on next startup)
     if hunt_manager._poll_task and not hunt_manager._poll_task.done():
         hunt_manager._poll_task.cancel()
@@ -163,13 +171,21 @@ if __name__ == "__main__":
     print(f"\nAnyone on your network can access Artemis at the LAN address")
     print("=" * 80 + "\n")
 
-    uvicorn.run(
-        "artemis_server:app",
+    is_systemd = os.environ.get('ARTEMIS_SYSTEMD') == '1'
+
+    run_kwargs = dict(
         host="0.0.0.0",
         port=6969,
         log_level="info",
-        reload=True,
-        reload_dirs=["."],
-        reload_includes=["*.py"],
-        reload_excludes=["tests/*", "venv/*", "__pycache__/*"],
     )
+
+    if not is_systemd:
+        # Dev mode: hot-reload on code changes
+        run_kwargs.update(
+            reload=True,
+            reload_dirs=["."],
+            reload_includes=["*.py"],
+            reload_excludes=["tests/*", "venv/*", "__pycache__/*"],
+        )
+
+    uvicorn.run("artemis_server:app", **run_kwargs)

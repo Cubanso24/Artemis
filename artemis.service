@@ -7,11 +7,24 @@ Type=simple
 User=administrator
 WorkingDirectory=/home/user/Artemis
 Environment="SPLUNK_HOST=10.25.11.86"
+Environment="ARTEMIS_SYSTEMD=1"
 # Load SPLUNK_TOKEN (and any other secrets) from .env file
 EnvironmentFile=/home/user/Artemis/.env
 ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
+
+# Kill the entire process group (server + all child pipelines/profilers)
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
 Restart=always
 RestartSec=10
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/user/Artemis
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
