@@ -259,6 +259,10 @@ class MetaLearnerCoordinator:
         # Stage 6: Update Statistics
         self._update_statistics(assessment, selected_agents)
 
+        # Stage 6.5: Feed hunt outcome to the contextual bandit so it
+        # learns which deployment mode works best for each network state.
+        self._update_bandit_reward(assessment)
+
         # Stage 7: Index findings into RAG for future hunts
         self._index_to_rag(agent_outputs, data)
 
@@ -312,20 +316,54 @@ class MetaLearnerCoordinator:
         self.logger.info(f"Generated {len(hypotheses)} threat hypotheses")
         return hypotheses
 
+    # Map bandit arms 0-2 to deployment modes for learned strategy selection
+    _BANDIT_ARM_TO_MODE = {
+        0: DeploymentMode.ADAPTIVE,
+        1: DeploymentMode.PARALLEL,
+        2: DeploymentMode.SEQUENTIAL,
+    }
+
     def _select_agents(
         self,
         hypotheses: List[ThreatHypothesis],
         context: NetworkState
     ) -> List[Tuple[str, float]]:
-        """Stage 3: Select agents based on hypotheses and context."""
+        """Stage 3: Select agents based on hypotheses and context.
+
+        When the contextual bandit has enough data, it overrides the default
+        deployment mode with the mode it has learned works best for the
+        current network state.
+        """
         self.logger.info("Stage 3: Selecting agents")
+
+        # Let the bandit choose the deployment mode if it has learned enough
+        mode = self.deployment_mode
+        try:
+            ctx_vec = context.to_state_vector()
+            arm = self.adaptive_learner.bandit.select_arm(ctx_vec)
+            # Only use bandit-selected mode for arms 0-2 (mapped modes);
+            # higher arms fall through to the configured default.
+            if arm in self._BANDIT_ARM_TO_MODE:
+                learned_mode = self._BANDIT_ARM_TO_MODE[arm]
+                if learned_mode != mode:
+                    self.logger.info(
+                        f"Bandit selected deployment mode "
+                        f"'{learned_mode}' (arm {arm}) over default '{mode}'"
+                    )
+                    mode = learned_mode
+            self._last_bandit_arm = arm
+            self._last_context_vector = ctx_vec
+        except Exception as e:
+            self.logger.debug(f"Bandit selection skipped: {e}")
+            self._last_bandit_arm = None
+            self._last_context_vector = None
 
         available_agents = list(self.agents.keys())
         selected = self.agent_selector.select_agents(
             hypotheses,
             context,
             available_agents,
-            mode=self.deployment_mode
+            mode=mode
         )
 
         self.logger.info(
@@ -664,6 +702,31 @@ class MetaLearnerCoordinator:
 
         if assessment["final_confidence"] >= 0.7:
             self.stats["high_confidence_detections"] += 1
+
+    def _update_bandit_reward(self, assessment: Dict[str, Any]):
+        """Stage 6.5: Feed hunt outcome back to the contextual bandit.
+
+        Reward signal:
+        - If findings exist, reward = final_confidence (0-1).
+          Higher-confidence hunts reinforce the chosen mode.
+        - If no findings, reward = 0.5 (neutral).
+          A clean sweep is not a failure — don't penalise the mode.
+        """
+        arm = getattr(self, '_last_bandit_arm', None)
+        ctx = getattr(self, '_last_context_vector', None)
+        if arm is None or ctx is None:
+            return
+
+        has_findings = assessment.get("total_findings", 0) > 0
+        reward = assessment["final_confidence"] if has_findings else 0.5
+
+        try:
+            self.adaptive_learner.update_bandit(arm, ctx, reward)
+            self.logger.debug(
+                f"Bandit updated: arm={arm}, reward={reward:.2f}"
+            )
+        except Exception as e:
+            self.logger.debug(f"Bandit update failed: {e}")
 
     def init_case_generator(
         self,

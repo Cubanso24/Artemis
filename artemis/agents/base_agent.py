@@ -289,6 +289,13 @@ class BaseAgent(ABC):
             # Perform analysis
             output = self._analyze_data(data, context)
 
+            # Propagate agent-level FP rate into output metadata so the
+            # confidence aggregator's FP dampening actually has data to
+            # work with (it reads output.metadata["false_positive_rate"]).
+            if output.metadata is None:
+                output.metadata = {}
+            output.metadata["false_positive_rate"] = self.metrics.false_positive_rate
+
             # Update metrics
             processing_time = time.time() - start_time
             self._update_metrics(output, processing_time)

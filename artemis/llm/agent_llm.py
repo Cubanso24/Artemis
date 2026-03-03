@@ -208,14 +208,20 @@ class AgentLLM:
                 0.0, min(1.0, output.confidence + avg_adj)
             )
 
-        # Add missed patterns as new findings
+        # Add missed patterns as new findings.
+        # These are LLM-only hypotheses with NO threshold-detector backing,
+        # so we hard-cap their confidence to avoid hallucinations inflating
+        # the overall score.
+        _LLM_MISSED_CONF_CAP = 0.45
+        _LLM_MISSED_NUDGE = 0.03  # small per-pattern nudge to overall conf
+
         missed = enrichment.get("missed_patterns", [])
         from datetime import datetime
 
         for mp in missed:
             desc = mp.get("description", "")
             indicators = mp.get("indicators", [])
-            conf = float(mp.get("confidence", 0.4))
+            conf = min(float(mp.get("confidence", 0.4)), _LLM_MISSED_CONF_CAP)
             if not desc:
                 continue
 
@@ -236,9 +242,9 @@ class AgentLLM:
             )
             output.findings.append(new_finding)
 
-            # Bump overall confidence if a missed pattern is high-confidence
-            if conf > output.confidence:
-                output.confidence = min(1.0, conf)
+            # Nudge overall confidence slightly — missed patterns are
+            # supporting evidence, never the primary signal.
+            output.confidence = min(1.0, output.confidence + _LLM_MISSED_NUDGE)
 
         # Re-assess severity after adjustments
         if output.confidence >= 0.8:
