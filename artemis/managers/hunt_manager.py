@@ -894,6 +894,7 @@ def _analysis_pipeline_process(job_id, db_path):
                     try:
                         assessment = _fut.result(timeout=_HUNT_TIMEOUT_S)
                     except _cf.TimeoutError:
+                        _fut.cancel()
                         log.error(
                             f'Cycle {analysis_cycle}: hunt timed out '
                             f'after {_HUNT_TIMEOUT_S}s — skipping')
