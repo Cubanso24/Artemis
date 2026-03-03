@@ -377,6 +377,8 @@ class DataPipeline:
                     'window_events': window_total,
                     'running_total': running_total,
                     'events_by_type': events_by_type,
+                    'window_earliest': earliest,
+                    'window_latest': latest,
                 })
 
             # Allow caller to process each window's data incrementally

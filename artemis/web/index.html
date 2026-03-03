@@ -1312,6 +1312,11 @@
                                     <span style="color:var(--text-secondary);">NTLM:</span>
                                     <span id="pipe-data-ntlm" style="color:var(--text-primary);">—</span>
                                 </div>
+                                <div id="pipe-data-backfill" style="display:none; margin-top:4px; font-size:10px; padding:3px 6px; border-radius:4px; background:rgba(88,166,255,0.08); border:1px solid rgba(88,166,255,0.2); color:var(--accent-primary);">
+                                    <i class="fa-solid fa-clock-rotate-left"></i>
+                                    Backfill: <span id="pipe-data-backfill-date">—</span>
+                                    <span id="pipe-data-backfill-progress" style="margin-left:4px; opacity:0.8;"></span>
+                                </div>
                                 <div id="pipe-data-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
                             </div>
                             <!-- Analysis Pipeline Card -->
@@ -1933,6 +1938,7 @@
             connectWebSocket();
             loadStats();
             loadPlugins();
+            loadLLMSettings();
             loadNetworkMaps();
             initializeTheme();
             checkBgProfileStatus();
@@ -4624,6 +4630,28 @@
                     if (newDns != null) document.getElementById('pipe-data-dns').textContent = Number(newDns).toLocaleString();
                     if (newNtlm != null) document.getElementById('pipe-data-ntlm').textContent = Number(newNtlm).toLocaleString();
 
+                    // Backfill progress (real-time)
+                    const rtBfFrom = result.backfill_from || '';
+                    const rtBfDiv = document.getElementById('pipe-data-backfill');
+                    if (rtBfFrom) {
+                        rtBfDiv.style.display = '';
+                        const rtBfDate = rtBfFrom.includes('T') ? rtBfFrom.split('T')[0] : rtBfFrom;
+                        document.getElementById('pipe-data-backfill-date').textContent = rtBfDate;
+                        const rtWE = result.window_earliest || '';
+                        const rtW = result.window || 0;
+                        const rtTW = result.total_windows || 0;
+                        let rtProg = '';
+                        if (rtWE) {
+                            const rtDay = rtWE.includes('T') ? rtWE.split('T')[0] : rtWE;
+                            const rtTime = rtWE.includes('T') ? rtWE.split('T')[1].slice(0,5) : '';
+                            rtProg = `→ currently at ${rtDay}` + (rtTime ? ` ${rtTime}` : '');
+                        }
+                        if (rtW && rtTW) rtProg += ` (window ${rtW}/${rtTW})`;
+                        document.getElementById('pipe-data-backfill-progress').textContent = rtProg;
+                    } else {
+                        rtBfDiv.style.display = 'none';
+                    }
+
                     const detailEl = document.getElementById('pipe-data-detail');
                     if (result.total_events) {
                         detailEl.textContent = `Backfill: ${Number(result.total_events).toLocaleString()} events processed`;
@@ -4764,6 +4792,31 @@
                     document.getElementById('pipe-data-conns').textContent = '—';
                     document.getElementById('pipe-data-dns').textContent = '—';
                     document.getElementById('pipe-data-ntlm').textContent = '—';
+
+                    // --- Backfill progress ---
+                    const dpExtra = dp.last_progress || {};
+                    const bfFrom = dpExtra.backfill_from || '';
+                    const bfDiv = document.getElementById('pipe-data-backfill');
+                    if (bfFrom) {
+                        bfDiv.style.display = '';
+                        const bfDate = bfFrom.includes('T') ? bfFrom.split('T')[0] : bfFrom;
+                        document.getElementById('pipe-data-backfill-date').textContent = bfDate;
+                        const wE = dpExtra.window_earliest || '';
+                        const w = dpExtra.window || 0;
+                        const tw = dpExtra.total_windows || 0;
+                        let progressText = '';
+                        if (wE) {
+                            const wDay = wE.includes('T') ? wE.split('T')[0] : wE;
+                            const wTime = wE.includes('T') ? wE.split('T')[1].slice(0,5) : '';
+                            progressText = `→ currently at ${wDay}` + (wTime ? ` ${wTime}` : '');
+                        }
+                        if (w && tw) {
+                            progressText += ` (window ${w}/${tw})`;
+                        }
+                        document.getElementById('pipe-data-backfill-progress').textContent = progressText;
+                    } else {
+                        bfDiv.style.display = 'none';
+                    }
 
                     // --- Analysis pipeline card ---
                     const apStatus = document.getElementById('pipe-analysis-status');

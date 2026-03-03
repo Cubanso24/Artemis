@@ -478,6 +478,8 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                         w = info.get('window', '?')
                         tw = info.get('total_windows', '?')
                         rt = info.get('running_total', 0)
+                        we = info.get('window_earliest', '')
+                        wl = info.get('window_latest', '')
                         send('running',
                              f'Cycle {cycle}: fetched window {w}/{tw} '
                              f'({rt:,} events)...',
@@ -486,7 +488,10 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                               'total_nodes': len(nm.nodes),
                               'stage_detail': 'splunk_fetch',
                               'window': w, 'total_windows': tw,
-                              'running_total': rt})
+                              'running_total': rt,
+                              'window_earliest': we,
+                              'window_latest': wl,
+                              'backfill_from': bf_start or ''})
                     elif ptype == 'query_done':
                         log.info(f'Cycle {cycle}: query {info.get("query_name")} '
                                  f'returned {info.get("query_events", 0):,} events')
@@ -560,7 +565,8 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                                           'total_nodes': len(nm.nodes),
                                           'batch_events': _bf_cycle_events[0],
                                           'total_events': _bf_total_events[0],
-                                          'batches_queued': _bf_batches_queued[0]})
+                                          'batches_queued': _bf_batches_queued[0],
+                                          'backfill_from': bf_start})
                                 # Start a new cycle for the next batch
                                 _bf_cycle[0] += 1
                                 _bf_cycle_events[0] = 0
@@ -575,7 +581,8 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                                      30, {'cycle': cur, 'pipeline': 'data',
                                           'stage_detail': 'backfill_mapping',
                                           'total_nodes': len(nm.nodes),
-                                          'total_events': _bf_total_events[0]})
+                                          'total_events': _bf_total_events[0],
+                                          'backfill_from': bf_start})
 
                     hunting_data = pipeline.collect_hunting_data(
                         earliest_time=bf_start,
