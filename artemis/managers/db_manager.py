@@ -327,8 +327,42 @@ class DatabaseManager:
             )
         """)
 
+        # Adaptive learning state (survives server restarts)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learning_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Learning state persistence
+    # ------------------------------------------------------------------
+
+    def save_learning_state(self, key: str, value_dict: dict) -> None:
+        """Persist a learning-state blob (JSON-serialisable dict)."""
+        def _do(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO learning_state (key, value, updated_at) "
+                "VALUES (?, ?, ?)",
+                (key, _dumps(value_dict), datetime.now().isoformat()),
+            )
+        self._exec_with_retry(_do)
+
+    def load_learning_state(self, key: str) -> dict:
+        """Load a previously saved learning-state blob, or empty dict."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM learning_state WHERE key = ?", (key,)
+            ).fetchone()
+            return json.loads(row[0]) if row else {}
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Cases

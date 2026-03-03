@@ -106,6 +106,7 @@ class MetaLearnerCoordinator:
 
         # Case generator (initialized lazily when db_manager is available)
         self.case_generator: Optional[CaseGenerator] = None
+        self._db_manager = None
 
         # Per-hunt state (set during hunt())
         self._current_directives: Dict[str, Dict] = {}
@@ -251,6 +252,22 @@ class MetaLearnerCoordinator:
         # Stage 5: Confidence Aggregation & Decision Making
         assessment = self._aggregate_results(agent_outputs, context)
 
+        # Apply calibration factor from historical TP/FP outcomes.
+        # If Artemis has historically been overconfident at this level,
+        # the factor pulls the score down (and vice versa).
+        cal = self.adaptive_learner.get_calibration_factor(
+            assessment["final_confidence"]
+        )
+        if cal != 1.0:
+            old = assessment["final_confidence"]
+            assessment["final_confidence"] = max(
+                0.0, min(1.0, old * cal)
+            )
+            self.logger.info(
+                f"Calibration adjustment: {old:.2f} × {cal:.2f} "
+                f"→ {assessment['final_confidence']:.2f}"
+            )
+
         # Stage 5.5: LLM synthesis — unified threat narrative
         assessment = self._synthesize_with_llm(
             assessment, agent_outputs, context
@@ -268,6 +285,10 @@ class MetaLearnerCoordinator:
 
         # Stage 8: Autonomous case generation
         assessment = self._generate_cases(assessment, data)
+
+        # Persist learning state so it survives restarts
+        if self._db_manager:
+            self.adaptive_learner.save_state(self._db_manager)
 
         self.logger.info(
             f"Hunt complete: confidence={assessment['final_confidence']:.2f}, "
@@ -488,6 +509,15 @@ class MetaLearnerCoordinator:
 
         return outputs
 
+    # Directive threshold_adjustments → numeric multiplier for detection
+    # thresholds.  "lower" makes agents more sensitive (catches more but
+    # noisier); "higher" makes them stricter (fewer findings, less noise).
+    _DIRECTIVE_THRESHOLD_MULTIPLIERS = {
+        "lower": 0.8,
+        "normal": 1.0,
+        "higher": 1.2,
+    }
+
     def _run_agent(
         self,
         agent_name: str,
@@ -503,10 +533,36 @@ class MetaLearnerCoordinator:
         # Set agent priority
         agent.set_priority(int(priority * 4))  # Scale to 0-4
 
+        # Apply directive threshold adjustments so the LLM coordinator
+        # can actually steer detector sensitivity.
+        directive = self._current_directives.get(agent_name, {})
+        adj_str = directive.get("threshold_adjustments", "normal")
+        directive_mult = self._DIRECTIVE_THRESHOLD_MULTIPLIERS.get(adj_str, 1.0)
+
+        # Also apply the adaptive learner's per-agent FP multiplier
+        fp_mult = self.adaptive_learner.get_threshold_multiplier(agent_name)
+
+        combined_mult = directive_mult * fp_mult
+        original_config = None
+        if combined_mult != 1.0:
+            # Temporarily scale all numeric thresholds in the agent's config
+            original_config = dict(agent.config)
+            for key, val in agent.config.items():
+                if isinstance(val, (int, float)) and "threshold" in key:
+                    agent.config[key] = type(val)(val * combined_mult)
+            self.logger.debug(
+                f"Agent {agent_name}: threshold multiplier={combined_mult:.2f} "
+                f"(directive={directive_mult}, fp_adj={fp_mult:.2f})"
+            )
+
         self.logger.debug(f"Running agent: {agent_name} (priority={priority:.2f})")
 
         # Execute agent
         output = agent.analyze(data, context)
+
+        # Restore original config
+        if original_config is not None:
+            agent.config = original_config
 
         # Update statistics
         self.stats["agent_activations"][agent_name] = \
@@ -742,6 +798,7 @@ class MetaLearnerCoordinator:
         are created, since the coordinator may be initialised before
         the database layer.
         """
+        self._db_manager = db_manager
         rag = getattr(self, 'rag_store', None)
         self.case_generator = CaseGenerator(
             db_manager=db_manager,
@@ -751,6 +808,8 @@ class MetaLearnerCoordinator:
             auto_case_threshold=auto_case_threshold,
             dedup_window_hours=dedup_window_hours,
         )
+        # Restore learning state from DB so it survives restarts
+        self.adaptive_learner.load_state(db_manager)
         self.logger.info("Case generator initialized — autonomous case creation enabled")
 
     def _generate_cases(

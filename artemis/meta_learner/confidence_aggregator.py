@@ -161,8 +161,12 @@ class ConfidenceAggregator:
         """
         Apply kill chain progression weighting.
 
-        Sequential detections across kill chain stages increase confidence.
-        Chain_Multiplier = 1.5 if (Reconnaissance → Access → Execution detected)
+        Sequential detections across kill chain stages increase confidence,
+        but ONLY when findings from different stages share at least one
+        indicator or affected asset.  Without this overlap check, two
+        completely unrelated alerts (e.g. a routine port scan and an
+        unrelated SMB anomaly) would get a 1.5× boost just because they
+        happened to span different MITRE tactics.
         """
         # Extract detected tactics
         detected_tactics = []
@@ -184,6 +188,36 @@ class ConfidenceAggregator:
         is_progression = False
         if len(tactic_stages) >= 2:
             is_progression = MITREAttack.is_kill_chain_progression(tactic_stages)
+
+        # Require indicator/asset overlap between agents that contribute
+        # to the progression.  Collect per-agent indicator sets and check
+        # pairwise overlap.
+        if is_progression and len(outputs) >= 2:
+            agent_indicators = []
+            for output_dict in outputs:
+                output = output_dict["output"]
+                indicators = set()
+                for finding in output.findings:
+                    indicators.update(finding.indicators)
+                    indicators.update(finding.affected_assets)
+                agent_indicators.append(indicators)
+
+            # At least one pair of agents must share an indicator
+            has_overlap = False
+            for i in range(len(agent_indicators)):
+                for j in range(i + 1, len(agent_indicators)):
+                    if agent_indicators[i] & agent_indicators[j]:
+                        has_overlap = True
+                        break
+                if has_overlap:
+                    break
+
+            if not has_overlap:
+                is_progression = False
+                self.logger.debug(
+                    "Kill chain progression rejected — no shared "
+                    "indicators between agents"
+                )
 
         # Apply multiplier
         chain_multiplier = 1.5 if is_progression else 1.0
@@ -233,18 +267,32 @@ class ConfidenceAggregator:
         """
         Calculate final aggregated confidence score.
 
-        Uses maximum confidence from corroborated outputs.
+        Uses maximum confidence from corroborated outputs, with both
+        upward boosts (multi-agent agreement) and downward penalties
+        (singleton findings, low corroboration).
         """
         if not outputs:
             return 0.0
 
         # Take maximum adjusted confidence
         max_confidence = max(o["adjusted_confidence"] for o in outputs)
+        best = max(outputs, key=lambda o: o["adjusted_confidence"])
 
         # If multiple high-confidence agents agree, boost further
         high_conf_agents = [o for o in outputs if o["adjusted_confidence"] > 0.7]
         if len(high_conf_agents) >= 2:
             max_confidence = min(max_confidence * 1.1, 1.0)
+
+        # Singleton penalty: if the top-scoring agent has zero
+        # corroboration (no other agent sees similar TTPs), apply a
+        # dampening factor.  This counterbalances the upward-only boosts
+        # and prevents a single noisy agent from driving high scores.
+        if best.get("corroborating_agents", 0) == 0 and len(outputs) > 1:
+            max_confidence *= 0.85
+            self.logger.debug(
+                f"Singleton penalty applied to {best['agent_name']} "
+                f"(no corroboration): confidence → {max_confidence:.2f}"
+            )
 
         return max_confidence
 

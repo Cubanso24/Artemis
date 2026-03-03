@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 import logging
 
+import numpy as np
+
 from artemis.models.agent_output import AgentOutput
 from artemis.utils.bandit import ContextualBandit
 from artemis.utils.logging_config import ArtemisLogger
@@ -56,6 +58,10 @@ class AdaptiveLearner:
 
         # Learning history
         self.feedback_history: List[Dict[str, Any]] = []
+
+        # Per-agent FP tracking for threshold adjustment (RL3)
+        self._agent_fp_counts: Dict[str, int] = {}
+        self._agent_tp_counts: Dict[str, int] = {}
 
     def integrate_feedback(
         self,
@@ -109,10 +115,12 @@ class AdaptiveLearner:
     ):
         """Handle true positive feedback."""
         # Record successful agent activation pattern
-        activated_agents = [
-            output["agent_name"]
-            for output in assessment.get("agent_outputs", [])
-        ]
+        activated_agents = []
+        for output in assessment.get("agent_outputs", []):
+            agent_name = output.get("agent_name") if isinstance(output, dict) else getattr(output, "agent_name", None)
+            if agent_name:
+                activated_agents.append(agent_name)
+                self._agent_tp_counts[agent_name] = self._agent_tp_counts.get(agent_name, 0) + 1
 
         # Extract MITRE techniques
         techniques = assessment.get("mitre_techniques", [])
@@ -127,14 +135,43 @@ class AdaptiveLearner:
         assessment: Dict[str, Any],
         analyst_notes: Optional[str]
     ):
-        """Handle false positive feedback."""
-        # Adjust agent confidence thresholds
-        for output in assessment.get("agent_outputs", []):
-            agent_name = output["agent_name"]
-            # In production, would update agent-specific thresholds
-            self.logger.debug(f"Adjusting thresholds for {agent_name}")
+        """Handle false positive feedback.
 
-        self.logger.info("False positive recorded - adjusting detection thresholds")
+        Increments per-agent FP counters so ``get_threshold_multiplier``
+        returns tighter thresholds for agents that frequently trigger FPs.
+        """
+        for output in assessment.get("agent_outputs", []):
+            agent_name = output.get("agent_name") if isinstance(output, dict) else getattr(output, "agent_name", None)
+            if not agent_name:
+                continue
+            self._agent_fp_counts[agent_name] = self._agent_fp_counts.get(agent_name, 0) + 1
+            self.logger.debug(
+                f"FP count for {agent_name}: {self._agent_fp_counts[agent_name]}"
+            )
+
+        self.logger.info("False positive recorded — per-agent FP counts updated")
+
+    def get_threshold_multiplier(self, agent_name: str) -> float:
+        """Return a threshold multiplier for *agent_name* based on FP history.
+
+        - 1.0 = no adjustment (default / balanced TP-FP ratio)
+        - >1.0 = raise thresholds (agent has high FP rate — be stricter)
+        - <1.0 = lower thresholds (agent rarely FPs — can be more sensitive)
+
+        Multiplier formula:
+            fp_rate = FP / (TP + FP)
+            multiplier = 1.0 + (fp_rate - 0.5)  → clamped to [0.8, 1.5]
+        An agent with 50% FP rate gets 1.0 (neutral); 80% FP → 1.3 (stricter).
+        """
+        fp = self._agent_fp_counts.get(agent_name, 0)
+        tp = self._agent_tp_counts.get(agent_name, 0)
+        total = tp + fp
+        if total < 3:
+            return 1.0  # not enough data
+
+        fp_rate = fp / total
+        multiplier = 1.0 + (fp_rate - 0.5)
+        return max(0.8, min(1.5, multiplier))
 
     def _update_playbook(
         self,
@@ -423,3 +460,75 @@ class AdaptiveLearner:
             self.logger.info(f"Imported {len(self.playbooks)} playbooks from {filepath}")
         except Exception as e:
             self.logger.error(f"Failed to import playbooks: {e}")
+
+    # ------------------------------------------------------------------
+    # DB persistence (survives server restarts)
+    # ------------------------------------------------------------------
+
+    def save_state(self, db_manager) -> None:
+        """Persist all learning state to the database.
+
+        Saves playbooks, metrics, calibration data, per-agent FP/TP
+        counts, and bandit weights so they survive restarts.
+        """
+        try:
+            state = {
+                "metrics": self.metrics,
+                "playbooks": self.playbooks,
+                "agent_fp_counts": self._agent_fp_counts,
+                "agent_tp_counts": self._agent_tp_counts,
+                "calibration_data": getattr(self, "_calibration_data", []),
+                "bandit_weights": self.bandit.weights.tolist(),
+                "bandit_covariance": [c.tolist() for c in self.bandit.covariance],
+                "bandit_arms": {
+                    str(k): {
+                        "successes": v.successes,
+                        "failures": v.failures,
+                        "total_pulls": v.total_pulls,
+                        "total_reward": v.total_reward,
+                    }
+                    for k, v in self.bandit.arms.items()
+                },
+            }
+            db_manager.save_learning_state("adaptive_learner", state)
+            self.logger.info("Learning state saved to DB")
+        except Exception as e:
+            self.logger.error(f"Failed to save learning state: {e}")
+
+    def load_state(self, db_manager) -> None:
+        """Restore learning state from the database."""
+        try:
+            state = db_manager.load_learning_state("adaptive_learner")
+            if not state:
+                self.logger.info("No saved learning state found — starting fresh")
+                return
+
+            self.metrics = state.get("metrics", self.metrics)
+            self.playbooks = state.get("playbooks", self.playbooks)
+            self._agent_fp_counts = state.get("agent_fp_counts", {})
+            self._agent_tp_counts = state.get("agent_tp_counts", {})
+            self._calibration_data = state.get("calibration_data", [])
+
+            # Restore bandit weights
+            weights = state.get("bandit_weights")
+            if weights is not None:
+                self.bandit.weights = np.array(weights)
+            covariance = state.get("bandit_covariance")
+            if covariance is not None:
+                self.bandit.covariance = [np.array(c) for c in covariance]
+            arms = state.get("bandit_arms", {})
+            for k_str, v in arms.items():
+                k = int(k_str)
+                if k in self.bandit.arms:
+                    self.bandit.arms[k].successes = v["successes"]
+                    self.bandit.arms[k].failures = v["failures"]
+                    self.bandit.arms[k].total_pulls = v["total_pulls"]
+                    self.bandit.arms[k].total_reward = v["total_reward"]
+
+            self.logger.info(
+                f"Restored learning state from DB "
+                f"(metrics={self.metrics['total_feedback']} feedback, "
+                f"{len(self.playbooks)} playbooks)"
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to load learning state: {e}")
