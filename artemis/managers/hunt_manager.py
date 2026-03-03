@@ -429,7 +429,18 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
 
         # When starting a backfill, force a clean map — don't carry over
         # stale nodes from a previous run's map file.
+        # Auto-save a backup snapshot first so the user doesn't lose work.
         if backfill_from:
+            if nm.nodes:
+                import shutil
+                from pathlib import Path
+                maps_dir = Path('network_maps')
+                current = maps_dir / 'current_map.json'
+                if current.exists():
+                    backup_name = f"pre_backfill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    backup_file = maps_dir / backup_name
+                    shutil.copy2(current, backup_file)
+                    log.info(f'Backed up existing map to {backup_name} before backfill')
             nm.nodes.clear()
             nm.sensors.clear()
             nm.mac_history.clear()

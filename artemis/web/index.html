@@ -4565,6 +4565,16 @@
             const lookback = parseInt(document.getElementById('continuous-lookback').value);
             const backfillDate = document.getElementById('continuous-backfill-date').value;
 
+            // Warn user that backfill will reset the current map
+            if (backfillDate) {
+                const ok = confirm(
+                    'Backfill will clear your current network map and rebuild it from historical data.\n\n'
+                    + 'A backup snapshot will be saved automatically as "pre_backfill_<timestamp>".\n\n'
+                    + 'Continue?'
+                );
+                if (!ok) return;
+            }
+
             btn.disabled = true;
             btn.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> Starting...';
 
