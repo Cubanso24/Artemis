@@ -6,12 +6,11 @@
 #   sudo ./install_service.sh
 #
 # What it does:
-#   1. Installs Python dependencies (system-wide, no venv required)
-#   2. Copies artemis.service to /etc/systemd/system/
-#   3. Updates paths in the unit file to match this checkout
-#   4. Adds a sudoers rule so the service user can run
+#   1. Copies artemis.service to /etc/systemd/system/
+#   2. Updates paths in the unit file to match this checkout
+#   3. Adds a sudoers rule so the service user can run
 #      'systemctl stop/restart artemis' without a password
-#   5. Enables and starts the service
+#   4. Enables and starts the service
 #
 
 set -euo pipefail
@@ -31,11 +30,7 @@ echo "  Service user:      ${SERVICE_USER}"
 echo "  Python:            ${PYTHON}"
 echo ""
 
-# ── 1. Install dependencies ─────────────────────────────────────────
-echo "Installing Python dependencies..."
-"${PYTHON}" -m pip install -q -r "${SCRIPT_DIR}/requirements.txt"
-
-# ── 2. Generate the unit file with correct paths ────────────────────
+# ── 1. Generate the unit file with correct paths ────────────────────
 UNIT=/etc/systemd/system/artemis.service
 
 sed \
@@ -48,7 +43,7 @@ sed \
 
 echo "  Installed unit file -> ${UNIT}"
 
-# ── 3. Sudoers: let the service user stop/restart without password ──
+# ── 2. Sudoers: let the service user stop/restart without password ──
 SUDOERS=/etc/sudoers.d/artemis
 cat > "${SUDOERS}" <<SUDOERS_EOF
 # Allow the Artemis service user to stop/restart via the web UI
@@ -57,7 +52,7 @@ SUDOERS_EOF
 chmod 0440 "${SUDOERS}"
 echo "  Installed sudoers  -> ${SUDOERS}"
 
-# ── 4. Reload, enable, start ────────────────────────────────────────
+# ── 3. Reload, enable, start ────────────────────────────────────────
 systemctl daemon-reload
 systemctl enable artemis
 systemctl start artemis
