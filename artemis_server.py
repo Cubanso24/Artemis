@@ -114,18 +114,17 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    """Runs when uvicorn is shutting down (e.g. systemctl stop, ctrl-c).
+    """Runs when uvicorn is shutting down (systemctl stop, ctrl-c, reload).
 
-    Under systemd, KillMode=control-group handles most cleanup, but we
-    also explicitly kill tracked children here so the shutdown is orderly
-    even in dev mode.
+    Under systemd KillMode=control-group ensures every child dies, but we
+    still do orderly cleanup here so dev-mode ctrl-c is also clean.
     """
     # Kill all tracked child processes (pipelines, profilers, etc.)
     try:
         result = hunt_manager.kill_all_processes()
         logger.info(f"Shutdown: killed {result['killed']} child process(es)")
     except Exception as e:
-        logger.warning(f"Shutdown: failed to kill children: {e}")
+        logger.warning(f"Shutdown: child cleanup failed: {e}")
 
     # Cancel the progress-polling task (it will restart on next startup)
     if hunt_manager._poll_task and not hunt_manager._poll_task.done():

@@ -8,9 +8,11 @@ User=administrator
 WorkingDirectory=/home/user/Artemis
 Environment="SPLUNK_HOST=10.25.11.86"
 Environment="ARTEMIS_SYSTEMD=1"
-# Load SPLUNK_TOKEN (and any other secrets) from .env file
-EnvironmentFile=/home/user/Artemis/.env
-ExecStart=/home/user/Artemis/venv/bin/python artemis_server.py
+
+# Load secrets from .env if it exists (the dash prefix means "don't fail if missing")
+EnvironmentFile=-/home/user/Artemis/.env
+
+ExecStart=/usr/local/bin/python3 artemis_server.py
 
 # Kill the entire process group (server + all child pipelines/profilers)
 KillMode=control-group
