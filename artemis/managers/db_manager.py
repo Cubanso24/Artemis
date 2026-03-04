@@ -31,7 +31,7 @@ class DatabaseManager:
     # Default busy timeout (ms) — how long SQLite waits on a locked DB
     # before raising OperationalError.  5 seconds is plenty for the brief
     # write locks that occur during normal operation.
-    BUSY_TIMEOUT_MS = 5000
+    BUSY_TIMEOUT_MS = 30000  # 30 s — three pipelines write concurrently
 
     def __init__(self, db_path: str = "artemis.db"):
         self.db_path = db_path
@@ -39,17 +39,17 @@ class DatabaseManager:
 
     def _connect(self) -> sqlite3.Connection:
         """Create a new SQLite connection with WAL mode and busy timeout."""
-        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn = sqlite3.connect(self.db_path, timeout=60)
         conn.execute(f"PRAGMA busy_timeout = {self.BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
 
-    def _exec_with_retry(self, fn, max_retries=4):
+    def _exec_with_retry(self, fn, max_retries=6):
         """Execute *fn(conn)* with automatic retry on database-locked errors.
 
         Three pipeline processes write concurrently; despite WAL mode and a
         busy timeout, transient OperationalError can still occur.  This
-        helper retries with exponential back-off (0.2 s, 0.4 s, 0.8 s).
+        helper retries with exponential back-off (1s, 2s, 4s, 8s, 16s).
         """
         for attempt in range(max_retries):
             conn = self._connect()
@@ -59,7 +59,7 @@ class DatabaseManager:
                 return result
             except sqlite3.OperationalError:
                 if attempt < max_retries - 1:
-                    _time.sleep(0.2 * (2 ** attempt))
+                    _time.sleep(1.0 * (2 ** attempt))
                 else:
                     raise
             finally:
