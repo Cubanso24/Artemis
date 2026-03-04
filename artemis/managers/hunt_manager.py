@@ -961,7 +961,8 @@ def _analysis_pipeline_process(job_id, db_path):
         except Exception:
             pass
 
-    send('running', 'Starting analysis pipeline...', 0)
+    send('running', 'Starting analysis pipeline...', 0,
+         {'pipeline': 'analysis', 'status': 'initializing'})
 
     _MAX_INIT_RETRIES = 5
 

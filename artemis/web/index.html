@@ -4873,22 +4873,31 @@
                     const findings = result.findings || 0;
                     const completed = result.analyses_completed || 0;
                     const isLlmActive = result.stage_detail === 'llm_analysis';
-                    const isIdle = result.status === 'idle';
+                    const isIdle = result.status === 'idle' || result.status === 'initializing';
+                    const isInit = result.status === 'initializing';
                     const orch = result.orchestration;
 
                     const statusEl = document.getElementById('pipe-analysis-status');
-                    if (isIdle) {
-                        statusEl.textContent = 'Idle';
+                    if (isInit) {
+                        statusEl.textContent = 'Initializing';
+                        statusEl.style.background = '#d2992233';
+                        statusEl.style.color = '#d29922';
+                    } else if (isIdle) {
+                        statusEl.textContent = 'Waiting';
                         statusEl.style.background = '#8b949e33';
                         statusEl.style.color = '#8b949e';
+                    } else if (isLlmActive) {
+                        statusEl.textContent = 'Analyzing';
+                        statusEl.style.background = '#ab47bc33';
+                        statusEl.style.color = '#ab47bc';
                     } else {
-                        statusEl.textContent = isLlmActive ? 'Analyzing' : 'Running';
+                        statusEl.textContent = 'Running';
                         statusEl.style.background = '#ab47bc33';
                         statusEl.style.color = '#ab47bc';
                     }
 
                     const currentCycle = result.cycle || 0;
-                    document.getElementById('pipe-analysis-cycle').textContent = currentCycle ? `#${currentCycle}` : (isIdle ? 'Idle' : '—');
+                    document.getElementById('pipe-analysis-cycle').textContent = currentCycle ? `#${currentCycle}` : (isInit ? 'Init' : isIdle ? 'Waiting' : '—');
                     document.getElementById('pipe-analysis-events').textContent = totalEvents ? Number(totalEvents).toLocaleString() : (isIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent = nAgents ? `${nAgents} agents` : '—';
                     document.getElementById('pipe-analysis-llm').textContent = orch === 'crewai' ? `CrewAI (${llmBackend})` : (llmBackend !== '—' ? llmBackend : '—');
@@ -5024,10 +5033,15 @@
                     // --- Analysis pipeline card ---
                     const apStatus = document.getElementById('pipe-analysis-status');
                     const apData = ap.last_progress || {};
-                    const apIsIdle = apData.status === 'idle';
+                    const apIsInit = apData.status === 'initializing';
+                    const apIsIdle = apData.status === 'idle' || apIsInit;
                     const apIsLlm = apData.stage_detail === 'llm_analysis';
                     if (ap.running) {
-                        if (apIsIdle) {
+                        if (apIsInit) {
+                            apStatus.textContent = 'Initializing';
+                            apStatus.style.background = '#d2992233';
+                            apStatus.style.color = '#d29922';
+                        } else if (apIsIdle) {
                             apStatus.textContent = 'Waiting';
                             apStatus.style.background = '#8b949e33';
                             apStatus.style.color = '#8b949e';
@@ -5047,7 +5061,7 @@
                     }
                     const apCycle = apData.cycle || 0;
                     document.getElementById('pipe-analysis-cycle').textContent =
-                        apCycle ? `#${apCycle}` : (apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
+                        apCycle ? `#${apCycle}` : (apIsInit ? 'Init' : apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
                     document.getElementById('pipe-analysis-events').textContent =
                         apData.total_events ? Number(apData.total_events).toLocaleString() : (apIsIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent =
