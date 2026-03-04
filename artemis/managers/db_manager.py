@@ -1547,11 +1547,19 @@ class DatabaseManager:
         finally:
             conn.close()
 
-        # Reclaim disk space
+        # Reclaim disk space asynchronously — VACUUM rewrites the entire
+        # DB file and holds an exclusive lock the whole time.  With large
+        # databases (hundreds of millions of rows just deleted) this can
+        # take minutes, blocking every other query and making the server
+        # appear frozen.  Use incremental auto_vacuum instead so space is
+        # reclaimed gradually without a global lock.
         try:
             vconn = self._connect()
             try:
-                vconn.execute("VACUUM")
+                # Enable incremental auto-vacuum for future deletes
+                vconn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                # Free up to 5000 pages (~20 MB) without a long lock
+                vconn.execute("PRAGMA incremental_vacuum(5000)")
             finally:
                 vconn.close()
         except Exception:
