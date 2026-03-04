@@ -16,6 +16,9 @@ import logging
 import os
 import socket
 
+# Allow numexpr to use more cores (detected 128, default cap is 16)
+os.environ.setdefault("NUMEXPR_MAX_THREADS", "96")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

@@ -860,6 +860,9 @@ def _analysis_pipeline_process(job_id, db_path):
 
     _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '3600'))  # 1 hour
 
+    # Ensure numexpr can use more cores in this subprocess too
+    os.environ.setdefault("NUMEXPR_MAX_THREADS", "96")
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

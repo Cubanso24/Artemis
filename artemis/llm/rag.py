@@ -401,7 +401,19 @@ class RAGStore:
                 })
             return items
         except Exception as e:
-            logger.error(f"RAG query failed on {collection}: {e}")
+            # Dimension mismatch — stale collection from a different model
+            if "dimension" in str(e).lower():
+                logger.warning(
+                    f"Embedding dimension mismatch in '{collection}', "
+                    f"recreating collection: {e}"
+                )
+                try:
+                    self._client.delete_collection(collection)
+                    self._collections.pop(collection, None)
+                except Exception:
+                    pass
+            else:
+                logger.error(f"RAG query failed on {collection}: {e}")
             return []
 
     # ------------------------------------------------------------------
