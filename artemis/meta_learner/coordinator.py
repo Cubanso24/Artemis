@@ -145,31 +145,22 @@ class MetaLearnerCoordinator:
         )
 
         # Initialize RAG store (gracefully degrades if chromadb missing).
-        # ChromaDB + DuckDB init can hang for minutes on large persisted
-        # stores, so we probe with a timeout to avoid blocking the whole
-        # analysis pipeline.
+        # RAGStore.__init__ is lazy (_client = None), so creation is
+        # instant.  We do NOT call rag_store.available here because that
+        # triggers chromadb.Client() which can hang for minutes loading a
+        # large persisted DuckDB store — especially under I/O contention
+        # during event replay.  Instead, RAG initialises on first actual
+        # use; if chromadb is missing or broken it degrades gracefully.
         rag_store = None
         try:
             from artemis.llm.rag import RAGStore
             rag_store = RAGStore()
-            # Probe availability in a thread with a short timeout so a
-            # slow ChromaDB/DuckDB init doesn't block the pipeline.
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _fut = _pool.submit(lambda s: s.available, rag_store)
-                try:
-                    _rag_ok = _fut.result(timeout=10)
-                except _cf.TimeoutError:
-                    _rag_ok = False
-                    self.logger.warning(
-                        "RAG store init timed out (10s) — running "
-                        "without historical context"
-                    )
-            if _rag_ok:
-                self.logger.info("RAG store initialised — historical context enabled")
-            else:
-                rag_store = None
-                self.logger.info("RAG store unavailable — running without historical context")
+            self.logger.info(
+                "RAG store created (lazy init — chromadb will load on "
+                "first use)"
+            )
+        except ImportError:
+            self.logger.info("RAG store disabled: chromadb not installed")
         except Exception as e:
             self.logger.info(f"RAG store disabled: {e}")
         self.rag_store = rag_store
