@@ -115,6 +115,18 @@ class AgentOutput:
                     "affected_assets": f.affected_assets,
                     "timestamp": f.timestamp.isoformat(),
                     "fingerprint": f.fingerprint,
+                    "evidence": [
+                        {
+                            "timestamp": e.timestamp.isoformat()
+                            if hasattr(e.timestamp, 'isoformat')
+                            else str(e.timestamp),
+                            "source": e.source,
+                            "data": e.data,
+                            "description": e.description,
+                            "confidence_contribution": e.confidence_contribution,
+                        }
+                        for e in (f.evidence if hasattr(f, 'evidence') else [])
+                    ],
                 }
                 for f in self.findings
             ],

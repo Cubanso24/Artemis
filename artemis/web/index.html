@@ -5041,7 +5041,7 @@
                     const apIsLoading = apData.stage_detail === 'loading_events';
                     const apIsInit = apData.status === 'initializing' && !apIsLoading;
                     const apIsIdle = (apData.status === 'idle' || apIsInit) && !apIsLoading;
-                    const apIsLlm = apData.stage_detail === 'llm_analysis';
+                    const apIsLlm = apData.stage_detail === 'llm_analysis' || apData.stage_detail === 'llm_synthesis';
                     if (ap.running) {
                         if (apIsInit) {
                             apStatus.textContent = 'Initializing';
@@ -5076,12 +5076,23 @@
                         apData.total_events ? Number(apData.total_events).toLocaleString() : (apIsIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent =
                         apData.n_agents ? `${apData.n_agents} agents` : '—';
-                    document.getElementById('pipe-analysis-llm').textContent = apData.llm_backend || '—';
+                    const llmText = apData.llm_backend || '—';
+                    const elapsedSec = apData.elapsed_seconds;
+                    document.getElementById('pipe-analysis-llm').textContent =
+                        (apIsLlm && elapsedSec) ? `${llmText} (${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s)` : llmText;
                     document.getElementById('pipe-analysis-findings').textContent = apData.findings || '0';
                     document.getElementById('pipe-analysis-completed').textContent =
                         `${apData.analyses_completed || 0} cycles`;
-                    document.getElementById('pipe-analysis-llm-badge').style.display =
-                        apIsLlm ? 'inline' : 'none';
+                    const llmBadge = document.getElementById('pipe-analysis-llm-badge');
+                    if (apIsLlm) {
+                        llmBadge.style.display = 'inline';
+                        const orchLabel = apData.orchestration === 'crewai' ? 'CrewAI' : 'LLM';
+                        llmBadge.textContent = elapsedSec
+                            ? `${orchLabel} ${Math.floor(elapsedSec / 60)}m`
+                            : orchLabel;
+                    } else {
+                        llmBadge.style.display = 'none';
+                    }
 
                     // Queue badge
                     const queueBadge = document.getElementById('pipe-analysis-queue-badge');
@@ -5208,16 +5219,57 @@
             const sevColors = { critical: '#f85149', high: '#f0883e', medium: '#d29922', low: '#58a6ff' };
             const sevIcons = { critical: 'fa-skull-crossbones', high: 'fa-triangle-exclamation', medium: 'fa-exclamation', low: 'fa-info-circle' };
 
-            container.innerHTML = findings.map(f => {
+            container.innerHTML = findings.map((f, idx) => {
                 const color = sevColors[f.severity] || '#58a6ff';
                 const icon = sevIcons[f.severity] || 'fa-info-circle';
                 const techniques = (f.mitre_techniques || []).map(t =>
                     `<span style="background:var(--bg-primary); padding:1px 6px; border-radius:3px; font-size:11px; margin-right:4px;">${escapeHtml(t)}</span>`
                 ).join('');
-                const indicators = (f.indicators || []).slice(0, 5).map(i =>
+                const indicators = (f.indicators || []).slice(0, 8).map(i =>
                     `<code style="font-size:11px; background:var(--bg-primary); padding:1px 4px; border-radius:3px; margin-right:4px;">${escapeHtml(i)}</code>`
                 ).join('');
                 const ago = _timeAgo(f.created_at);
+                const fullTime = f.created_at ? new Date(f.created_at).toLocaleString() : '';
+                const evidence = f.evidence || [];
+                const hasEvidence = evidence.length > 0;
+                const hasActions = f.recommended_actions && f.recommended_actions.length > 0;
+
+                // Build evidence section
+                let evidenceHtml = '';
+                if (hasEvidence) {
+                    evidenceHtml = `<div id="finding-evidence-${idx}" style="display:none; margin-top:8px; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; font-size:11px;">
+                        <div style="font-weight:600; margin-bottom:6px; color:var(--text-primary);"><i class="fa-solid fa-list-check" style="margin-right:4px;"></i> Evidence (${evidence.length})</div>
+                        ${evidence.map(e => {
+                            const eTime = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+                            const eSource = e.source || '';
+                            const eDesc = e.description || '';
+                            const eData = e.data ? JSON.stringify(e.data, null, 2) : '';
+                            const eConf = e.confidence_contribution ? `${(e.confidence_contribution * 100).toFixed(0)}%` : '';
+                            return `<div style="border-left:2px solid ${color}; padding:4px 8px; margin-bottom:6px; background:rgba(255,255,255,0.02); border-radius:0 3px 3px 0;">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span style="color:var(--text-primary); font-weight:500;">${escapeHtml(eDesc)}</span>
+                                    ${eConf ? `<span style="color:${color}; font-weight:600;">${eConf}</span>` : ''}
+                                </div>
+                                <div style="color:var(--text-secondary); margin-top:2px;">
+                                    ${eTime ? `<span><i class="fa-regular fa-clock" style="margin-right:3px;"></i>${eTime}</span>` : ''}
+                                    ${eSource ? `<span style="margin-left:8px;"><i class="fa-solid fa-database" style="margin-right:3px;"></i>${escapeHtml(eSource)}</span>` : ''}
+                                </div>
+                                ${eData ? `<pre style="margin:4px 0 0; padding:4px 6px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-all; max-height:120px; overflow-y:auto; font-size:10px;">${escapeHtml(eData)}</pre>` : ''}
+                            </div>`;
+                        }).join('')}
+                    </div>`;
+                }
+
+                // Build recommended actions section
+                let actionsHtml = '';
+                if (hasActions) {
+                    actionsHtml = `<div id="finding-actions-${idx}" style="display:none; margin-top:6px; padding:6px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; font-size:11px;">
+                        <div style="font-weight:600; margin-bottom:4px; color:var(--text-primary);"><i class="fa-solid fa-clipboard-list" style="margin-right:4px;"></i> Recommended Actions</div>
+                        <ul style="margin:0; padding-left:18px; color:var(--text-secondary);">
+                            ${f.recommended_actions.map(a => `<li>${escapeHtml(a)}</li>`).join('')}
+                        </ul>
+                    </div>`;
+                }
 
                 return `<div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-left:3px solid ${color}; border-radius:6px; padding:12px 16px; margin-bottom:8px;">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
@@ -5227,15 +5279,26 @@
                             <span style="font-size:11px; color:var(--text-secondary); margin-left:8px;">${escapeHtml(f.agent_name.replace(/_/g, ' '))}</span>
                         </div>
                         <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:11px; color:var(--text-secondary);">${ago}</span>
+                            <span style="font-size:11px; color:var(--text-secondary);" title="${fullTime}">${ago}</span>
                             <span style="font-size:11px; font-weight:600; color:${color};">${(f.confidence * 100).toFixed(0)}%</span>
                             <button onclick="dismissFinding('${escapeHtml(f.finding_id)}')" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 8px; border-radius:3px; cursor:pointer; font-size:11px;" title="Dismiss">Dismiss</button>
                         </div>
                     </div>
+                    <div style="display:flex; gap:6px; margin-top:4px; font-size:10px; color:var(--text-secondary);">
+                        <span title="Full timestamp"><i class="fa-regular fa-clock" style="margin-right:2px;"></i>${fullTime}</span>
+                        <span style="margin-left:6px;">Cycle #${f.source_cycle || '?'}</span>
+                        ${f.mitre_tactics && f.mitre_tactics.length ? `<span style="margin-left:6px;">Tactics: ${f.mitre_tactics.join(', ')}</span>` : ''}
+                    </div>
                     <p style="font-size:12px; margin:6px 0 4px; color:var(--text-secondary);">${escapeHtml(f.description)}</p>
                     <div style="margin-top:4px;">${techniques}</div>
                     ${indicators ? `<div style="margin-top:4px;">${indicators}</div>` : ''}
-                    ${f.affected_assets && f.affected_assets.length ? `<div style="margin-top:4px; font-size:11px; color:var(--text-secondary);">Assets: ${f.affected_assets.slice(0,5).map(a => escapeHtml(a)).join(', ')}</div>` : ''}
+                    ${f.affected_assets && f.affected_assets.length ? `<div style="margin-top:4px; font-size:11px; color:var(--text-secondary);"><i class="fa-solid fa-server" style="margin-right:3px;"></i>Assets: ${f.affected_assets.slice(0,8).map(a => `<code style="font-size:11px; background:var(--bg-primary); padding:0 3px; border-radius:2px;">${escapeHtml(a)}</code>`).join(', ')}</div>` : ''}
+                    <div style="margin-top:6px; display:flex; gap:8px;">
+                        ${hasEvidence ? `<button onclick="document.getElementById('finding-evidence-${idx}').style.display=document.getElementById('finding-evidence-${idx}').style.display==='none'?'':'none'" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 8px; border-radius:3px; cursor:pointer; font-size:11px;"><i class="fa-solid fa-magnifying-glass" style="margin-right:3px;"></i>Evidence (${evidence.length})</button>` : ''}
+                        ${hasActions ? `<button onclick="document.getElementById('finding-actions-${idx}').style.display=document.getElementById('finding-actions-${idx}').style.display==='none'?'':'none'" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:2px 8px; border-radius:3px; cursor:pointer; font-size:11px;"><i class="fa-solid fa-clipboard-list" style="margin-right:3px;"></i>Actions</button>` : ''}
+                    </div>
+                    ${evidenceHtml}
+                    ${actionsHtml}
                 </div>`;
             }).join('');
         }
@@ -7570,6 +7633,8 @@
             enrichment: 'fa-wand-magic-sparkles',
         };
 
+        let _agentEventCounter = 0;
+
         function _appendAgentEvent(ev, isLive) {
             _agentMonitorEvents.push(ev);
 
@@ -7591,13 +7656,60 @@
             const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
             const msg = ev.detail?.message || ev.activity;
 
+            // Check if this event has expandable content
+            const hasPrompt = ev.detail?.prompt_text;
+            const hasOutput = ev.detail?.output_preview;
+            const hasThought = ev.detail?.thought;
+            const hasExpected = ev.detail?.expected_output;
+            const hasExpandable = hasPrompt || hasOutput || hasThought;
+            const evtId = _agentEventCounter++;
+
             const line = document.createElement('div');
             line.setAttribute('data-agent', ev.agent);
             line.style.cssText = `padding:4px 8px; border-left:3px solid ${color}; margin-bottom:4px; border-radius:0 4px 4px 0; background:rgba(${ev.activity === 'error' ? '248,81,73,0.08' : '255,255,255,0.02'});${visible ? '' : ' display:none;'}`;
-            line.innerHTML = `<span style="opacity:0.5; margin-right:8px;">${ts}</span>`
-                + `<i class="fa-solid ${icon}" style="color:${color}; margin-right:6px; width:14px; text-align:center;"></i>`
-                + `<span style="color:${color}; font-weight:600; margin-right:8px;">${ev.agent}</span>`
-                + `<span style="color:var(--text-primary);">${_escHtml(msg)}</span>`;
+
+            let expandBtn = '';
+            if (hasExpandable) {
+                expandBtn = `<button onclick="document.getElementById('agent-ev-detail-${evtId}').style.display=document.getElementById('agent-ev-detail-${evtId}').style.display==='none'?'':'none'" style="background:none; border:1px solid var(--border-color); color:${color}; padding:0 5px; border-radius:3px; cursor:pointer; font-size:10px; margin-left:8px; opacity:0.7;"><i class="fa-solid fa-chevron-down"></i> detail</button>`;
+            }
+
+            let detailBlock = '';
+            if (hasExpandable) {
+                let sections = '';
+                if (hasPrompt) {
+                    sections += `<div style="margin-bottom:6px;">
+                        <div style="font-weight:600; color:${color}; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-arrow-right" style="margin-right:3px;"></i> LLM Prompt</div>
+                        <pre style="margin:0; padding:6px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto; font-size:11px; line-height:1.4; color:var(--text-primary);">${_escHtml(ev.detail.prompt_text)}</pre>
+                    </div>`;
+                }
+                if (hasExpected) {
+                    sections += `<div style="margin-bottom:6px;">
+                        <div style="font-weight:600; color:var(--text-secondary); font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-bullseye" style="margin-right:3px;"></i> Expected Output</div>
+                        <pre style="margin:0; padding:4px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; font-size:11px; color:var(--text-secondary);">${_escHtml(ev.detail.expected_output)}</pre>
+                    </div>`;
+                }
+                if (hasThought) {
+                    sections += `<div style="margin-bottom:6px;">
+                        <div style="font-weight:600; color:#d2a8ff; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-brain" style="margin-right:3px;"></i> Agent Thought</div>
+                        <pre style="margin:0; padding:4px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:200px; overflow-y:auto; font-size:11px; color:#d2a8ff;">${_escHtml(ev.detail.thought)}</pre>
+                    </div>`;
+                }
+                if (hasOutput) {
+                    sections += `<div style="margin-bottom:4px;">
+                        <div style="font-weight:600; color:#7ee787; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-arrow-left" style="margin-right:3px;"></i> LLM Response</div>
+                        <pre style="margin:0; padding:6px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto; font-size:11px; line-height:1.4; color:var(--text-primary);">${_escHtml(ev.detail.output_preview)}</pre>
+                    </div>`;
+                }
+                detailBlock = `<div id="agent-ev-detail-${evtId}" style="display:none; margin-top:6px; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px;">${sections}</div>`;
+            }
+
+            line.innerHTML = `<div style="display:flex; align-items:center;">
+                <span style="opacity:0.5; margin-right:8px;">${ts}</span>
+                <i class="fa-solid ${icon}" style="color:${color}; margin-right:6px; width:14px; text-align:center;"></i>
+                <span style="color:${color}; font-weight:600; margin-right:8px;">${ev.agent}</span>
+                <span style="color:var(--text-primary); flex:1;">${_escHtml(msg)}</span>
+                ${expandBtn}
+            </div>${detailBlock}`;
 
             feed.appendChild(line);
 

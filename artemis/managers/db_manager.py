@@ -162,6 +162,7 @@ class DatabaseManager:
                 mitre_tactics TEXT DEFAULT '[]',
                 mitre_techniques TEXT DEFAULT '[]',
                 evidence_count INTEGER DEFAULT 0,
+                evidence TEXT DEFAULT '[]',
                 recommended_actions TEXT DEFAULT '[]',
                 source_cycle INTEGER DEFAULT 0,
                 dismissed INTEGER DEFAULT 0,
@@ -350,6 +351,16 @@ class DatabaseManager:
                 updated_at TIMESTAMP
             )
         """)
+
+        # ------------------------------------------------------------------
+        # Migrations — add columns to existing tables
+        # ------------------------------------------------------------------
+        try:
+            cursor.execute(
+                "ALTER TABLE agent_findings ADD COLUMN evidence TEXT DEFAULT '[]'"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         conn.commit()
         conn.close()
@@ -789,7 +800,8 @@ class DatabaseManager:
                      affected_assets: list = None, mitre_tactics: list = None,
                      mitre_techniques: list = None, evidence_count: int = 0,
                      recommended_actions: list = None,
-                     source_cycle: int = 0) -> Dict:
+                     source_cycle: int = 0,
+                     evidence: list = None) -> Dict:
         """Save an agent finding to the database."""
         now = datetime.now().isoformat()
 
@@ -798,9 +810,9 @@ class DatabaseManager:
                 "INSERT OR IGNORE INTO agent_findings "
                 "(finding_id, agent_name, activity_type, severity, confidence, "
                 "description, indicators, affected_assets, mitre_tactics, "
-                "mitre_techniques, evidence_count, recommended_actions, "
+                "mitre_techniques, evidence_count, evidence, recommended_actions, "
                 "source_cycle, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (finding_id, agent_name, activity_type, severity, confidence,
                  description,
                  _dumps(indicators or []),
@@ -808,6 +820,7 @@ class DatabaseManager:
                  _dumps(mitre_tactics or []),
                  _dumps(mitre_techniques or []),
                  evidence_count,
+                 _dumps(evidence or []),
                  _dumps(recommended_actions or []),
                  source_cycle, now),
             )
@@ -843,6 +856,11 @@ class DatabaseManager:
             rows = conn.execute(query, params).fetchall()
             results = []
             for r in rows:
+                # Evidence column may not exist in older DBs
+                try:
+                    evidence_raw = r['evidence']
+                except (IndexError, KeyError):
+                    evidence_raw = '[]'
                 results.append({
                     'id': r['id'],
                     'finding_id': r['finding_id'],
@@ -856,6 +874,7 @@ class DatabaseManager:
                     'mitre_tactics': json.loads(r['mitre_tactics']),
                     'mitre_techniques': json.loads(r['mitre_techniques']),
                     'evidence_count': r['evidence_count'],
+                    'evidence': json.loads(evidence_raw) if evidence_raw else [],
                     'recommended_actions': json.loads(r['recommended_actions']),
                     'source_cycle': r['source_cycle'],
                     'dismissed': bool(r['dismissed']),

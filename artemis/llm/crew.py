@@ -356,23 +356,27 @@ def _build_tasks(
     context_block = f"{state_text}\n\n{data_summary}\n\n{findings_block}"
 
     # 1. Hypothesis generation (lead analyst)
+    hypothesis_desc = (
+        f"Analyse the following network state, hunting data, and ML "
+        f"detector findings, then generate 3-6 threat hypotheses.  For "
+        f"each hypothesis specify the type (kill_chain_stage, ttp_pattern, "
+        f"anomaly_investigation, insider_threat, apt_campaign), priority "
+        f"(0-1), confidence (0-1), and which specialist hunters should "
+        f"investigate.\n\n"
+        f"{context_block}"
+    )
+    hypothesis_expected = (
+        "A numbered list of threat hypotheses with type, description, "
+        "priority, confidence, and assigned specialist agents."
+    )
     fire_agent_activity("lead_analyst", "prompt", {
         "message": "Generating threat hypotheses from network state and ML findings",
+        "prompt_text": hypothesis_desc[:4000],
+        "expected_output": hypothesis_expected,
     })
     hypothesis_task = Task(
-        description=(
-            f"Analyse the following network state, hunting data, and ML "
-            f"detector findings, then generate 3-6 threat hypotheses.  For "
-            f"each hypothesis specify the type (kill_chain_stage, ttp_pattern, "
-            f"anomaly_investigation, insider_threat, apt_campaign), priority "
-            f"(0-1), confidence (0-1), and which specialist hunters should "
-            f"investigate.\n\n"
-            f"{context_block}"
-        ),
-        expected_output=(
-            "A numbered list of threat hypotheses with type, description, "
-            "priority, confidence, and assigned specialist agents."
-        ),
+        description=hypothesis_desc,
+        expected_output=hypothesis_expected,
         agent=agents["lead_analyst"],
     )
 
@@ -387,68 +391,77 @@ def _build_tasks(
         if agent is None:
             continue
 
-        # Log task assignment so it shows in the agent monitor
+        # Include this agent's ML findings directly in the task description
+        agent_findings_text = _findings_by_agent.get(name, "No ML findings for this agent.")
         n_agent_findings = len(_findings_by_agent.get(name, "").split("\n")) - 1
+
+        specialist_desc = (
+            f"Investigate your domain based on the lead analyst's "
+            f"hypotheses and the ML detector findings below.\n\n"
+            f"YOUR ML DETECTOR RESULTS:\n{agent_findings_text}\n\n"
+            f"Steps:\n"
+            f"1. Review the ML detector findings above for your domain.\n"
+            f"2. Call search_past_findings with a summary of any findings "
+            f"   to check for historical context.\n"
+            f"3. Call search_threat_intel if indicators match known threats.\n"
+            f"4. Call query_network_baseline to filter out normal behaviour.\n"
+            f"5. Optionally call run_detector with '{name}' for a fresh "
+            f"   run if you need more detail.\n"
+            f"6. Produce your assessment: for each finding, state whether "
+            f"   it is a true positive or false positive, your confidence "
+            f"   (0-1), MITRE techniques, and recommended actions.\n"
+            f"   Also note any patterns the detector missed."
+        )
+        specialist_expected = (
+            "A structured analysis with: findings (true/false positive "
+            "assessment, confidence, MITRE techniques, evidence), "
+            "missed patterns, and recommended actions."
+        )
+
+        # Log task assignment with actual prompt so it shows in the agent monitor
         fire_agent_activity(name, "prompt", {
             "message": f"Assigned investigation task "
                        f"({n_agent_findings} ML findings to review)",
+            "prompt_text": specialist_desc[:4000],
+            "expected_output": specialist_expected,
         })
 
-        # Include this agent's ML findings directly in the task description
-        agent_findings_text = _findings_by_agent.get(name, "No ML findings for this agent.")
-
         task = Task(
-            description=(
-                f"Investigate your domain based on the lead analyst's "
-                f"hypotheses and the ML detector findings below.\n\n"
-                f"YOUR ML DETECTOR RESULTS:\n{agent_findings_text}\n\n"
-                f"Steps:\n"
-                f"1. Review the ML detector findings above for your domain.\n"
-                f"2. Call search_past_findings with a summary of any findings "
-                f"   to check for historical context.\n"
-                f"3. Call search_threat_intel if indicators match known threats.\n"
-                f"4. Call query_network_baseline to filter out normal behaviour.\n"
-                f"5. Optionally call run_detector with '{name}' for a fresh "
-                f"   run if you need more detail.\n"
-                f"6. Produce your assessment: for each finding, state whether "
-                f"   it is a true positive or false positive, your confidence "
-                f"   (0-1), MITRE techniques, and recommended actions.\n"
-                f"   Also note any patterns the detector missed."
-            ),
-            expected_output=(
-                "A structured analysis with: findings (true/false positive "
-                "assessment, confidence, MITRE techniques, evidence), "
-                "missed patterns, and recommended actions."
-            ),
+            description=specialist_desc,
+            expected_output=specialist_expected,
             agent=agent,
             context=[hypothesis_task],
         )
         specialist_tasks.append(task)
 
     # 3. Synthesis (lead analyst aggregates all specialist results)
+    synthesis_desc = (
+        "Synthesise the specialist investigations into a unified threat "
+        "assessment.  Steps:\n"
+        "1. Review all specialist findings.\n"
+        "2. Identify correlations across agents (e.g., recon followed "
+        "   by lateral movement).\n"
+        "3. Assess kill chain progression.\n"
+        "4. Flag likely false positives.\n"
+        "5. Produce a final report with: threat narrative, overall "
+        "   severity (low/medium/high/critical), overall confidence "
+        "   (0-1), correlated findings, false positives, and "
+        "   prioritised response actions."
+    )
+    synthesis_expected = (
+        "A unified threat assessment with: threat_narrative, "
+        "overall_severity, overall_confidence, correlated_findings, "
+        "likely_false_positives, and recommended_actions."
+    )
     fire_agent_activity("lead_analyst", "prompt", {
         "message": f"Assigned synthesis task — aggregating "
                    f"{len(specialist_tasks)} specialist investigations",
+        "prompt_text": synthesis_desc,
+        "expected_output": synthesis_expected,
     })
     synthesis_task = Task(
-        description=(
-            "Synthesise the specialist investigations into a unified threat "
-            "assessment.  Steps:\n"
-            "1. Review all specialist findings.\n"
-            "2. Identify correlations across agents (e.g., recon followed "
-            "   by lateral movement).\n"
-            "3. Assess kill chain progression.\n"
-            "4. Flag likely false positives.\n"
-            "5. Produce a final report with: threat narrative, overall "
-            "   severity (low/medium/high/critical), overall confidence "
-            "   (0-1), correlated findings, false positives, and "
-            "   prioritised response actions."
-        ),
-        expected_output=(
-            "A unified threat assessment with: threat_narrative, "
-            "overall_severity, overall_confidence, correlated_findings, "
-            "likely_false_positives, and recommended_actions."
-        ),
+        description=synthesis_desc,
+        expected_output=synthesis_expected,
         agent=agents["lead_analyst"],
         context=specialist_tasks,
     )
@@ -608,13 +621,24 @@ class CrewOrchestrator:
         def _step_callback(step_output):
             """Fires after each agent reasoning step."""
             try:
-                # Extract agent name from step output
                 agent_name = "unknown"
-                text = str(step_output)[:300]
+                text = str(step_output)[:2000]
                 if hasattr(step_output, 'agent'):
                     agent_name = getattr(step_output.agent, 'role', 'unknown')
+
+                # Extract thought/action from step if available
+                thought = ""
+                action = ""
+                if hasattr(step_output, 'thought'):
+                    thought = str(step_output.thought)[:1000]
+                if hasattr(step_output, 'action'):
+                    action = str(step_output.action)[:500]
+
                 fire_agent_activity(agent_name, "response", {
                     "message": f"Step: {text[:200]}",
+                    "output_preview": text[:2000],
+                    "thought": thought,
+                    "action": action,
                 })
             except Exception:
                 pass
@@ -624,8 +648,8 @@ class CrewOrchestrator:
             try:
                 desc = ""
                 if hasattr(task_output, 'description'):
-                    desc = str(task_output.description)[:100]
-                raw = str(task_output.raw)[:300] if hasattr(task_output, 'raw') else str(task_output)[:300]
+                    desc = str(task_output.description)[:200]
+                raw = str(task_output.raw)[:2000] if hasattr(task_output, 'raw') else str(task_output)[:2000]
                 agent_role = ""
                 if hasattr(task_output, 'agent'):
                     agent_role = str(task_output.agent)[:50]

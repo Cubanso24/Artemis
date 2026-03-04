@@ -1172,6 +1172,7 @@ def _analysis_pipeline_process(job_id, db_path):
                                 mitre_tactics=ao_dict.get('mitre_tactics', []),
                                 mitre_techniques=f.get('mitre_techniques', []),
                                 evidence_count=len(f.get('evidence', [])),
+                                evidence=f.get('evidence', []),
                                 recommended_actions=ao_dict.get('recommended_actions', []),
                                 source_cycle=analysis_cycle,
                             )
@@ -1206,15 +1207,36 @@ def _analysis_pipeline_process(job_id, db_path):
 
                 with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
                     _fut = _pool.submit(_run_hunt)
+                    _hunt_start = time.time()
                     try:
-                        assessment = _fut.result(timeout=_HUNT_TIMEOUT_S)
-                    except _cf.TimeoutError:
-                        _fut.cancel()
-                        log.error(
-                            f'Cycle {analysis_cycle}: hunt timed out '
-                            f'after {_HUNT_TIMEOUT_S}s — skipping')
-                        raise TimeoutError(
-                            f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
+                        # Poll with short timeouts so we can send heartbeats
+                        while True:
+                            try:
+                                assessment = _fut.result(timeout=30)
+                                break  # Hunt completed
+                            except _cf.TimeoutError:
+                                elapsed = time.time() - _hunt_start
+                                if elapsed > _HUNT_TIMEOUT_S:
+                                    _fut.cancel()
+                                    log.error(
+                                        f'Cycle {analysis_cycle}: hunt timed out '
+                                        f'after {_HUNT_TIMEOUT_S}s — skipping')
+                                    raise TimeoutError(
+                                        f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
+                                # Send heartbeat so the UI knows the LLM is working
+                                send('running',
+                                     f'LLM analysis in progress ({int(elapsed)}s elapsed)...',
+                                     65,
+                                     {'pipeline': 'analysis',
+                                      'cycle': analysis_cycle,
+                                      'findings': findings_count,
+                                      'n_agents': _n_agents,
+                                      'llm_backend': _backend,
+                                      'stage_detail': 'llm_synthesis',
+                                      'elapsed_seconds': int(elapsed),
+                                      'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+                    except TimeoutError:
+                        raise
 
                 # Save findings (for non-CrewAI path, or any new findings
                 # the LLM-driven tools discovered beyond the initial ML run)
@@ -1236,6 +1258,7 @@ def _analysis_pipeline_process(job_id, db_path):
                                 mitre_tactics=ao_dict.get('mitre_tactics', []),
                                 mitre_techniques=f.get('mitre_techniques', []),
                                 evidence_count=len(f.get('evidence', [])),
+                                evidence=f.get('evidence', []),
                                 recommended_actions=ao_dict.get('recommended_actions', []),
                                 source_cycle=analysis_cycle,
                             )
