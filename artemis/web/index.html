@@ -4910,10 +4910,15 @@
                     const totalNodes = result.total_nodes || 0;
                     const timeRange = result.time_range;
                     const isProfiling = result.stage_detail === 'profiling';
-                    const isWaiting = unprofiled === 0 && !isProfiling;
+                    const isWaitingForData = result.stage_detail === 'waiting_for_data';
+                    const isWaiting = unprofiled === 0 && !isProfiling && !isWaitingForData;
 
                     const statusEl = document.getElementById('pipe-profile-status');
-                    if (isProfiling) {
+                    if (isWaitingForData) {
+                        statusEl.textContent = 'Waiting';
+                        statusEl.style.background = '#8b949e33';
+                        statusEl.style.color = '#8b949e';
+                    } else if (isProfiling) {
                         statusEl.textContent = 'Profiling';
                         statusEl.style.background = '#4caf5033';
                         statusEl.style.color = '#4caf50';
@@ -4934,9 +4939,13 @@
                     if (timeRange) document.getElementById('pipe-profile-timerange').textContent = timeRange;
 
                     const detailEl = document.getElementById('pipe-profile-detail');
+                    detailEl.style.color = '';
                     if (result.error) {
                         detailEl.textContent = `Error: ${result.error}`;
                         detailEl.style.color = '#f85149';
+                    } else if (isWaitingForData) {
+                        detailEl.textContent = 'Waiting for data pipeline to finish map rebuild before profiling...';
+                        detailEl.style.color = '#8b949e';
                     } else if (isProfiling) {
                         detailEl.textContent = `Running 23 parallel Splunk queries (${timeRange || '...'})...`;
                     } else if (isWaiting) {
@@ -5015,10 +5024,22 @@
                     // --- Analysis pipeline card ---
                     const apStatus = document.getElementById('pipe-analysis-status');
                     const apData = ap.last_progress || {};
+                    const apIsIdle = apData.status === 'idle';
+                    const apIsLlm = apData.stage_detail === 'llm_analysis';
                     if (ap.running) {
-                        apStatus.textContent = apData.stage_detail === 'llm_analysis' ? 'Analyzing' : 'Running';
-                        apStatus.style.background = '#ab47bc33';
-                        apStatus.style.color = '#ab47bc';
+                        if (apIsIdle) {
+                            apStatus.textContent = 'Waiting';
+                            apStatus.style.background = '#8b949e33';
+                            apStatus.style.color = '#8b949e';
+                        } else if (apIsLlm) {
+                            apStatus.textContent = 'Analyzing';
+                            apStatus.style.background = '#ab47bc33';
+                            apStatus.style.color = '#ab47bc';
+                        } else {
+                            apStatus.textContent = 'Running';
+                            apStatus.style.background = '#ab47bc33';
+                            apStatus.style.color = '#ab47bc';
+                        }
                     } else {
                         apStatus.textContent = 'Stopped';
                         apStatus.style.background = '#8b949e33';
@@ -5026,9 +5047,9 @@
                     }
                     const apCycle = apData.cycle || 0;
                     document.getElementById('pipe-analysis-cycle').textContent =
-                        apCycle ? `#${apCycle}` : (ap.running ? '—' : 'Idle');
+                        apCycle ? `#${apCycle}` : (apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
                     document.getElementById('pipe-analysis-events').textContent =
-                        apData.total_events ? Number(apData.total_events).toLocaleString() : '—';
+                        apData.total_events ? Number(apData.total_events).toLocaleString() : (apIsIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent =
                         apData.n_agents ? `${apData.n_agents} agents` : '—';
                     document.getElementById('pipe-analysis-llm').textContent = apData.llm_backend || '—';
@@ -5036,7 +5057,7 @@
                     document.getElementById('pipe-analysis-completed').textContent =
                         `${apData.analyses_completed || 0} cycles`;
                     document.getElementById('pipe-analysis-llm-badge').style.display =
-                        apData.stage_detail === 'llm_analysis' ? 'inline' : 'none';
+                        apIsLlm ? 'inline' : 'none';
 
                     // Queue badge
                     const queueBadge = document.getElementById('pipe-analysis-queue-badge');
@@ -5053,10 +5074,25 @@
                     const ppData = pp.last_progress || {};
                     if (pp.running) {
                         const isProfiling = ppData.stage_detail === 'profiling';
-                        const ppWaiting = (ppData.unprofiled === 0) && !isProfiling;
-                        ppStatus.textContent = isProfiling ? 'Profiling' : ppWaiting ? 'All Profiled' : 'Running';
-                        ppStatus.style.background = ppWaiting ? '#3fb95033' : '#4caf5033';
-                        ppStatus.style.color = ppWaiting ? '#3fb950' : '#4caf50';
+                        const ppWaitData = ppData.stage_detail === 'waiting_for_data';
+                        const ppWaiting = (ppData.unprofiled === 0) && !isProfiling && !ppWaitData;
+                        if (ppWaitData) {
+                            ppStatus.textContent = 'Waiting';
+                            ppStatus.style.background = '#8b949e33';
+                            ppStatus.style.color = '#8b949e';
+                        } else if (isProfiling) {
+                            ppStatus.textContent = 'Profiling';
+                            ppStatus.style.background = '#4caf5033';
+                            ppStatus.style.color = '#4caf50';
+                        } else if (ppWaiting) {
+                            ppStatus.textContent = 'All Profiled';
+                            ppStatus.style.background = '#3fb95033';
+                            ppStatus.style.color = '#3fb950';
+                        } else {
+                            ppStatus.textContent = 'Running';
+                            ppStatus.style.background = '#4caf5033';
+                            ppStatus.style.color = '#4caf50';
+                        }
                     } else {
                         ppStatus.textContent = 'Stopped';
                         ppStatus.style.background = '#8b949e33';

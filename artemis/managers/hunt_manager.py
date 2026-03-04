@@ -1333,6 +1333,43 @@ def _profile_pipeline_process(job_id, db_path):
 
         log.info(f'Profile pipeline started (pid {pid})')
 
+        # Wait for the data pipeline to finish its initial map rebuild
+        # before profiling — otherwise node first_seen timestamps may
+        # be wrong and we'd compute a too-short time range (e.g. -1h).
+        _waited = 0
+        _MAX_WAIT = 600  # 10 minutes max
+        while not _stop and _waited < _MAX_WAIT:
+            # Check if any data pipeline progress indicates it's still
+            # replaying from DB or hasn't started live collection yet
+            all_progress = db.get_all_running_progress()
+            _rebuilding = False
+            for p in all_progress:
+                pdata = p.get('data', {})
+                if pdata.get('pipeline') != 'data':
+                    continue
+                sd = pdata.get('stage_detail', '')
+                if sd in ('db_replay', 'reuse_existing', 'requeue_existing',
+                          'retention_check', 'retention_ok',
+                          'retention_warning'):
+                    _rebuilding = True
+                    break
+            if not _rebuilding:
+                break
+            if _waited == 0:
+                log.info('Waiting for data pipeline map rebuild to finish '
+                         'before profiling...')
+                send('running',
+                     'Waiting for data pipeline map rebuild...',
+                     5, {'pipeline': 'profile', 'stage_detail': 'waiting_for_data'})
+            _waited += 5
+            time.sleep(5)
+
+        if _waited > 0 and not _stop:
+            log.info(f'Data pipeline rebuild finished after {_waited}s wait '
+                     f'— starting profiling')
+            # Reload map with corrected timestamps
+            nm.initialize()
+
         _total_classified = 0
 
         while not _stop:
