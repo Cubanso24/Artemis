@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Artemis Network Mapping Platform</title>
+    <title>Artemis Threat Hunter</title>
     <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
@@ -54,31 +54,10 @@
         .container {
             max-width: 100%;
             margin: 0 auto;
-            padding: 0 20px 20px;
+            padding: 0 0 20px;
         }
 
         header {
-            background: var(--bg-secondary);
-            padding: 14px 20px;
-            margin-bottom: 0;
-            border-bottom: 1px solid var(--border-color);
-            border-radius: 0;
-            box-shadow: none;
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        header h1 {
-            font-size: 1.8em;
-            font-weight: 700;
-            margin-bottom: 0;
-            letter-spacing: 0.08em;
-        }
-
-        header p {
-            opacity: 0.5;
-            font-size: 0.85em;
             display: none;
         }
 
@@ -88,20 +67,31 @@
             margin-bottom: 20px;
             border-bottom: 1px solid var(--border-color);
             background: var(--bg-secondary);
-            padding: 0 20px;
+            padding: 0 12px;
+            overflow-x: auto;
+            scrollbar-width: none;
         }
 
+        .tabs::-webkit-scrollbar { display: none; }
+
         .tab {
-            padding: 10px 16px;
+            padding: 11px 14px;
             background: transparent;
             border: none;
             border-bottom: 2px solid transparent;
             color: var(--text-secondary);
             cursor: pointer;
-            font-size: 13px;
+            font-size: 12.5px;
             font-weight: 500;
             border-radius: 0;
             transition: color 0.15s, border-color 0.15s;
+            white-space: nowrap;
+        }
+
+        .tab i {
+            margin-right: 5px;
+            font-size: 11px;
+            opacity: 0.7;
         }
 
         .tab:hover {
@@ -115,8 +105,13 @@
             background: transparent;
         }
 
+        .tab.active i {
+            opacity: 1;
+        }
+
         .tab-content {
             display: none;
+            padding: 0 20px;
         }
 
         .tab-content.active {
@@ -442,46 +437,28 @@
             color: var(--info);
         }
 
-        /* Theme toggle button */
-        .theme-toggle {
-            position: fixed;
-            top: 12px;
-            right: 16px;
-            padding: 6px 10px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
+        /* HUD control buttons (inside hunt visualizer) */
+        .hud-btn {
+            padding: 4px 8px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(88,166,255,0.2);
+            border-radius: 3px;
             cursor: pointer;
-            z-index: 1000;
-            color: var(--text-secondary);
-            font-size: 14px;
-            transition: color 0.15s;
+            color: rgba(88,166,255,0.7);
+            font-size: 12px;
+            transition: color 0.15s, border-color 0.15s, background 0.15s;
         }
 
-        .theme-toggle:hover {
-            color: var(--text-primary);
-            background: var(--bg-tertiary);
+        .hud-btn:hover {
+            color: #58a6ff;
+            border-color: rgba(88,166,255,0.5);
+            background: rgba(88,166,255,0.1);
         }
 
-        /* Server shutdown button */
-        .shutdown-btn {
-            position: fixed;
-            top: 12px;
-            right: 56px;
-            padding: 6px 10px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            cursor: pointer;
-            z-index: 1000;
-            color: var(--text-secondary);
-            font-size: 14px;
-            transition: color 0.15s, border-color 0.15s;
-        }
-
-        .shutdown-btn:hover {
-            color: var(--danger);
-            border-color: var(--danger);
+        .hud-btn-danger:hover {
+            color: #f85149;
+            border-color: rgba(248,81,73,0.5);
+            background: rgba(248,81,73,0.1);
         }
 
         /* Shutdown confirmation modal */
@@ -1024,11 +1001,6 @@
     </style>
 </head>
 <body>
-    <!-- Server Shutdown Button -->
-    <button class="shutdown-btn" onclick="showShutdownModal()" title="Shutdown server and kill all processes">
-        <i class="fa-solid fa-power-off"></i>
-    </button>
-
     <!-- Shutdown Confirmation Modal -->
     <div class="shutdown-modal-overlay" id="shutdown-modal" onclick="if(event.target === this) hideShutdownModal()">
         <div class="shutdown-modal">
@@ -1042,11 +1014,6 @@
             </div>
         </div>
     </div>
-
-    <!-- Theme Toggle -->
-    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle dark/light mode (T)">
-        <i id="theme-icon" class="fa-solid fa-moon"></i>
-    </button>
 
     <!-- Keyboard Shortcuts Overlay -->
     <div class="shortcuts-overlay" id="shortcuts-overlay" onclick="if(event.target === this) toggleShortcuts()">
@@ -1091,11 +1058,6 @@
     </div>
 
     <div class="container">
-        <header>
-            <h1><i class="fa-solid fa-diagram-project" style="margin-right:8px; opacity:0.7;"></i>ARTEMIS</h1>
-            <span style="font-size:12px; color:var(--text-secondary); opacity:0.6;">Network Mapping Platform</span>
-        </header>
-
         <!-- Live Hunt Visualizer -->
         <div id="hunt-visualizer" style="position:relative; width:100%; height:120px; background:#0a0d12; border-bottom:1px solid var(--border-color); overflow:hidden; cursor:default; user-select:none;">
             <canvas id="hunt-canvas" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;"></canvas>
@@ -1119,8 +1081,16 @@
                         THREAT HUNTER ACTIVE
                     </div>
                 </div>
-                <!-- Right: stats -->
+                <!-- Right: stats + controls -->
                 <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; z-index:2;">
+                    <div style="display:flex; gap:6px; margin-bottom:4px; pointer-events:auto;">
+                        <button class="hud-btn" onclick="toggleTheme()" title="Toggle dark/light mode (T)">
+                            <i id="theme-icon" class="fa-solid fa-moon"></i>
+                        </button>
+                        <button class="hud-btn hud-btn-danger" onclick="showShutdownModal()" title="Shutdown server">
+                            <i class="fa-solid fa-power-off"></i>
+                        </button>
+                    </div>
                     <div style="font-family:'Courier New',monospace; font-size:10px; color:#3fb950;">
                         <span id="hunt-devices">--</span> DEVICES TRACKED
                     </div>
@@ -1138,15 +1108,15 @@
         </div>
 
         <div class="tabs">
-            <button class="tab active" onclick="showTab('network-graph-tab')">Network Graph</button>
-            <button class="tab" onclick="showTab('findings-tab')">Findings <span id="findings-badge" style="display:none; background:#f85149; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
-            <button class="tab" onclick="showTab('network-maps-tab')">Network Maps</button>
-            <button class="tab" onclick="showTab('sigma-tab')">Sigma Rules</button>
-            <button class="tab" onclick="showTab('threat-intel-tab')">Threat Intel</button>
-            <button class="tab" onclick="showTab('llm-intel-tab')">LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
+            <button class="tab active" onclick="showTab('network-graph-tab')"><i class="fa-solid fa-diagram-project"></i> Network Graph</button>
+            <button class="tab" onclick="showTab('findings-tab')"><i class="fa-solid fa-flag"></i> Findings <span id="findings-badge" style="display:none; background:#f85149; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
+            <button class="tab" onclick="showTab('network-maps-tab')"><i class="fa-solid fa-map-location-dot"></i> Network Maps</button>
+            <button class="tab" onclick="showTab('sigma-tab')"><i class="fa-solid fa-shield-halved"></i> Sigma Rules</button>
+            <button class="tab" onclick="showTab('threat-intel-tab')"><i class="fa-solid fa-binoculars"></i> Threat Intel</button>
+            <button class="tab" onclick="showTab('llm-intel-tab')"><i class="fa-solid fa-brain"></i> LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
             <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
-            <button class="tab" onclick="showTab('logs')">Live Logs</button>
+            <button class="tab" onclick="showTab('logs')"><i class="fa-solid fa-terminal"></i> Live Logs</button>
         </div>
 
 
