@@ -4873,13 +4873,18 @@
                     const findings = result.findings || 0;
                     const completed = result.analyses_completed || 0;
                     const isLlmActive = result.stage_detail === 'llm_analysis';
-                    const isIdle = result.status === 'idle' || result.status === 'initializing';
-                    const isInit = result.status === 'initializing';
+                    const isLoadingEvents = result.stage_detail === 'loading_events';
+                    const isIdle = (result.status === 'idle' || result.status === 'initializing') && !isLoadingEvents;
+                    const isInit = result.status === 'initializing' && !isLoadingEvents;
                     const orch = result.orchestration;
 
                     const statusEl = document.getElementById('pipe-analysis-status');
                     if (isInit) {
                         statusEl.textContent = 'Initializing';
+                        statusEl.style.background = '#d2992233';
+                        statusEl.style.color = '#d29922';
+                    } else if (isLoadingEvents) {
+                        statusEl.textContent = 'Loading';
                         statusEl.style.background = '#d2992233';
                         statusEl.style.color = '#d29922';
                     } else if (isIdle) {
@@ -5033,12 +5038,17 @@
                     // --- Analysis pipeline card ---
                     const apStatus = document.getElementById('pipe-analysis-status');
                     const apData = ap.last_progress || {};
-                    const apIsInit = apData.status === 'initializing';
-                    const apIsIdle = apData.status === 'idle' || apIsInit;
+                    const apIsLoading = apData.stage_detail === 'loading_events';
+                    const apIsInit = apData.status === 'initializing' && !apIsLoading;
+                    const apIsIdle = (apData.status === 'idle' || apIsInit) && !apIsLoading;
                     const apIsLlm = apData.stage_detail === 'llm_analysis';
                     if (ap.running) {
                         if (apIsInit) {
                             apStatus.textContent = 'Initializing';
+                            apStatus.style.background = '#d2992233';
+                            apStatus.style.color = '#d29922';
+                        } else if (apIsLoading) {
+                            apStatus.textContent = 'Loading';
                             apStatus.style.background = '#d2992233';
                             apStatus.style.color = '#d29922';
                         } else if (apIsIdle) {

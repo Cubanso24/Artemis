@@ -1036,7 +1036,15 @@ def _analysis_pipeline_process(job_id, db_path):
                     except Exception as _ce:
                         log.warning(f'CrewAI init failed: {_ce}')
 
-                break  # Init succeeded
+                # Init succeeded — update status immediately
+                send('running',
+                     f'Analysis pipeline ready ({len(coordinator.agents)} agents, '
+                     f'{_llm_backend}) — checking for pending cycles...',
+                     5, {'pipeline': 'analysis',
+                         'n_agents': len(coordinator.agents),
+                         'llm_backend': getattr(coordinator.llm_client, 'backend', 'none'),
+                         'status': 'idle'})
+                break
 
             except Exception as _init_err:
                 log.error(
@@ -1104,7 +1112,17 @@ def _analysis_pipeline_process(job_id, db_path):
 
             findings_count = 0
             try:
-                # Load events from persistent store
+                # Load events from persistent store (can be slow for
+                # large cycles with hundreds of thousands of events)
+                send('running',
+                     f'Loading {total_events:,} events for cycle '
+                     f'{analysis_cycle}...',
+                     55, {'pipeline': 'analysis',
+                          'cycle': analysis_cycle,
+                          'total_events': total_events,
+                          'n_agents': _n_agents,
+                          'llm_backend': _backend,
+                          'stage_detail': 'loading_events'})
                 agent_data = db.get_events_for_cycle(analysis_cycle)
 
                 # Add counts metadata
