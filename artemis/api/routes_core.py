@@ -45,9 +45,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @router.get("/api/agent-activity")
-async def get_agent_activity():
-    """Return recent LLM agent activity events."""
-    return list(agent_activity_history)
+async def get_agent_activity(since_id: int = 0):
+    """Return agent activity events from the DB.
+
+    Pass ``since_id`` to get only newer events (for incremental polling).
+    """
+    from artemis.managers.db_manager import DatabaseManager
+    db = DatabaseManager()
+    return db.get_agent_activity(since_id=since_id, limit=200)
 
 
 @router.get("/static/{path:path}")

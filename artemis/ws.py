@@ -82,14 +82,29 @@ async def broadcast_agent_activity(agent_name: str, activity_type: str, detail: 
 
 
 def fire_agent_activity(agent_name: str, activity_type: str, detail: dict):
-    """Non-async helper to fire agent activity from sync code."""
+    """Non-async helper to fire agent activity from sync code.
+
+    Works from any context — if an asyncio event loop is running
+    (main web process), broadcast immediately via WebSocket.  In all
+    cases, persist to the ``agent_activity`` database table so the
+    web server can relay events from subprocess workers.
+    """
+    # Always persist to DB (works from subprocesses)
+    try:
+        from artemis.managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        db.log_agent_activity(agent_name, activity_type, detail)
+    except Exception:
+        pass
+
+    # Also broadcast live if we have an event loop (main process only)
     try:
         loop = asyncio.get_running_loop()
         asyncio.ensure_future(
             broadcast_agent_activity(agent_name, activity_type, detail)
         )
     except RuntimeError:
-        pass  # No event loop running
+        pass  # No event loop running — DB write above covers it
 
 
 def install_log_handler():

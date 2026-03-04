@@ -7094,6 +7094,7 @@
                 chatContent.style.display = '';
                 monContent.style.display = 'none';
                 _agentMonitorActive = false;
+                stopAgentActivityPolling();
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
             } else {
                 monBtn.style.borderBottomColor = 'var(--accent-primary)';
@@ -7109,27 +7110,44 @@
                 _agentMonitorNewCount = 0;
                 const badge = document.getElementById('agent-monitor-badge');
                 badge.style.display = 'none';
-                // Load history if empty
-                if (_agentMonitorEvents.length === 0) {
-                    loadAgentActivityHistory();
-                }
+                // Start polling for activity from DB
+                startAgentActivityPolling();
             }
         }
 
+        let _agentPollSinceId = 0;
+        let _agentPollTimer = null;
+
         async function loadAgentActivityHistory() {
             try {
-                const resp = await fetch('/api/agent-activity');
+                const resp = await fetch(`/api/agent-activity?since_id=${_agentPollSinceId}`);
                 if (!resp.ok) return;
                 const events = await resp.json();
-                events.forEach(ev => _appendAgentEvent(ev, false));
-                const feed = document.getElementById('agent-monitor-feed');
-                if (_agentMonitorEvents.length > 0) feed.scrollTop = feed.scrollHeight;
+                if (events.length > 0) {
+                    events.forEach(ev => _appendAgentEvent(ev, _agentPollSinceId > 0));
+                    _agentPollSinceId = events[events.length - 1].id;
+                    const feed = document.getElementById('agent-monitor-feed');
+                    if (document.getElementById('agent-monitor-autoscroll').checked) {
+                        feed.scrollTop = feed.scrollHeight;
+                    }
+                }
             } catch(e) { /* ignore */ }
         }
 
+        function startAgentActivityPolling() {
+            if (_agentPollTimer) return;
+            loadAgentActivityHistory();
+            _agentPollTimer = setInterval(loadAgentActivityHistory, 3000);
+        }
+
+        function stopAgentActivityPolling() {
+            if (_agentPollTimer) { clearInterval(_agentPollTimer); _agentPollTimer = null; }
+        }
+
         function handleAgentActivity(data) {
+            // WS events still work for main-process activity;
+            // subprocess events come via polling above.
             _appendAgentEvent(data, true);
-            // Update badge if monitor not active
             if (!_agentMonitorActive) {
                 _agentMonitorNewCount++;
                 const badge = document.getElementById('agent-monitor-badge');
@@ -7224,6 +7242,7 @@
         function clearAgentMonitor() {
             _agentMonitorEvents = [];
             _agentStatuses = {};
+            _agentPollSinceId = 0;
             document.getElementById('agent-monitor-feed').innerHTML =
                 '<div style="text-align:center; opacity:0.4; margin-top:60px;">'
                 + '<i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>'

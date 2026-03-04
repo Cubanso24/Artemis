@@ -221,6 +221,21 @@ class DatabaseManager:
             )
         """)
 
+        # Agent activity log — written by analysis subprocess, polled by web server
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS agent_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL,
+                activity TEXT NOT NULL,
+                detail TEXT DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_activity_created "
+            "ON agent_activity(created_at)"
+        )
+
         # ------------------------------------------------------------------
         # Interactive map: layout positions + annotations
         # ------------------------------------------------------------------
@@ -1551,6 +1566,50 @@ class DatabaseManager:
             'backup_file': backup_name,
             'old_size_mb': round(old_size / 1_048_576, 1),
         }
+
+    # ------------------------------------------------------------------
+    # Agent activity log (cross-process)
+    # ------------------------------------------------------------------
+
+    def log_agent_activity(self, agent: str, activity: str, detail: dict):
+        """Persist an agent activity event (safe to call from subprocesses)."""
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO agent_activity (agent, activity, detail, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (agent, activity, _dumps(detail),
+                 datetime.now().isoformat()),
+            )
+        self._exec_with_retry(_do)
+
+    def get_agent_activity(self, since_id: int = 0, limit: int = 200) -> List[Dict]:
+        """Return agent activity events after *since_id*."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, agent, activity, detail, created_at "
+                "FROM agent_activity WHERE id > ? "
+                "ORDER BY id ASC LIMIT ?",
+                (since_id, limit),
+            ).fetchall()
+            return [
+                {
+                    'id': r[0],
+                    'agent': r[1],
+                    'activity': r[2],
+                    'detail': json.loads(r[3]) if r[3] else {},
+                    'timestamp': r[4],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def clear_agent_activity(self):
+        """Remove all agent activity events."""
+        def _do(conn):
+            conn.execute("DELETE FROM agent_activity")
+        self._exec_with_retry(_do)
 
     # ------------------------------------------------------------------
     # Analysis queue (decoupled pipeline)
