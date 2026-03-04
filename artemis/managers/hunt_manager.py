@@ -362,6 +362,80 @@ def _bg_profile_worker_process(profile_id, time_range, num_workers,
 
 
 # ---------------------------------------------------------------------------
+# Helper — rebuild network map from stored events (no Splunk needed)
+# ---------------------------------------------------------------------------
+
+def _rebuild_map_from_db(db, nm, max_cycle, send, log):
+    """Stream events from hunt_events and feed them to the network mapper.
+
+    Processes one cycle at a time so memory stays bounded even with
+    hundreds of millions of rows.
+    """
+    import json as _json
+    total_mapped = 0
+    for c in range(1, max_cycle + 1):
+        conn = db._connect()
+        try:
+            cursor = conn.execute(
+                "SELECT data_type, event_json FROM hunt_events "
+                "WHERE cycle = ? AND data_type IN "
+                "('network_connections', 'dns_queries', 'ntlm_logs')",
+                (c,),
+            )
+            conns, dns_q, ntlm_l = [], [], []
+            batch_size = 50_000
+            count = 0
+            for data_type, event_json in cursor:
+                evt = _json.loads(event_json)
+                if data_type == 'network_connections':
+                    conns.append(evt)
+                elif data_type == 'dns_queries':
+                    dns_q.append(evt)
+                elif data_type == 'ntlm_logs':
+                    ntlm_l.append(evt)
+                count += 1
+
+                # Flush in batches to keep memory bounded
+                if count >= batch_size:
+                    if conns or dns_q or ntlm_l:
+                        nm.execute(
+                            network_connections=conns,
+                            dns_queries=dns_q,
+                            ntlm_logs=ntlm_l,
+                        )
+                    total_mapped += count
+                    conns, dns_q, ntlm_l = [], [], []
+                    count = 0
+
+            # Flush remaining
+            if conns or dns_q or ntlm_l:
+                nm.execute(
+                    network_connections=conns,
+                    dns_queries=dns_q,
+                    ntlm_logs=ntlm_l,
+                )
+            total_mapped += count
+        finally:
+            conn.close()
+
+        if c % 10 == 0 or c == max_cycle:
+            nm.save_map()
+            send('running',
+                 f'Rebuilding map: cycle {c}/{max_cycle} '
+                 f'({total_mapped:,} events, {len(nm.nodes)} nodes)...',
+                 10 + int(35 * c / max(max_cycle, 1)),
+                 {'pipeline': 'data',
+                  'stage_detail': 'map_rebuild',
+                  'cycle': c, 'total_cycles': max_cycle,
+                  'total_events': total_mapped,
+                  'total_nodes': len(nm.nodes)})
+            log.info(f'Map rebuild: {c}/{max_cycle} cycles, '
+                     f'{total_mapped:,} events, {len(nm.nodes)} nodes')
+
+    nm.save_map()
+
+
+# ---------------------------------------------------------------------------
 # Data Pipeline Process — fast collection + map building, no LLM
 # ---------------------------------------------------------------------------
 
@@ -453,6 +527,55 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
         cycle = db.get_latest_event_cycle()
         time_range = f'-{lookback_minutes}m'
         _backfill_pending = bool(backfill_from)
+
+        # ── Skip Splunk re-download when events already exist ──
+        # If we're asked to backfill but events are already stored,
+        # just ensure they're queued for analysis and rebuild the map.
+        if _backfill_pending and cycle > 0:
+            total_stored = db.get_total_event_count()
+            if total_stored > 0:
+                log.info(
+                    f'Backfill requested but {total_stored:,} events '
+                    f'already stored across {cycle} cycles — '
+                    f'skipping Splunk re-download')
+                send('running',
+                     f'Found {total_stored:,} existing events in '
+                     f'{cycle} cycles — rebuilding map...',
+                     10, {'pipeline': 'data',
+                          'stage_detail': 'reuse_existing',
+                          'total_events': total_stored,
+                          'total_cycles': cycle})
+
+                # Ensure all cycles with events are queued for analysis
+                queued = 0
+                for c in range(1, cycle + 1):
+                    evt_counts = db.get_event_counts_for_cycle(c)
+                    if evt_counts:
+                        db.queue_analysis(c, evt_counts)  # INSERT OR IGNORE
+                        queued += 1
+
+                log.info(f'Ensured {queued} cycles are queued for analysis')
+                send('running',
+                     f'Queued {queued} cycles for analysis — '
+                     f'rebuilding network map from stored events...',
+                     20, {'pipeline': 'data',
+                          'stage_detail': 'requeue_existing',
+                          'queued': queued})
+
+                # Rebuild network map from stored events (stream to
+                # avoid loading all events at once)
+                _rebuild_map_from_db(db, nm, cycle, send, log)
+
+                _backfill_pending = False  # skip the Splunk pull
+                log.info(
+                    f'Map rebuilt with {len(nm.nodes)} nodes — '
+                    f'switching to live collection')
+                send('running',
+                     f'Map rebuilt ({len(nm.nodes)} nodes) — '
+                     f'collecting live data...',
+                     50, {'pipeline': 'data',
+                          'total_nodes': len(nm.nodes),
+                          'stage_detail': 'live_collection'})
 
         while not _stop:
             cycle += 1
@@ -987,6 +1110,15 @@ def _analysis_pipeline_process(job_id, db_path):
 
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1
+
+                # Free disk space — delete raw events for this completed
+                # cycle since findings are now persisted in agent_findings.
+                try:
+                    _freed = db.cleanup_analyzed_events()
+                    if _freed:
+                        log.info(f'Cleaned up {_freed:,} analyzed event rows')
+                except Exception as _ce:
+                    log.warning(f'Event cleanup failed (non-fatal): {_ce}')
 
                 # Use the cumulative DB total so the pipeline card stays
                 # in sync with the findings tab (not just this cycle's count).

@@ -1360,6 +1360,72 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_unqueued_event_cycles(self) -> List[Dict]:
+        """Return cycles that have stored events but no analysis_queue entry.
+
+        Used on restart to re-queue existing events instead of re-downloading
+        from Splunk.
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT he.cycle, COUNT(*) as event_count "
+                "FROM hunt_events he "
+                "LEFT JOIN analysis_queue aq ON he.cycle = aq.cycle "
+                "WHERE aq.cycle IS NULL "
+                "GROUP BY he.cycle ORDER BY he.cycle"
+            ).fetchall()
+            return [{'cycle': r[0], 'event_count': r[1]} for r in rows]
+        finally:
+            conn.close()
+
+    def get_total_event_count(self) -> int:
+        """Return total number of rows in hunt_events."""
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM hunt_events").fetchone()
+            return row[0] or 0
+        finally:
+            conn.close()
+
+    def cleanup_analyzed_events(self, batch_size: int = 100_000) -> int:
+        """Delete events for cycles that have completed analysis.
+
+        Keeps events for pending/in_progress cycles so agents can still
+        read them.  Deletes in batches to avoid massive WAL growth.
+        Returns total rows deleted.
+        """
+        total_deleted = 0
+        conn = self._connect()
+        try:
+            # Find cycles that are fully analyzed
+            complete = conn.execute(
+                "SELECT cycle FROM analysis_queue WHERE status = 'complete'"
+            ).fetchall()
+            complete_cycles = [r[0] for r in complete]
+        finally:
+            conn.close()
+
+        for cyc in complete_cycles:
+            while True:
+                conn = self._connect()
+                try:
+                    cursor = conn.execute(
+                        "DELETE FROM hunt_events WHERE rowid IN "
+                        "(SELECT rowid FROM hunt_events "
+                        " WHERE cycle = ? LIMIT ?)",
+                        (cyc, batch_size),
+                    )
+                    conn.commit()
+                    deleted = cursor.rowcount
+                finally:
+                    conn.close()
+                if deleted == 0:
+                    break
+                total_deleted += deleted
+
+        return total_deleted
+
     def cleanup_old_events(self, max_age_hours: int = 72,
                            batch_size: int = 50_000) -> int:
         """Delete events older than max_age_hours in batches.
