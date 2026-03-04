@@ -1320,18 +1320,63 @@ class DatabaseManager:
             return len(events)
         return self._exec_with_retry(_do)
 
-    def get_events_for_cycle(self, cycle: int) -> Dict[str, List[Dict]]:
-        """Retrieve all events for a cycle, grouped by data_type."""
+    def get_events_for_cycle(self, cycle: int,
+                             max_per_type: int = 200_000) -> Dict[str, List[Dict]]:
+        """Retrieve events for a cycle, grouped by data_type.
+
+        When a data_type has more than *max_per_type* rows, a uniformly
+        spaced sample is returned so agents get representative coverage
+        without loading millions of rows into RAM.  The ``_counts`` key
+        (added by the caller) preserves the real totals for LLM prompts.
+
+        Set *max_per_type* to 0 to load everything (original behaviour).
+        """
         conn = self._connect()
         try:
-            rows = conn.execute(
-                "SELECT data_type, event_json FROM hunt_events "
-                "WHERE cycle = ? ORDER BY id",
-                (cycle,),
-            ).fetchall()
+            if max_per_type <= 0:
+                # Original unlimited path
+                rows = conn.execute(
+                    "SELECT data_type, event_json FROM hunt_events "
+                    "WHERE cycle = ? ORDER BY id",
+                    (cycle,),
+                ).fetchall()
+                result: Dict[str, List[Dict]] = {}
+                for data_type, event_json in rows:
+                    result.setdefault(data_type, []).append(
+                        json.loads(event_json))
+                return result
+
+            # Get per-type counts first to decide whether to sample
+            type_counts = self.get_event_counts_for_cycle(cycle)
             result: Dict[str, List[Dict]] = {}
-            for data_type, event_json in rows:
-                result.setdefault(data_type, []).append(json.loads(event_json))
+
+            for data_type, total in type_counts.items():
+                if total <= max_per_type:
+                    # Small enough — load all
+                    rows = conn.execute(
+                        "SELECT event_json FROM hunt_events "
+                        "WHERE cycle = ? AND data_type = ? ORDER BY id",
+                        (cycle, data_type),
+                    ).fetchall()
+                    result[data_type] = [
+                        json.loads(r[0]) for r in rows]
+                else:
+                    # Sample uniformly via rowid modulo
+                    # Pick every Nth row so we get ~max_per_type events
+                    # spread evenly across the cycle's time range.
+                    step = total // max_per_type
+                    rows = conn.execute(
+                        "SELECT event_json FROM ("
+                        "  SELECT event_json, ROW_NUMBER() OVER "
+                        "    (ORDER BY id) AS rn "
+                        "  FROM hunt_events "
+                        "  WHERE cycle = ? AND data_type = ?"
+                        ") WHERE rn % ? = 1",
+                        (cycle, data_type, step),
+                    ).fetchall()
+                    result[data_type] = [
+                        json.loads(r[0]) for r in rows]
+
             return result
         finally:
             conn.close()
