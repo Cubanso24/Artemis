@@ -1409,6 +1409,25 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_event_time_range(self) -> Dict[str, str]:
+        """Return the earliest and latest collected_at timestamps from stored events.
+
+        Returns dict with 'earliest' and 'latest' ISO timestamps, or empty
+        strings if no events exist.
+        """
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT MIN(collected_at), MAX(collected_at) "
+                "FROM hunt_events"
+            ).fetchone()
+            return {
+                'earliest': row[0] or '' if row else '',
+                'latest': row[1] or '' if row else '',
+            }
+        finally:
+            conn.close()
+
     def get_latest_event_cycle(self) -> int:
         """Get the highest cycle number in the event store."""
         conn = self._connect()

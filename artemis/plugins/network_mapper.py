@@ -629,9 +629,24 @@ class NetworkMapperPlugin(ArtemisPlugin):
         src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
         dst_node = self._get_or_create_node(sensor_id, vlan, dst_ip)
 
-        now = datetime.now()
-        src_node.last_seen = now
-        dst_node.last_seen = now
+        # Use event timestamp when available (critical for DB replay),
+        # fall back to wall-clock for live ingestion.
+        if conn_ts:
+            try:
+                ts = datetime.fromisoformat(str(conn_ts))
+            except (ValueError, TypeError):
+                ts = datetime.now()
+        else:
+            ts = datetime.now()
+
+        if ts < src_node.first_seen:
+            src_node.first_seen = ts
+        if ts > src_node.last_seen:
+            src_node.last_seen = ts
+        if ts < dst_node.first_seen:
+            dst_node.first_seen = ts
+        if ts > dst_node.last_seen:
+            dst_node.last_seen = ts
 
         src_node.total_connections += 1
         dst_node.total_connections += 1
@@ -715,12 +730,24 @@ class NetworkMapperPlugin(ArtemisPlugin):
         answer = dns.get('answer')
         sensor_id = dns.get('sensor_id', 'default')
         vlan = str(dns.get('vlan', '0'))
+        dns_ts = dns.get('timestamp')
 
         if not src_ip:
             return
 
         src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
-        src_node.last_seen = datetime.now()
+
+        if dns_ts:
+            try:
+                ts = datetime.fromisoformat(str(dns_ts))
+            except (ValueError, TypeError):
+                ts = datetime.now()
+        else:
+            ts = datetime.now()
+        if ts < src_node.first_seen:
+            src_node.first_seen = ts
+        if ts > src_node.last_seen:
+            src_node.last_seen = ts
 
         if answer and domain:
             if '.' in answer and all(p.isdigit() for p in answer.split('.')):
@@ -737,11 +764,23 @@ class NetworkMapperPlugin(ArtemisPlugin):
         server_dns = ntlm.get('server_dns_computer_name', '')
         sensor_id = ntlm.get('sensor_id', 'default')
         vlan = str(ntlm.get('vlan', '0'))
+        ntlm_ts = ntlm.get('timestamp')
+
+        if ntlm_ts:
+            try:
+                ts = datetime.fromisoformat(str(ntlm_ts))
+            except (ValueError, TypeError):
+                ts = datetime.now()
+        else:
+            ts = datetime.now()
 
         # Enrich the client (source) node
         if src_ip:
             src_node = self._get_or_create_node(sensor_id, vlan, src_ip)
-            src_node.last_seen = datetime.now()
+            if ts < src_node.first_seen:
+                src_node.first_seen = ts
+            if ts > src_node.last_seen:
+                src_node.last_seen = ts
             if hostname and hostname != '-':
                 src_node.netbios_names.add(hostname.upper())
             if domainname and domainname != '-':
@@ -750,7 +789,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
         # Enrich the server (destination) node
         if dst_ip:
             dst_node = self._get_or_create_node(sensor_id, vlan, dst_ip)
-            dst_node.last_seen = datetime.now()
+            if ts < dst_node.first_seen:
+                dst_node.first_seen = ts
+            if ts > dst_node.last_seen:
+                dst_node.last_seen = ts
             if server_nb and server_nb != '-':
                 dst_node.netbios_names.add(server_nb.upper())
             if server_dns and server_dns != '-':

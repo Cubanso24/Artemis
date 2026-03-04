@@ -1367,10 +1367,26 @@ def _profile_pipeline_process(job_id, db_path):
             # Use the full available time range so we gather as much
             # evidence as possible for each device.  Compute from the
             # earliest first_seen across ALL nodes (not just unprofiled)
-            # to cover the complete data window.
+            # to cover the complete data window.  Also check the DB
+            # event collection timestamps as a fallback — when events
+            # are replayed from the DB, node first_seen is set from
+            # event timestamps which may be much older than wall-clock.
             all_nodes = list(nm.nodes.values())
+            earliest = None
             if all_nodes:
                 earliest = min(n.first_seen for n in all_nodes)
+
+            # Also check DB collection timestamps as a secondary signal
+            try:
+                db_range = db.get_event_time_range()
+                if db_range.get('earliest'):
+                    db_earliest = datetime.fromisoformat(db_range['earliest'])
+                    if earliest is None or db_earliest < earliest:
+                        earliest = db_earliest
+            except Exception:
+                pass
+
+            if earliest is not None:
                 age_secs = (datetime.now() - earliest).total_seconds()
                 age_hours = max(1, int(age_secs / 3600) + 1)
                 if age_hours >= 24:
