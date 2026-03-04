@@ -1519,7 +1519,8 @@
 
                 <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
                     <button class="btn" onclick="saveMapSnapshot()">Save Snapshot</button>
-                    <button class="btn btn-danger" onclick="resetNetworkMap()">Reset Map (Start Fresh)</button>
+                    <button class="btn btn-danger" onclick="resetNetworkMap()">Clear Map</button>
+                    <button class="btn btn-danger" style="opacity:0.7" onclick="factoryReset()">Factory Reset (Everything)</button>
                     <button class="btn btn-secondary" onclick="loadNetworkMaps()">Refresh List</button>
                 </div>
 
@@ -5549,7 +5550,7 @@
         }
 
         async function resetNetworkMap() {
-            if (!confirm('Reset the network map? All current map data will be cleared. Consider saving a snapshot first.')) return;
+            if (!confirm('Clear the network map?\n\nThis only removes map data. Your events, findings, and cases are preserved.')) return;
 
             try {
                 const response = await fetch('/api/network-maps/reset', { method: 'POST' });
@@ -5560,14 +5561,38 @@
                     return;
                 }
 
-                addLog('Network map reset to empty', 'info');
+                addLog(`Network map cleared (${result.previous_nodes || 0} nodes removed)`, 'info');
                 loadNetworkMaps();
                 loadNetworkGraph(true);
                 loadNetworkSummary();
 
             } catch (error) {
-                console.error('Error resetting map:', error);
-                addLog(`Error resetting map: ${error.message}`, 'error');
+                console.error('Error clearing map:', error);
+                addLog(`Error clearing map: ${error.message}`, 'error');
+            }
+        }
+
+        async function factoryReset() {
+            if (!confirm('FACTORY RESET — This will delete EVERYTHING:\n\n• Network map\n• All stored events\n• All findings & syntheses\n• All cases\n• Analysis queue\n\nThis cannot be undone. Continue?')) return;
+            if (!confirm('Are you sure? This deletes all data permanently.')) return;
+
+            try {
+                const response = await fetch('/api/factory-reset', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.error) {
+                    alert(result.error);
+                    return;
+                }
+
+                addLog(`Factory reset complete: ${result.events_deleted || 0} events, ${result.findings_deleted || 0} findings deleted`, 'warning');
+                loadNetworkMaps();
+                loadNetworkGraph(true);
+                loadNetworkSummary();
+
+            } catch (error) {
+                console.error('Error during factory reset:', error);
+                addLog(`Factory reset error: ${error.message}`, 'error');
             }
         }
 

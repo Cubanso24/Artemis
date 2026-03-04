@@ -167,9 +167,10 @@ async def delete_network_map(filename: str):
 
 @router.post("/api/network-maps/reset")
 async def reset_network_map():
-    """Full reset: stop pipelines, clear in-memory map, map files on
-    disk, DB events, analysis queue, findings, and syntheses.  After
-    this, the next pipeline start truly starts from zero."""
+    """Clear the network map only.  Stops pipelines and wipes the
+    in-memory map + map files on disk, but preserves all stored events,
+    findings, syntheses, and cases.  The next pipeline run will rebuild
+    the map from new data (or backfill)."""
 
     # 0. Stop any running pipelines so they don't keep writing data
     try:
@@ -178,9 +179,11 @@ async def reset_network_map():
         logger.warning(f"Error stopping pipelines during reset: {e}")
 
     plugin = plugin_manager.get_plugin('network_mapper')
+    prev_nodes = 0
 
     # 1. Clear in-memory state (API process)
     if plugin:
+        prev_nodes = len(plugin.nodes)
         plugin.nodes.clear()
         plugin.sensors.clear()
         plugin._dirty_nodes.clear()
@@ -198,16 +201,55 @@ async def reset_network_map():
                 except OSError:
                     pass
 
-    # 2. Clear database tables
+    logger.info(f"Network map reset: cleared {prev_nodes} nodes")
+    return {
+        'status': 'reset',
+        'total_nodes': 0,
+        'previous_nodes': prev_nodes,
+    }
+
+
+@router.post("/api/factory-reset")
+async def factory_reset():
+    """Full factory reset: clears EVERYTHING — network map, stored events,
+    findings, syntheses, cases, and analysis queue.  Use this only when
+    you truly want to start from scratch."""
+
+    # Stop pipelines first
+    try:
+        await hunt_manager.stop_continuous()
+    except Exception as e:
+        logger.warning(f"Error stopping pipelines during factory reset: {e}")
+
+    # Clear map
+    plugin = plugin_manager.get_plugin('network_mapper')
+    if plugin:
+        plugin.nodes.clear()
+        plugin.sensors.clear()
+        plugin._dirty_nodes.clear()
+        plugin.mac_history.clear()
+        plugin._stats_cache = None
+        plugin.save_map()
+
+        map_dir = plugin.output_dir
+        for pattern in ('*_summary.txt', 'mac_history.json',
+                        'current_map.json.lock'):
+            for f in map_dir.glob(pattern):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+    # Clear all database tables
     db_stats = db_manager.full_reset()
 
     logger.info(
-        f"Full reset: map cleared, {db_stats['events_deleted']} events, "
+        f"Factory reset: map cleared, {db_stats['events_deleted']} events, "
         f"{db_stats['findings_deleted']} findings, "
         f"{db_stats['queue_deleted']} queued cycles deleted"
     )
     return {
-        'status': 'reset',
+        'status': 'factory_reset',
         'total_nodes': 0,
         **db_stats,
     }
