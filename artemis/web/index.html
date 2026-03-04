@@ -4672,6 +4672,14 @@
                     const newConns = result.new_conns;
                     const newDns = result.new_dns;
                     const newNtlm = result.new_ntlm;
+
+                    // Update HUD device count from the live data pipeline
+                    // (most authoritative — the web server's network-summary
+                    // may lag behind the data pipeline's in-memory count)
+                    if (totalNodes) {
+                        const hudEl = document.getElementById('hunt-devices');
+                        if (hudEl) hudEl.textContent = Number(totalNodes).toLocaleString();
+                    }
                     const isBackfill = result.stage_detail === 'backfill_mapping';
                     const isFetching = result.stage_detail === 'splunk_fetch';
 

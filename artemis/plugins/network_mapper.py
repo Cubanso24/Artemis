@@ -4019,6 +4019,20 @@ class NetworkMapperPlugin(ArtemisPlugin):
         self._generate_summary()
         return str(map_file)
 
+    def _disk_node_count(self) -> Optional[int]:
+        """Read just the header line of current_map.json for total_nodes.
+
+        This is the authoritative count written by the data pipeline and
+        is much cheaper than deserialising every node.
+        """
+        map_file = self.output_dir / "current_map.json"
+        try:
+            with open(map_file) as f:
+                header = json.loads(f.readline())
+                return header.get('total_nodes')
+        except Exception:
+            return None
+
     # Enrichment fields that the bg profiler updates on each node.
     # Everything else (connections, bytes, ext_conn_detail) belongs to
     # the continuous-ingest process and must not be overwritten.
@@ -4399,9 +4413,15 @@ class NetworkMapperPlugin(ArtemisPlugin):
             counts['_total'] = sum(counts.values())
             sensor_inventory_out[sid] = counts
 
+        # Use the authoritative disk count when the data pipeline is
+        # ahead of the web server's in-memory copy.
+        in_memory_total = internal_count + external_count
+        disk_total = self._disk_node_count()
+        authoritative_total = max(in_memory_total, disk_total or 0)
+
         summary = {
             '_key': cache_key,
-            'total_nodes': internal_count + external_count,
+            'total_nodes': authoritative_total,
             'sensors': sorted(self.sensors),
             'vlans': vlans,
             'internal_nodes': internal_count,
