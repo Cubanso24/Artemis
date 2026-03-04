@@ -1059,11 +1059,55 @@ def _analysis_pipeline_process(job_id, db_path):
                         context.network_map.analyst_annotations = ann_by_ip
                         context.recent_agent_findings['analyst_annotations'] = ann_by_ip
 
-                # Run analysis (with timeout to prevent indefinite hangs)
+                # Helper to persist agent outputs to DB immediately
+                def _save_agent_outputs(agent_outputs_list):
+                    _count = 0
+                    for ao in agent_outputs_list:
+                        ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+                        for f in ao_dict.get('findings', []):
+                            _count += 1
+                            db.save_finding(
+                                finding_id=f.get('fingerprint',
+                                                 f.get('activity_type', '') + str(analysis_cycle)),
+                                agent_name=ao_dict.get('agent_name', 'unknown'),
+                                activity_type=f.get('activity_type', ''),
+                                severity=ao_dict.get('severity', 'medium'),
+                                confidence=ao_dict.get('confidence', 0.0),
+                                description=f.get('description', ''),
+                                indicators=f.get('indicators', []),
+                                affected_assets=f.get('affected_assets', []),
+                                mitre_tactics=ao_dict.get('mitre_tactics', []),
+                                mitre_techniques=f.get('mitre_techniques', []),
+                                evidence_count=len(f.get('evidence', [])),
+                                recommended_actions=ao_dict.get('recommended_actions', []),
+                                source_cycle=analysis_cycle,
+                            )
+                    return _count
+
+                # Phase 1: Run ML detectors and save findings immediately
+                # so they appear in the GUI while the LLM synthesis runs.
+                if _crew_orchestrator:
+                    log.info('Phase 1: Running ML detectors...')
+                    ml_outputs = _crew_orchestrator._run_detectors(
+                        agent_data, context)
+                    findings_count = _save_agent_outputs(ml_outputs)
+                    log.info(f'Phase 1 complete: {findings_count} findings '
+                             f'saved to DB (visible in GUI now)')
+
+                    send('running',
+                         f'Cycle {analysis_cycle}: {findings_count} ML findings '
+                         f'saved — running LLM synthesis...',
+                         70, {'pipeline': 'analysis',
+                              'cycle': analysis_cycle,
+                              'findings': findings_count,
+                              'stage_detail': 'llm_synthesis'})
+
+                # Phase 2: Run full hunt (LLM synthesis uses the findings)
                 def _run_hunt():
                     if _crew_orchestrator:
                         return _crew_orchestrator.hunt(
-                            data=agent_data, network_state=context)
+                            data=agent_data, network_state=context,
+                            pre_computed_outputs=ml_outputs)
                     return coordinator.hunt(
                         data=agent_data, network_state=context)
 
@@ -1079,27 +1123,29 @@ def _analysis_pipeline_process(job_id, db_path):
                         raise TimeoutError(
                             f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
 
-                # Save findings
-                for ao in assessment.get('agent_outputs', []):
-                    ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
-                    for f in ao_dict.get('findings', []):
-                        findings_count += 1
-                        db.save_finding(
-                            finding_id=f.get('fingerprint',
-                                             f.get('activity_type', '') + str(analysis_cycle)),
-                            agent_name=ao_dict.get('agent_name', 'unknown'),
-                            activity_type=f.get('activity_type', ''),
-                            severity=ao_dict.get('severity', 'medium'),
-                            confidence=ao_dict.get('confidence', 0.0),
-                            description=f.get('description', ''),
-                            indicators=f.get('indicators', []),
-                            affected_assets=f.get('affected_assets', []),
-                            mitre_tactics=ao_dict.get('mitre_tactics', []),
-                            mitre_techniques=f.get('mitre_techniques', []),
-                            evidence_count=len(f.get('evidence', [])),
-                            recommended_actions=ao_dict.get('recommended_actions', []),
-                            source_cycle=analysis_cycle,
-                        )
+                # Save findings (for non-CrewAI path, or any new findings
+                # the LLM-driven tools discovered beyond the initial ML run)
+                if not _crew_orchestrator:
+                    for ao in assessment.get('agent_outputs', []):
+                        ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+                        for f in ao_dict.get('findings', []):
+                            findings_count += 1
+                            db.save_finding(
+                                finding_id=f.get('fingerprint',
+                                                 f.get('activity_type', '') + str(analysis_cycle)),
+                                agent_name=ao_dict.get('agent_name', 'unknown'),
+                                activity_type=f.get('activity_type', ''),
+                                severity=ao_dict.get('severity', 'medium'),
+                                confidence=ao_dict.get('confidence', 0.0),
+                                description=f.get('description', ''),
+                                indicators=f.get('indicators', []),
+                                affected_assets=f.get('affected_assets', []),
+                                mitre_tactics=ao_dict.get('mitre_tactics', []),
+                                mitre_techniques=f.get('mitre_techniques', []),
+                                evidence_count=len(f.get('evidence', [])),
+                                recommended_actions=ao_dict.get('recommended_actions', []),
+                                source_cycle=analysis_cycle,
+                            )
 
                 # Persist LLM synthesis
                 llm_synth = assessment.get('llm_synthesis')

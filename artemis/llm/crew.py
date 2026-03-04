@@ -515,25 +515,33 @@ class CrewOrchestrator:
         self,
         data: Dict[str, Any],
         network_state: Optional[NetworkState] = None,
+        pre_computed_outputs: Optional[List[Any]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Run a CrewAI-orchestrated hunt cycle.
 
         Returns an assessment dict compatible with the existing
         ``MetaLearnerCoordinator.hunt()`` output.
+
+        If *pre_computed_outputs* is provided, those ML detector outputs
+        are used directly (avoiding a duplicate detector run).
         """
         start = time.time()
         logger.info("Starting CrewAI hunt cycle")
 
-        # 1. Run ML detectors FIRST so the LLM has real findings to work with
-        logger.info("Running ML detectors before LLM synthesis...")
-        agent_outputs = self._run_detectors(data, network_state)
-        detector_elapsed = time.time() - start
-        total_findings = sum(len(o.findings) for o in agent_outputs)
-        logger.info(
-            f"ML detectors completed in {detector_elapsed:.1f}s: "
-            f"{total_findings} findings from {len(agent_outputs)} agents"
-        )
+        # 1. Use pre-computed ML outputs or run detectors now
+        if pre_computed_outputs is not None:
+            agent_outputs = pre_computed_outputs
+            logger.info(f"Using {len(agent_outputs)} pre-computed ML outputs")
+        else:
+            logger.info("Running ML detectors before LLM synthesis...")
+            agent_outputs = self._run_detectors(data, network_state)
+            detector_elapsed = time.time() - start
+            total_findings = sum(len(o.findings) for o in agent_outputs)
+            logger.info(
+                f"ML detectors completed in {detector_elapsed:.1f}s: "
+                f"{total_findings} findings from {len(agent_outputs)} agents"
+            )
 
         # 2. Build tools with current hunt context (detectors still
         #    available as tools for deeper investigation if the LLM wants)
