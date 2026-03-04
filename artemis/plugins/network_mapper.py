@@ -1452,7 +1452,8 @@ class NetworkMapperPlugin(ArtemisPlugin):
             cursor = window_end
         return windows
 
-    def _run_profile_queries(self, splunk_connector, earliest, latest):
+    def _run_profile_queries(self, splunk_connector, earliest, latest,
+                             target_ips=None, target_macs=None):
         """Run the profiling Splunk queries for a single time window.
 
         Returns a dict with keys: server, client, ntlm, kerberos, dhcp,
@@ -1461,7 +1462,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         """
         from concurrent.futures import ThreadPoolExecutor
 
-        queries = self._profile_query_definitions()
+        queries = self._profile_query_definitions(
+            target_ips=target_ips, target_macs=target_macs,
+        )
 
         _HEAVY_TIMEOUT = 1800
         _LIGHT_TIMEOUT = 600
@@ -1553,12 +1556,73 @@ class NetworkMapperPlugin(ArtemisPlugin):
                      'dhcp_gateway', 'snmp_oid'):
             accumulated[key].extend(new_results.get(key, []))
 
-    def _profile_query_definitions(self):
-        """Return a dict of {name: SPL_query} for profiling."""
+    @staticmethod
+    def _build_ip_filter(ips: set, field: str) -> str:
+        """Build a Splunk WHERE clause to scope a query to specific IPs.
+
+        For small sets (<= 500) we use a simple IN() filter injected
+        right after ``| spath``.  For larger sets the filter still
+        works but Splunk will handle it via its search optimizer.
+
+        Returns an empty string when *ips* is empty (no scoping).
+        """
+        if not ips:
+            return ''
+        # Quote each IP and join into a Splunk IN() expression.
+        quoted = ', '.join(f'"{ip}"' for ip in sorted(ips))
+        return f'| where {field} IN ({quoted})'
+
+    @staticmethod
+    def _build_ip_or_mac_dhcp_filter(ips: set, macs: set) -> str:
+        """Build a Splunk filter for DHCP queries using both IP and MAC."""
+        parts = []
+        if ips:
+            quoted_ips = ', '.join(f'"{ip}"' for ip in sorted(ips))
+            parts.append(f'assigned_addr IN ({quoted_ips})')
+        if macs:
+            quoted_macs = ', '.join(f'"{m}"' for m in sorted(macs))
+            parts.append(f'mac IN ({quoted_macs})')
+        if not parts:
+            return ''
+        return f'| where {" OR ".join(parts)}'
+
+    @staticmethod
+    def _build_dual_ip_filter(ips: set) -> str:
+        """Build a filter for queries that involve both orig_h and resp_h.
+
+        Matches events where EITHER side of the connection is a target IP.
+        """
+        if not ips:
+            return ''
+        quoted = ', '.join(f'"{ip}"' for ip in sorted(ips))
+        return f'| where "id.orig_h" IN ({quoted}) OR "id.resp_h" IN ({quoted})'
+
+    def _profile_query_definitions(self, target_ips: set = None,
+                                   target_macs: set = None):
+        """Return a dict of {name: SPL_query} for profiling.
+
+        When *target_ips* / *target_macs* are provided the queries are
+        scoped so Splunk only scans data relevant to those devices
+        rather than the entire index.
+        """
+        ips = target_ips or set()
+        macs = target_macs or set()
+
+        # Pre-build filter strings once
+        f_orig = self._build_ip_filter(ips, '"id.orig_h"')
+        f_resp = self._build_ip_filter(ips, '"id.resp_h"')
+        f_host = self._build_ip_filter(ips, 'host')
+        f_ip   = self._build_ip_filter(ips, 'ip')
+        f_src  = self._build_ip_filter(ips, 'src')
+        f_dual = self._build_dual_ip_filter(ips)
+        f_dhcp = self._build_ip_or_mac_dhcp_filter(ips, macs)
+        f_gw   = self._build_ip_filter(ips, 'gw')
+
         return {
-            'server': '''
+            'server': f'''
             search index=zeek_conn OR index=suricata
             | spath
+            {f_resp}
             | stats dc("id.orig_h") as unique_clients,
                     values("id.resp_p") as ports,
                     count as incoming_count
@@ -1566,25 +1630,28 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where incoming_count >= 3
             ''',
-            'client': '''
+            'client': f'''
             search index=zeek_conn OR index=suricata
             | spath
+            {f_orig}
             | stats dc("id.resp_h") as unique_destinations,
                     count as outgoing_count
               by "id.orig_h"
             | rename "id.orig_h" as ip
             | where outgoing_count >= 3
             ''',
-            'ntlm': '''
+            'ntlm': f'''
             search index=zeek_ntlm
             | spath
+            {f_dual}
             | eval vlan=coalesce(vlan, "0")
             | table _time host vlan id.orig_h id.resp_h hostname domainname server_nb_computer_name server_dns_computer_name
             | rename host as sensor_id, "id.orig_h" as source_ip, "id.resp_h" as dest_ip
             ''',
-            'kerberos': '''
+            'kerberos': f'''
             search index=zeek_kerberos
             | spath
+            {f_resp}
             | stats dc("id.orig_h") as unique_clients,
                     values(service) as services,
                     count as auth_count
@@ -1592,10 +1659,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where auth_count >= 3
             ''',
-            'dhcp': '''
+            'dhcp': f'''
             search index=zeek_dhcp
             | spath
             | where isnotnull(assigned_addr) AND isnotnull(mac)
+            {f_dhcp}
             | eval vlan=coalesce(vlan, "0")
             | stats min(_time) as first_seen,
                     max(_time) as last_seen,
@@ -1604,19 +1672,21 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by assigned_addr, mac, vlan
             | rename assigned_addr as ip
             ''',
-            'snmp': '''
+            'snmp': f'''
             search index=zeek_snmp
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | eval oid=coalesce("id.resp_p", "")
             | stats latest(community) as community,
                     latest(version) as snmp_version
               by "id.resp_h"
             | rename "id.resp_h" as ip
             ''',
-            'smb': '''
+            'smb': f'''
             search index=zeek_smb_mapping OR index=zeek_smb_files
             | spath
+            {f_resp}
             | eval nb_name=coalesce(server_name, "")
             | where nb_name!="" AND nb_name!="-"
             | stats values(nb_name) as nb_names,
@@ -1624,36 +1694,40 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by "id.resp_h"
             | rename "id.resp_h" as ip
             ''',
-            'software': '''
+            'software': f'''
             search index=zeek_software
             | spath
             | where isnotnull(host) OR isnotnull("id.orig_h")
             | eval ip=coalesce(host, "id.orig_h")
+            {f_ip}
             | eval sw=name . " " . coalesce("version.major","") . "." . coalesce("version.minor","")
             | stats values(sw) as software,
                     values(software_type) as sw_types
               by ip
             ''',
-            'ssh': '''
+            'ssh': f'''
             search index=zeek_ssh
             | spath
+            {f_dual}
             | stats latest(client) as ssh_client,
                     latest(server) as ssh_server
               by "id.orig_h", "id.resp_h"
             | rename "id.orig_h" as client_ip, "id.resp_h" as server_ip
             ''',
-            'x509': '''
+            'x509': f'''
             search index=zeek_x509
             | spath
             | where isnotnull("certificate.subject")
+            {f_host}
             | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
             | where isnotnull(cn)
             | stats values(cn) as cert_names by host
             | rename host as sensor_id
             ''',
-            'http_ua': '''
+            'http_ua': f'''
             search index=zeek_http
             | spath
+            {f_orig}
             | where isnotnull(user_agent) AND user_agent!="-"
             | stats values(user_agent) as user_agents,
                     dc(host) as sites_visited,
@@ -1663,9 +1737,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | where http_count >= 2
             ''',
             # --- Deep fingerprint queries ---
-            'ja3_ssl': '''
+            'ja3_ssl': f'''
             search index=zeek_ssl
             | spath
+            {f_orig}
             | where isnotnull(ja3) AND ja3!="-"
             | stats values(ja3) as ja3_hashes,
                     values(ja3s) as ja3s_hashes,
@@ -1677,9 +1752,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.orig_h" as ip
             | where tls_count >= 2
             ''',
-            'ja3s_server': '''
+            'ja3s_server': f'''
             search index=zeek_ssl
             | spath
+            {f_resp}
             | where isnotnull(ja3s) AND ja3s!="-"
             | stats values(ja3s) as ja3s_hashes,
                     values(subject) as cert_subjects,
@@ -1690,9 +1766,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where unique_clients >= 1
             ''',
-            'dns_profile': '''
+            'dns_profile': f'''
             search index=zeek_dns
             | spath
+            {f_orig}
             | where isnotnull(query) AND query!="-"
             | eval tld=mvindex(split(query, "."), -1)
             | eval is_nxdomain=if(rcode_name=="NXDOMAIN", 1, 0)
@@ -1706,9 +1783,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | eval nxdomain_ratio=round(nxdomain_count/query_count, 4)
             | where query_count >= 5
             ''',
-            'rdp': '''
+            'rdp': f'''
             search index=zeek_rdp
             | spath
+            {f_orig}
             | where isnotnull(cookie) OR isnotnull(client_build)
             | stats latest(cookie) as rdp_cookie,
                     latest(client_build) as client_build,
@@ -1721,10 +1799,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by "id.orig_h"
             | rename "id.orig_h" as ip
             ''',
-            'dhcp_extended': '''
+            'dhcp_extended': f'''
             search index=zeek_dhcp
             | spath
             | where isnotnull(assigned_addr) AND isnotnull(mac)
+            {f_dhcp}
             | eval vlan=coalesce(vlan, "0")
             | stats latest(client_fqdn) as client_fqdn,
                     latest(domain) as dhcp_domain,
@@ -1736,12 +1815,13 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename assigned_addr as ip
             | where isnotnull(client_fqdn) OR isnotnull(vendor_class)
             ''',
-            'files': '''
+            'files': f'''
             search index=zeek_files
             | spath
             | where isnotnull(mime_type) AND mime_type!="-"
             | eval ip=coalesce(tx_hosts, rx_hosts)
             | mvexpand ip
+            {f_ip}
             | stats values(mime_type) as mime_types,
                     values(source) as file_sources,
                     dc(mime_type) as unique_types,
@@ -1750,10 +1830,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by ip
             | where file_count >= 2
             ''',
-            'x509_extended': '''
+            'x509_extended': f'''
             search index=zeek_x509
             | spath
             | where isnotnull("certificate.subject")
+            {f_host}
             | rex field="certificate.subject" "CN=(?<cn>[^,/]+)"
             | rex field="certificate.issuer" "CN=(?<issuer_cn>[^,/]+)"
             | rex field="certificate.issuer" "O=(?<issuer_org>[^,/]+)"
@@ -1767,10 +1848,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename host as sensor_id
             ''',
             # --- Host identification queries (Zeek Workbench style) ---
-            'known_services': '''
+            'known_services': f'''
             search index=zeek_known_services
             | spath
             | where isnotnull(host) AND isnotnull(port_num)
+            {f_host}
             | eval svc=if(isnotnull(service) AND service!="-" AND service!="",
                           service, port_num."/".port_proto)
             | stats values(svc) as service_names,
@@ -1778,10 +1860,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
               by host
             | rename host as ip
             ''',
-            'smtp_banner': '''
+            'smtp_banner': f'''
             search index=zeek_smtp
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | stats values(helo) as helo_names,
                     latest(last_reply) as last_banner,
                     dc("id.orig_h") as unique_clients,
@@ -1790,10 +1873,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where smtp_count >= 2
             ''',
-            'ftp_banner': '''
+            'ftp_banner': f'''
             search index=zeek_ftp
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | stats latest(reply_msg) as ftp_banner,
                     dc("id.orig_h") as unique_clients,
                     count as ftp_count
@@ -1802,23 +1886,25 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | where ftp_count >= 1
             ''',
             # --- Router / firewall detection queries ---
-            'dhcp_gateway': '''
+            'dhcp_gateway': f'''
             search index=zeek_dhcp
             | spath
             | where isnotnull(assigned_addr) AND isnotnull(router)
             | eval vlan=coalesce(vlan, "0")
             | eval gw=mvindex(router, 0)
             | where isnotnull(gw) AND gw!="" AND gw!="-"
+            {f_gw}
             | stats dc(assigned_addr) as client_count,
                     values(assigned_addr) as clients
               by gw, vlan
             | rename gw as gateway_ip
             | where client_count >= 1
             ''',
-            'snmp_oid': '''
+            'snmp_oid': f'''
             search index=zeek_snmp
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | eval oid=coalesce(community, "")
             | stats latest(community) as community,
                     latest(version) as snmp_version
@@ -1826,9 +1912,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             ''',
             # --- New Zeek log queries for enhanced network mapping ---
-            'tunnel': '''
+            'tunnel': f'''
             search index=zeek_tunnel
             | spath
+            {f_orig}
             | where isnotnull(tunnel_type)
             | stats values(tunnel_type) as tunnel_types,
                     values(action) as actions,
@@ -1837,20 +1924,22 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.orig_h" as ip
             | where tunnel_count >= 1
             ''',
-            'ntp': '''
+            'ntp': f'''
             search index=zeek_ntp
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | stats dc("id.orig_h") as unique_clients,
                     count as ntp_count
               by "id.resp_h"
             | rename "id.resp_h" as ip
             | where ntp_count >= 2
             ''',
-            'radius': '''
+            'radius': f'''
             search index=zeek_radius
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | stats dc("id.orig_h") as unique_clients,
                     values(result) as results,
                     count as radius_count
@@ -1858,10 +1947,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where radius_count >= 1
             ''',
-            'mqtt': '''
+            'mqtt': f'''
             search index=zeek_mqtt
             | spath
             | where isnotnull("id.resp_h")
+            {f_resp}
             | stats dc("id.orig_h") as unique_clients,
                     values(action) as actions,
                     count as mqtt_count
@@ -1869,9 +1959,10 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where mqtt_count >= 1
             ''',
-            'modbus': '''
+            'modbus': f'''
             search index=zeek_modbus OR index=zeek_dnp3
             | spath
+            {f_resp}
             | where isnotnull("id.resp_h")
             | eval protocol=if(sourcetype=="zeek_modbus" OR index=="zeek_modbus", "Modbus", "DNP3")
             | stats values(protocol) as protocols,
@@ -1881,30 +1972,33 @@ class NetworkMapperPlugin(ArtemisPlugin):
             | rename "id.resp_h" as ip
             | where ics_count >= 1
             ''',
-            'notice': '''
+            'notice': f'''
             search index=zeek_notice
             | spath
             | where isnotnull(src) OR isnotnull("id.orig_h")
             | eval ip=coalesce(src, "id.orig_h")
+            {f_ip}
             | stats values(note) as notice_types,
                     values(msg) as notice_msgs,
                     count as notice_count
               by ip
             | where notice_count >= 1
             ''',
-            'traceroute': '''
+            'traceroute': f'''
             search index=zeek_traceroute
             | spath
+            {f_src}
             | where isnotnull(src) AND isnotnull(dst)
             | stats values(dst) as destinations,
                     count as traceroute_count
               by src
             | rename src as ip
             ''',
-            'known_hosts': '''
+            'known_hosts': f'''
             search index=zeek_known_hosts
             | spath
             | where isnotnull(host)
+            {f_host}
             | stats count as seen_count
               by host
             | rename host as ip
@@ -1912,7 +2006,9 @@ class NetworkMapperPlugin(ArtemisPlugin):
         }
 
     def profile_devices(self, splunk_connector, time_range: str = "-24h",
-                         progress_callback=None) -> Dict:
+                         progress_callback=None,
+                         target_ips: set = None,
+                         target_macs: set = None) -> Dict:
         """
         Profile network devices by querying Splunk zeek logs.
 
@@ -1926,6 +2022,11 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 Supports -Nd, -Nw, -Nmon for multi-day profiling.
             progress_callback: Optional callable(stage, message, pct) for
                 progress reporting back to the caller.
+            target_ips: Optional set of IPs to scope queries to.
+                When provided, Splunk queries are filtered to only these
+                IPs rather than scanning the entire index.
+            target_macs: Optional set of MAC addresses for DHCP-based
+                queries.  Used alongside target_ips for maximum scoping.
 
         Returns:
             Dict with profiling results summary
@@ -1945,7 +2046,63 @@ class NetworkMapperPlugin(ArtemisPlugin):
                 except Exception:
                     pass
 
-        logger.info(f"Starting device profiling with time_range={time_range}")
+        # --- Batch large IP sets ---
+        # Splunk WHERE ... IN() becomes expensive beyond ~500 IPs.
+        # Split into batches; each batch runs the full time range and
+        # results are merged across batches.
+        _BATCH_SIZE = 500
+        if target_ips and len(target_ips) > _BATCH_SIZE:
+            ip_list = sorted(target_ips)
+            batches = [
+                set(ip_list[i:i + _BATCH_SIZE])
+                for i in range(0, len(ip_list), _BATCH_SIZE)
+            ]
+            # Split MACs proportionally by looking up which MACs belong
+            # to which IPs in each batch.
+            ip_to_mac = {}
+            if target_macs:
+                for n in self.nodes.values():
+                    if n.ip in target_ips and n.mac_address:
+                        ip_to_mac[n.ip] = n.mac_address
+
+            logger.info(
+                f"Splitting {len(target_ips)} target IPs into "
+                f"{len(batches)} batches of ~{_BATCH_SIZE}"
+            )
+            _progress('profile',
+                      f'Profiling {len(target_ips)} devices in '
+                      f'{len(batches)} batches...', 32)
+
+            # Run each batch as a full profile_devices call and merge
+            merged_result = {'classified': 0, 'total_internal': 0,
+                             'unclassified': 0}
+            for b_idx, batch_ips in enumerate(batches, 1):
+                batch_macs = {
+                    ip_to_mac[ip] for ip in batch_ips
+                    if ip in ip_to_mac
+                } if ip_to_mac else None
+
+                def _batch_progress(stage, message, pct,
+                                    _bi=b_idx, _bt=len(batches)):
+                    _progress(stage,
+                              f'Batch {_bi}/{_bt}: {message}',
+                              30 + int(70 * ((_bi - 1) / _bt) + pct * 0.7 / _bt))
+
+                r = self.profile_devices(
+                    splunk_connector, time_range=time_range,
+                    progress_callback=_batch_progress,
+                    target_ips=batch_ips,
+                    target_macs=batch_macs,
+                )
+                for k in ('classified', 'total_internal', 'unclassified'):
+                    merged_result[k] = merged_result.get(k, 0) + r.get(k, 0)
+
+            return merged_result
+
+        scoped = bool(target_ips)
+        scope_label = f' (scoped to {len(target_ips)} IPs)' if scoped else ''
+        logger.info(f"Starting device profiling with "
+                    f"time_range={time_range}{scope_label}")
 
         internal_count = sum(1 for n in self.nodes.values() if n.is_internal)
         _progress('profile', f'Network map loaded: {len(self.nodes)} nodes ({internal_count} internal)', 30)
@@ -1989,6 +2146,7 @@ class NetworkMapperPlugin(ArtemisPlugin):
 
             window_results = self._run_profile_queries(
                 splunk_connector, earliest, latest,
+                target_ips=target_ips, target_macs=target_macs,
             )
             self._merge_profile_results(accumulated, window_results)
 

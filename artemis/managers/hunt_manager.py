@@ -1281,13 +1281,25 @@ def _profile_pipeline_process(job_id, db_path):
                     time.sleep(5)
                 continue
 
-            # Calculate time range from earliest first_seen of unprofiled
+            # Collect IPs and MACs of unprofiled devices so queries
+            # are scoped to only the devices that need profiling.
             unprofiled_nodes = [
                 n for n in nm.nodes.values()
                 if not n.device_type and n.is_internal
             ]
-            if unprofiled_nodes:
-                earliest = min(n.first_seen for n in unprofiled_nodes)
+            target_ips = {n.ip for n in unprofiled_nodes if n.ip}
+            target_macs = {
+                n.mac_address for n in unprofiled_nodes
+                if n.mac_address
+            }
+
+            # Use the full available time range so we gather as much
+            # evidence as possible for each device.  Compute from the
+            # earliest first_seen across ALL nodes (not just unprofiled)
+            # to cover the complete data window.
+            all_nodes = list(nm.nodes.values())
+            if all_nodes:
+                earliest = min(n.first_seen for n in all_nodes)
                 age_secs = (datetime.now() - earliest).total_seconds()
                 age_hours = max(1, int(age_secs / 3600) + 1)
                 if age_hours >= 24:
@@ -1299,7 +1311,8 @@ def _profile_pipeline_process(job_id, db_path):
                 profile_time_range = '-24h'
 
             log.info(f'Profiling {unprofiled} devices '
-                     f'(time_range={profile_time_range})')
+                     f'({len(target_ips)} IPs, {len(target_macs)} MACs, '
+                     f'time_range={profile_time_range})')
             send('running',
                  f'Profiling {unprofiled} devices ({profile_time_range})...',
                  20, {'pipeline': 'profile', 'unprofiled': unprofiled,
@@ -1322,6 +1335,8 @@ def _profile_pipeline_process(job_id, db_path):
                     pipeline.splunk,
                     time_range=profile_time_range,
                     progress_callback=_progress_cb,
+                    target_ips=target_ips,
+                    target_macs=target_macs,
                 )
                 # Merge enrichment data with the latest map on disk
                 # (the data pipeline may have written new connections)
