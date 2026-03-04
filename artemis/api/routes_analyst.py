@@ -193,6 +193,46 @@ async def analyst_query(body: AnalystQueryRequest):
 
 
 # ---------------------------------------------------------------------------
+# RAG Knowledge Store dashboard endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/api/rag/stats")
+async def rag_stats():
+    """Return RAG store collection counts and embedding info."""
+    try:
+        rag = _get_rag_store()
+        return rag.get_stats()
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@router.get("/api/rag/browse/{collection}")
+async def rag_browse(collection: str, limit: int = 50, offset: int = 0):
+    """Browse items in a RAG collection."""
+    if collection not in ("findings", "baselines", "threat_intel"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown collection: {collection}"},
+        )
+    try:
+        rag = _get_rag_store()
+        items = rag.browse_collection(collection, limit=limit, offset=offset)
+        return {"collection": collection, "items": items, "count": len(items)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.get("/api/rag/retrievals")
+async def rag_retrievals():
+    """Return recent RAG retrieval log entries."""
+    try:
+        rag = _get_rag_store()
+        return rag.get_retrieval_log()
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
 # POST /api/analyst/upload-pcap  — upload and hunt on a PCAP file
 # ---------------------------------------------------------------------------
 

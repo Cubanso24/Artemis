@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -134,6 +135,7 @@ class RAGStore:
         self._persist_dir = persist_dir
         self._client = None  # lazy init
         self._collections: Dict[str, Any] = {}
+        self._retrieval_log: deque = deque(maxlen=100)
 
     # ------------------------------------------------------------------
     # Lazy initialisation (so import never fails)
@@ -214,6 +216,68 @@ class RAGStore:
     @property
     def available(self) -> bool:
         return self._ensure_client()
+
+    # ------------------------------------------------------------------
+    # Stats and browsing
+    # ------------------------------------------------------------------
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return collection counts and embedding info for the dashboard."""
+        if not self.available:
+            return {"available": False}
+
+        stats: Dict[str, Any] = {"available": True, "collections": {}}
+        for name in ("findings", "baselines", "threat_intel"):
+            col = self._get_collection(name)
+            if col is not None:
+                try:
+                    count = col.count()
+                except Exception:
+                    count = -1
+                stats["collections"][name] = {"count": count}
+            else:
+                stats["collections"][name] = {"count": 0}
+
+        stats["embed_model"] = _EMBED_MODEL
+        stats["ollama_ok"] = not _OLLAMA_EMBED_FAILED
+        stats["persist_dir"] = self._persist_dir
+        return stats
+
+    def browse_collection(
+        self, collection: str, limit: int = 50, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return items from a collection for the store browser."""
+        col = self._get_collection(collection)
+        if col is None:
+            return []
+        try:
+            count = col.count()
+            if count == 0:
+                return []
+            # ChromaDB peek/get — fetch a page
+            result = col.get(
+                limit=limit,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+            items = []
+            docs = result.get("documents", [])
+            metas = result.get("metadatas", [])
+            ids = result.get("ids", [])
+            for i, (doc, meta, doc_id) in enumerate(zip(docs, metas, ids)):
+                items.append({
+                    "id": doc_id,
+                    "text": (doc or "")[:500],
+                    "metadata": meta or {},
+                })
+            return items
+        except Exception as e:
+            logger.error(f"Failed to browse {collection}: {e}")
+            return []
+
+    def get_retrieval_log(self) -> List[Dict[str, Any]]:
+        """Return recent retrieval queries and results."""
+        return list(self._retrieval_log)
 
     # ------------------------------------------------------------------
     # Index operations
@@ -399,6 +463,20 @@ class RAGStore:
                     "metadata": meta,
                     "similarity": 1.0 - dist,  # cosine distance → similarity
                 })
+
+            # Log retrieval for dashboard visibility
+            self._retrieval_log.append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "collection": collection,
+                "query": query[:200],
+                "n_results": len(items),
+                "top_similarity": items[0]["similarity"] if items else 0,
+                "results_preview": [
+                    {"text": it["text"][:150], "similarity": it["similarity"]}
+                    for it in items[:3]
+                ],
+            })
+
             return items
         except Exception as e:
             # Dimension mismatch — stale collection from a different model

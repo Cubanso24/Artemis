@@ -765,6 +765,25 @@ async def get_enrichments():
     return db_manager.get_all_enrichments()
 
 
+@router.get("/api/threat-intel/enrichment-summary")
+async def get_enrichment_summary():
+    """Get aggregated enrichment stats by verdict."""
+    all_enrichments = db_manager.get_all_enrichments()
+    verdicts = {}
+    sources_seen = set()
+    for e in all_enrichments:
+        v = e.get("verdict", "unknown")
+        verdicts[v] = verdicts.get(v, 0) + 1
+        for src in (e.get("sources") or {}):
+            sources_seen.add(src)
+    return {
+        "total": len(all_enrichments),
+        "by_verdict": verdicts,
+        "sources_used": sorted(sources_seen),
+        "config": threat_intel_manager.get_config_status(),
+    }
+
+
 @router.get("/api/threat-intel/enrichment/{ip}")
 async def get_ip_enrichment(ip: str):
     """Get enrichment for a specific IP."""
