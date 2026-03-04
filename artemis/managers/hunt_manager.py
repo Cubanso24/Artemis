@@ -735,7 +735,7 @@ def _analysis_pipeline_process(job_id, db_path):
     from artemis.meta_learner.coordinator import MetaLearnerCoordinator
     from artemis.models.network_state import NetworkState
 
-    _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '600'))  # 10 min
+    _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '3600'))  # 1 hour
 
     logging.basicConfig(
         level=logging.INFO,
@@ -763,63 +763,97 @@ def _analysis_pipeline_process(job_id, db_path):
 
     send('running', 'Starting analysis pipeline...', 0)
 
+    _MAX_INIT_RETRIES = 5
+
     try:
-        # Load network mapper (read-only for context)
-        nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
-        nm.initialize()
-
-        # Initialize coordinator with LLM
-        _llm_cfg = {}
-        _llm_cfg_path = os.path.join('config', 'llm_settings.json')
-        if os.path.exists(_llm_cfg_path):
-            try:
-                import json as _json
-                with open(_llm_cfg_path) as _f:
-                    _llm_cfg = _json.load(_f)
-                log.info(f'Loaded LLM config: backend={_llm_cfg.get("backend", "auto")}')
-            except Exception as _e:
-                log.warning(f'Could not read LLM config: {_e}')
-
-        _llm_backend = _llm_cfg.get('backend') or os.environ.get('LLM_BACKEND', 'auto')
-        _ollama_url = (
-            _llm_cfg.get('ollama_url')
-            or os.environ.get('OLLAMA_URL')
-            or os.environ.get('OLLAMA_API_BASE')
-            or 'http://localhost:11434'
-        )
-        os.environ.setdefault('OLLAMA_URL', _ollama_url)
-        os.environ.setdefault('OLLAMA_API_BASE', _ollama_url)
-
-        if _llm_cfg.get('ollama_model'):
-            os.environ['OLLAMA_MODEL'] = _llm_cfg['ollama_model']
-        if _llm_cfg.get('anthropic_api_key'):
-            os.environ['ANTHROPIC_API_KEY'] = _llm_cfg['anthropic_api_key']
-
-        coordinator = MetaLearnerCoordinator(
-            deployment_mode='adaptive',
-            enable_parallel_execution=True,
-            max_workers=4,
-            llm_backend=_llm_backend,
-        )
-        log.info(f'Initialized {len(coordinator.agents)} hunting agents')
-
-        # Try CrewAI orchestrator
+        # ----------------------------------------------------------
+        # Initialization with retry — transient failures (LLM health
+        # check, file locks, Ollama cold-start) should not permanently
+        # kill the pipeline.
+        # ----------------------------------------------------------
+        coordinator = None
+        nm = None
         _crew_orchestrator = None
-        if _llm_cfg.get('orchestration') == 'crewai':
+        _llm_cfg = {}
+
+        for _init_attempt in range(1, _MAX_INIT_RETRIES + 1):
             try:
-                from artemis.llm.crew import CrewOrchestrator, crewai_available
-                if crewai_available():
-                    _ollama_model = _llm_cfg.get('ollama_model') or os.environ.get('OLLAMA_MODEL', 'llama3.1')
-                    _crew_orchestrator = CrewOrchestrator(
-                        detectors=coordinator.agents,
-                        rag_store=getattr(coordinator, 'rag_store', None),
-                        llm_model=f"ollama/{_ollama_model}",
-                        process=_llm_cfg.get('crewai_process', 'sequential'),
-                        num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '131072')),
-                    )
-                    log.info('CrewAI orchestrator initialised')
-            except Exception as _ce:
-                log.warning(f'CrewAI init failed: {_ce}')
+                # Load network mapper (read-only for context)
+                nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+                nm.initialize()
+
+                # Initialize coordinator with LLM
+                _llm_cfg = {}
+                _llm_cfg_path = os.path.join('config', 'llm_settings.json')
+                if os.path.exists(_llm_cfg_path):
+                    try:
+                        import json as _json
+                        with open(_llm_cfg_path) as _f:
+                            _llm_cfg = _json.load(_f)
+                        log.info(f'Loaded LLM config: backend={_llm_cfg.get("backend", "auto")}')
+                    except Exception as _e:
+                        log.warning(f'Could not read LLM config: {_e}')
+
+                _llm_backend = _llm_cfg.get('backend') or os.environ.get('LLM_BACKEND', 'auto')
+                _ollama_url = (
+                    _llm_cfg.get('ollama_url')
+                    or os.environ.get('OLLAMA_URL')
+                    or os.environ.get('OLLAMA_API_BASE')
+                    or 'http://localhost:11434'
+                )
+                os.environ.setdefault('OLLAMA_URL', _ollama_url)
+                os.environ.setdefault('OLLAMA_API_BASE', _ollama_url)
+
+                if _llm_cfg.get('ollama_model'):
+                    os.environ['OLLAMA_MODEL'] = _llm_cfg['ollama_model']
+                if _llm_cfg.get('anthropic_api_key'):
+                    os.environ['ANTHROPIC_API_KEY'] = _llm_cfg['anthropic_api_key']
+
+                coordinator = MetaLearnerCoordinator(
+                    deployment_mode='adaptive',
+                    enable_parallel_execution=True,
+                    max_workers=4,
+                    llm_backend=_llm_backend,
+                )
+                log.info(f'Initialized {len(coordinator.agents)} hunting agents')
+
+                # Try CrewAI orchestrator
+                _crew_orchestrator = None
+                if _llm_cfg.get('orchestration') == 'crewai':
+                    try:
+                        from artemis.llm.crew import CrewOrchestrator, crewai_available
+                        if crewai_available():
+                            _ollama_model = _llm_cfg.get('ollama_model') or os.environ.get('OLLAMA_MODEL', 'llama3.1')
+                            _crew_orchestrator = CrewOrchestrator(
+                                detectors=coordinator.agents,
+                                rag_store=getattr(coordinator, 'rag_store', None),
+                                llm_model=f"ollama/{_ollama_model}",
+                                process=_llm_cfg.get('crewai_process', 'sequential'),
+                                num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '131072')),
+                            )
+                            log.info('CrewAI orchestrator initialised')
+                    except Exception as _ce:
+                        log.warning(f'CrewAI init failed: {_ce}')
+
+                break  # Init succeeded
+
+            except Exception as _init_err:
+                log.error(
+                    f'Analysis pipeline init attempt {_init_attempt}/'
+                    f'{_MAX_INIT_RETRIES} failed: {_init_err}'
+                )
+                log.error(traceback.format_exc())
+                if _init_attempt >= _MAX_INIT_RETRIES:
+                    raise  # Let the outer handler catch it
+                _backoff = min(30, 5 * _init_attempt)
+                send('running',
+                     f'Init failed (attempt {_init_attempt}/{_MAX_INIT_RETRIES}),'
+                     f' retrying in {_backoff}s: {_init_err}', 0,
+                     {'pipeline': 'analysis', 'error': str(_init_err)})
+                for _ in range(int(_backoff)):
+                    if _stop:
+                        return
+                    time.sleep(1)
 
         analyses_completed = 0
 
@@ -1904,6 +1938,44 @@ class HuntManager:
                         if hunt_id in self.active_hunts:
                             self.active_hunts[hunt_id]['status'] = 'failed'
                         self.db.clear_progress(hunt_id)
+
+                        # Auto-restart the analysis pipeline if it
+                        # crashed and there is still work to process.
+                        if hunt_id == self._analysis_pipeline_id:
+                            self._analysis_pipeline_pid = None
+                            pending = self.db.get_pending_analysis()
+                            if pending or (
+                                self._data_pipeline_pid
+                                and _pid_alive(self._data_pipeline_pid)
+                            ):
+                                logger.warning(
+                                    'Analysis pipeline crashed — restarting'
+                                )
+                                import multiprocessing as _mp
+                                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                new_job = f'analysis_{ts}'
+                                proc = _mp.Process(
+                                    target=_analysis_pipeline_process,
+                                    args=(new_job, self.db.db_path),
+                                    daemon=False,
+                                )
+                                proc.start()
+                                self._analysis_pipeline_id = new_job
+                                self._analysis_pipeline_pid = proc.pid
+                                self._monitored_hunts[new_job] = proc.pid
+                                self.active_hunts[new_job] = {
+                                    'status': 'running',
+                                    'type': 'analysis_pipeline',
+                                    'progress': 0,
+                                    'start_time': datetime.now(),
+                                }
+                                logger.info(
+                                    f'Restarted analysis pipeline: '
+                                    f'{new_job} (pid {proc.pid})'
+                                )
+                                # Don't remove old hunt_id from monitored
+                                # — it's dead and will be cleaned below.
+
                         finished.append(hunt_id)
 
                 for hid in finished:
