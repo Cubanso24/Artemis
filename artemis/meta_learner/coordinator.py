@@ -144,12 +144,28 @@ class MetaLearnerCoordinator:
             agent_model=agent_model,
         )
 
-        # Initialize RAG store (gracefully degrades if chromadb missing)
+        # Initialize RAG store (gracefully degrades if chromadb missing).
+        # ChromaDB + DuckDB init can hang for minutes on large persisted
+        # stores, so we probe with a timeout to avoid blocking the whole
+        # analysis pipeline.
         rag_store = None
         try:
             from artemis.llm.rag import RAGStore
             rag_store = RAGStore()
-            if rag_store.available:
+            # Probe availability in a thread with a short timeout so a
+            # slow ChromaDB/DuckDB init doesn't block the pipeline.
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                _fut = _pool.submit(lambda s: s.available, rag_store)
+                try:
+                    _rag_ok = _fut.result(timeout=10)
+                except _cf.TimeoutError:
+                    _rag_ok = False
+                    self.logger.warning(
+                        "RAG store init timed out (10s) — running "
+                        "without historical context"
+                    )
+            if _rag_ok:
                 self.logger.info("RAG store initialised — historical context enabled")
             else:
                 rag_store = None
