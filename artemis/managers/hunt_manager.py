@@ -870,6 +870,10 @@ def _analysis_pipeline_process(job_id, db_path):
     )
     log = logging.getLogger('artemis.analysis_pipeline')
 
+    # Ensure agent activity logging writes to the correct DB
+    from artemis.ws import set_db_path
+    set_db_path(db_path)
+
     db = DatabaseManager(db_path)
     pid = os.getpid()
     _stop = False

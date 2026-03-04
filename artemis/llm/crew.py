@@ -42,6 +42,7 @@ from artemis.llm.prompts import (
 )
 from artemis.models.agent_output import AgentOutput, Finding, Evidence, Severity
 from artemis.models.network_state import NetworkState
+from artemis.ws import fire_agent_activity
 
 logger = logging.getLogger("artemis.llm.crew")
 
@@ -355,6 +356,9 @@ def _build_tasks(
     context_block = f"{state_text}\n\n{data_summary}\n\n{findings_block}"
 
     # 1. Hypothesis generation (lead analyst)
+    fire_agent_activity("lead_analyst", "prompt", {
+        "message": "Generating threat hypotheses from network state and ML findings",
+    })
     hypothesis_task = Task(
         description=(
             f"Analyse the following network state, hunting data, and ML "
@@ -382,6 +386,13 @@ def _build_tasks(
         agent = agents.get(name)
         if agent is None:
             continue
+
+        # Log task assignment so it shows in the agent monitor
+        n_agent_findings = len(_findings_by_agent.get(name, "").split("\n")) - 1
+        fire_agent_activity(name, "prompt", {
+            "message": f"Assigned investigation task "
+                       f"({n_agent_findings} ML findings to review)",
+        })
 
         # Include this agent's ML findings directly in the task description
         agent_findings_text = _findings_by_agent.get(name, "No ML findings for this agent.")
@@ -415,6 +426,10 @@ def _build_tasks(
         specialist_tasks.append(task)
 
     # 3. Synthesis (lead analyst aggregates all specialist results)
+    fire_agent_activity("lead_analyst", "prompt", {
+        "message": f"Assigned synthesis task — aggregating "
+                   f"{len(specialist_tasks)} specialist investigations",
+    })
     synthesis_task = Task(
         description=(
             "Synthesise the specialist investigations into a unified threat "
@@ -528,13 +543,27 @@ class CrewOrchestrator:
         """
         start = time.time()
         logger.info("Starting CrewAI hunt cycle")
+        fire_agent_activity("coordinator", "stage", {
+            "message": "Starting CrewAI hunt cycle",
+            "stage": 0,
+        })
 
         # 1. Use pre-computed ML outputs or run detectors now
         if pre_computed_outputs is not None:
             agent_outputs = pre_computed_outputs
+            total_findings = sum(len(o.findings) for o in agent_outputs)
             logger.info(f"Using {len(agent_outputs)} pre-computed ML outputs")
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"Using {len(agent_outputs)} pre-computed ML "
+                           f"outputs ({total_findings} findings)",
+                "stage": 1,
+            })
         else:
             logger.info("Running ML detectors before LLM synthesis...")
+            fire_agent_activity("coordinator", "stage", {
+                "message": "Running ML detectors",
+                "stage": 1,
+            })
             agent_outputs = self._run_detectors(data, network_state)
             detector_elapsed = time.time() - start
             total_findings = sum(len(o.findings) for o in agent_outputs)
@@ -542,6 +571,12 @@ class CrewOrchestrator:
                 f"ML detectors completed in {detector_elapsed:.1f}s: "
                 f"{total_findings} findings from {len(agent_outputs)} agents"
             )
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"ML detectors done: {total_findings} findings "
+                           f"from {len(agent_outputs)} agents "
+                           f"({detector_elapsed:.1f}s)",
+                "stage": 1.5,
+            })
 
         # 2. Build tools with current hunt context (detectors still
         #    available as tools for deeper investigation if the LLM wants)
@@ -556,10 +591,51 @@ class CrewOrchestrator:
             detector_findings=agent_outputs,
         )
 
+        agent_names = list(crew_agents.keys())
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"Assembled crew: {len(agent_names)} agents, "
+                       f"{len(tasks)} tasks",
+            "stage": 2,
+            "agents": agent_names,
+        })
+
         # 4. Assemble and run the CrewAI crew for LLM synthesis
         manager_llm = None
         if self.process == Process.hierarchical:
             manager_llm = self.llm
+
+        # CrewAI callbacks → agent monitoring
+        def _step_callback(step_output):
+            """Fires after each agent reasoning step."""
+            try:
+                # Extract agent name from step output
+                agent_name = "unknown"
+                text = str(step_output)[:300]
+                if hasattr(step_output, 'agent'):
+                    agent_name = getattr(step_output.agent, 'role', 'unknown')
+                fire_agent_activity(agent_name, "response", {
+                    "message": f"Step: {text[:200]}",
+                })
+            except Exception:
+                pass
+
+        def _task_callback(task_output):
+            """Fires after each CrewAI task completes."""
+            try:
+                desc = ""
+                if hasattr(task_output, 'description'):
+                    desc = str(task_output.description)[:100]
+                raw = str(task_output.raw)[:300] if hasattr(task_output, 'raw') else str(task_output)[:300]
+                agent_role = ""
+                if hasattr(task_output, 'agent'):
+                    agent_role = str(task_output.agent)[:50]
+
+                fire_agent_activity(agent_role or "crew", "response", {
+                    "message": f"Task complete: {desc}",
+                    "output_preview": raw,
+                })
+            except Exception:
+                pass
 
         crew = Crew(
             agents=list(crew_agents.values()),
@@ -567,12 +643,23 @@ class CrewOrchestrator:
             process=self.process,
             manager_llm=manager_llm,
             verbose=self.verbose,
+            step_callback=_step_callback,
+            task_callback=_task_callback,
         )
+
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"Kicking off CrewAI crew ({self.process})",
+            "stage": 3,
+        })
 
         result = crew.kickoff()
 
         elapsed = time.time() - start
         logger.info(f"CrewAI hunt completed in {elapsed:.1f}s")
+        fire_agent_activity("coordinator", "stage", {
+            "message": f"CrewAI hunt completed in {elapsed:.1f}s",
+            "stage": 5,
+        })
 
         # Build assessment dict matching the existing format
         assessment = self._build_assessment(result, agent_outputs, elapsed)

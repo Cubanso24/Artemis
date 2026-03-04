@@ -18,6 +18,16 @@ active_connections: List[WebSocket] = []
 # Ring buffer of recent agent activity events (accessible via API).
 agent_activity_history: collections.deque = collections.deque(maxlen=200)
 
+# Database path override — subprocesses set this so fire_agent_activity
+# writes to the same DB as the rest of the pipeline.
+_db_path: str = "artemis.db"
+
+
+def set_db_path(path: str):
+    """Set the database path for agent activity logging (call from subprocesses)."""
+    global _db_path
+    _db_path = path
+
 
 async def broadcast_progress(data: dict):
     """Broadcast a progress dict to all connected WebSocket clients."""
@@ -92,7 +102,7 @@ def fire_agent_activity(agent_name: str, activity_type: str, detail: dict):
     # Always persist to DB (works from subprocesses)
     try:
         from artemis.managers.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = DatabaseManager(_db_path)
         db.log_agent_activity(agent_name, activity_type, detail)
     except Exception:
         pass
