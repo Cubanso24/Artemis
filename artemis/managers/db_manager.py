@@ -1646,6 +1646,23 @@ class DatabaseManager:
             )
         self._exec_with_retry(_do)
 
+    def requeue_analysis(self, cycle: int, event_counts: Dict[str, int] = None):
+        """Re-queue a cycle for analysis, resetting it even if previously
+        completed.  Used on restart when stored events need fresh analysis."""
+        def _do(conn):
+            conn.execute(
+                "INSERT INTO analysis_queue "
+                "(cycle, status, event_counts, created_at) "
+                "VALUES (?, 'pending', ?, ?) "
+                "ON CONFLICT(cycle) DO UPDATE SET "
+                "status='pending', event_counts=excluded.event_counts, "
+                "created_at=excluded.created_at, "
+                "started_at=NULL, completed_at=NULL",
+                (cycle, _dumps(event_counts or {}),
+                 datetime.now().isoformat()),
+            )
+        self._exec_with_retry(_do)
+
     def get_pending_analysis(self) -> Dict | None:
         """Get the next cycle waiting for analysis."""
         conn = self._connect()

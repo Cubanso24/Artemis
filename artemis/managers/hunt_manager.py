@@ -570,12 +570,15 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                           'total_events': total_stored,
                           'total_cycles': cycle})
 
-                # Ensure all cycles with events are queued for analysis
+                # Re-queue all cycles for fresh analysis.  Use
+                # requeue_analysis (not queue_analysis) so that
+                # previously-completed cycles are reset to 'pending'
+                # — on restart we want a fresh analysis pass.
                 queued = 0
                 for c in range(1, cycle + 1):
                     evt_counts = db.get_event_counts_for_cycle(c)
                     if evt_counts:
-                        db.queue_analysis(c, evt_counts)  # INSERT OR IGNORE
+                        db.requeue_analysis(c, evt_counts)
                         queued += 1
 
                 log.info(f'Ensured {queued} cycles are queued for analysis')
