@@ -5585,7 +5585,7 @@
                     return;
                 }
 
-                addLog(`Factory reset complete: ${result.events_deleted || 0} events, ${result.findings_deleted || 0} findings deleted`, 'warning');
+                addLog(`Factory reset complete: old DB backed up (${result.old_size_mb || 0} MB) — fresh database created`, 'warning');
                 loadNetworkMaps();
                 loadNetworkGraph(true);
                 loadNetworkSummary();

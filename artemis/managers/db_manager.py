@@ -1504,75 +1504,52 @@ class DatabaseManager:
         return total_deleted
 
     def full_reset(self) -> dict:
-        """Wipe ALL data tables so the next pipeline run starts from zero.
+        """Wipe ALL data by renaming the old DB file and creating a fresh one.
 
-        Preserves only user-created organisational structure:
-        lan_groups, lan_group_members, map_layout, map_annotations.
-
-        Called by the reset endpoint so the user gets a truly clean slate
-        without having to manually touch the database.
+        This is instant regardless of database size — no slow DELETE or
+        VACUUM operations.  The old DB file is kept as a timestamped
+        backup (``artemis.db.bak.YYYYMMDD_HHMMSS``) in case recovery is
+        needed; it can be deleted manually to reclaim disk space.
         """
-        # Tables to nuke — order doesn't matter since we have no
-        # foreign-key enforcement at the SQLite level.
-        tables_to_clear = [
-            'hunt_events',
-            'analysis_queue',
-            'agent_findings',
-            'llm_syntheses',
-            'hunt_progress',
-            'plugin_results',
-            'enrichment_results',
-            'enrichment_queue',
-            'device_flags',
-            'cases',
-            'case_findings',
-            'technique_precision',
-            'scheduler_state',
-        ]
+        import os
+        import shutil
 
-        conn = self._connect()
-        counts = {}
-        try:
-            for table in tables_to_clear:
-                try:
-                    n = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
-                    ).fetchone()[0]
-                    conn.execute(f"DELETE FROM {table}")
-                    counts[table] = n
-                except Exception:
-                    # Table might not exist yet in older DBs
-                    counts[table] = 0
-            conn.commit()
-        finally:
-            conn.close()
+        old_path = self.db_path
+        backup_name = f"{old_path}.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        old_size = 0
 
-        # Reclaim disk space asynchronously — VACUUM rewrites the entire
-        # DB file and holds an exclusive lock the whole time.  With large
-        # databases (hundreds of millions of rows just deleted) this can
-        # take minutes, blocking every other query and making the server
-        # appear frozen.  Use incremental auto_vacuum instead so space is
-        # reclaimed gradually without a global lock.
         try:
-            vconn = self._connect()
-            try:
-                # Enable incremental auto-vacuum for future deletes
-                vconn.execute("PRAGMA auto_vacuum = INCREMENTAL")
-                # Free up to 5000 pages (~20 MB) without a long lock
-                vconn.execute("PRAGMA incremental_vacuum(5000)")
-            finally:
-                vconn.close()
-        except Exception:
+            old_size = os.path.getsize(old_path)
+        except OSError:
             pass
 
+        # Rename the old DB (and WAL/SHM files if present)
+        for suffix in ('', '-wal', '-shm'):
+            src = f"{old_path}{suffix}"
+            dst = f"{backup_name}{suffix}"
+            try:
+                if os.path.exists(src):
+                    shutil.move(src, dst)
+            except OSError as e:
+                logger.warning(f"Could not move {src} → {dst}: {e}")
+
+        logger.info(
+            f"Factory reset: renamed {old_path} → {backup_name} "
+            f"({old_size / 1_048_576:.0f} MB)"
+        )
+
+        # Recreate a fresh empty database with the full schema
+        self.init_db()
+
         return {
-            'events_deleted': counts.get('hunt_events', 0),
-            'findings_deleted': counts.get('agent_findings', 0),
-            'syntheses_deleted': counts.get('llm_syntheses', 0),
-            'queue_deleted': counts.get('analysis_queue', 0),
-            'cases_deleted': counts.get('cases', 0),
-            'enrichment_deleted': counts.get('enrichment_results', 0),
-            'tables_cleared': [t for t, n in counts.items() if n > 0],
+            'events_deleted': -1,       # -1 signals "entire DB replaced"
+            'findings_deleted': -1,
+            'syntheses_deleted': -1,
+            'queue_deleted': -1,
+            'cases_deleted': -1,
+            'enrichment_deleted': -1,
+            'backup_file': backup_name,
+            'old_size_mb': round(old_size / 1_048_576, 1),
         }
 
     # ------------------------------------------------------------------
