@@ -372,7 +372,17 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
     hundreds of millions of rows.
     """
     import json as _json
+    import time as _time
     total_mapped = 0
+    _last_progress = _time.monotonic()
+
+    send('running',
+         f'Rebuilding network map from {max_cycle} stored cycles...',
+         10, {'pipeline': 'data',
+              'stage_detail': 'db_replay',
+              'cycle': 0, 'total_cycles': max_cycle,
+              'total_events': 0, 'total_nodes': 0})
+
     for c in range(1, max_cycle + 1):
         conn = db._connect()
         try:
@@ -407,6 +417,19 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
                     conns, dns_q, ntlm_l = [], [], []
                     count = 0
 
+                    # Send progress every 2 seconds during large replays
+                    if _time.monotonic() - _last_progress >= 2:
+                        _last_progress = _time.monotonic()
+                        pct = 10 + int(35 * c / max(max_cycle, 1))
+                        send('running',
+                             f'Replaying stored data: cycle {c}/{max_cycle} '
+                             f'({total_mapped:,} events, {len(nm.nodes)} nodes)...',
+                             pct, {'pipeline': 'data',
+                                   'stage_detail': 'db_replay',
+                                   'cycle': c, 'total_cycles': max_cycle,
+                                   'total_events': total_mapped,
+                                   'total_nodes': len(nm.nodes)})
+
             # Flush remaining
             if conns or dns_q or ntlm_l:
                 nm.execute(
@@ -418,17 +441,18 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
         finally:
             conn.close()
 
-        if c % 10 == 0 or c == max_cycle:
+        # Report per-cycle or every 3 cycles for speed
+        if c % 3 == 0 or c == max_cycle or c == 1:
             nm.save_map()
+            pct = 10 + int(35 * c / max(max_cycle, 1))
             send('running',
-                 f'Rebuilding map: cycle {c}/{max_cycle} '
+                 f'Replaying stored data: cycle {c}/{max_cycle} '
                  f'({total_mapped:,} events, {len(nm.nodes)} nodes)...',
-                 10 + int(35 * c / max(max_cycle, 1)),
-                 {'pipeline': 'data',
-                  'stage_detail': 'map_rebuild',
-                  'cycle': c, 'total_cycles': max_cycle,
-                  'total_events': total_mapped,
-                  'total_nodes': len(nm.nodes)})
+                 pct, {'pipeline': 'data',
+                       'stage_detail': 'db_replay',
+                       'cycle': c, 'total_cycles': max_cycle,
+                       'total_events': total_mapped,
+                       'total_nodes': len(nm.nodes)})
             log.info(f'Map rebuild: {c}/{max_cycle} cycles, '
                      f'{total_mapped:,} events, {len(nm.nodes)} nodes')
 
@@ -586,12 +610,55 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                 bf_start = backfill_from
                 bf_end = datetime.now().isoformat()
                 log.info(f'Cycle {cycle}: backfill from {bf_start} to now')
+
+                # Check Splunk data availability before starting
+                send('running',
+                     f'Cycle {cycle}: checking Splunk data availability '
+                     f'for {bf_start}...',
+                     20, {'cycle': cycle, 'pipeline': 'data',
+                          'total_nodes': len(nm.nodes),
+                          'stage_detail': 'retention_check',
+                          'backfill_from': bf_start})
+
+                try:
+                    avail = pipeline.splunk.check_data_availability(
+                        earliest_time=bf_start,
+                        latest_time=bf_end,
+                    )
+                    if avail['has_data']:
+                        log.info(
+                            f'Splunk retention check passed: '
+                            f'{avail["message"]}')
+                        send('running',
+                             f'Cycle {cycle}: {avail["message"]} — '
+                             f'starting backfill...',
+                             22, {'cycle': cycle, 'pipeline': 'data',
+                                  'total_nodes': len(nm.nodes),
+                                  'stage_detail': 'retention_ok',
+                                  'backfill_from': bf_start,
+                                  'splunk_earliest': avail.get('earliest_event', ''),
+                                  'splunk_latest': avail.get('latest_event', '')})
+                    else:
+                        log.warning(
+                            f'Splunk retention check: {avail["message"]}')
+                        send('running',
+                             f'WARNING: {avail["message"]} — '
+                             f'backfill may return empty results',
+                             22, {'cycle': cycle, 'pipeline': 'data',
+                                  'total_nodes': len(nm.nodes),
+                                  'stage_detail': 'retention_warning',
+                                  'backfill_from': bf_start,
+                                  'retention_warning': avail['message']})
+                except Exception as _rc_err:
+                    log.warning(f'Retention check failed: {_rc_err}')
+
                 send('running',
                      f'Cycle {cycle}: backfilling from {bf_start}...',
                      25, {'cycle': cycle, 'pipeline': 'data',
                           'total_nodes': len(nm.nodes),
                           'interval': interval_minutes,
                           'lookback': lookback_minutes,
+                          'stage_detail': 'splunk_fetch',
                           'backfill_from': bf_start})
             else:
                 log.info(f'Cycle {cycle}: collecting last {lookback_minutes}m')

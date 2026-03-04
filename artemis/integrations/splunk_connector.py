@@ -307,6 +307,57 @@ class SplunkConnector:
 
         return events
 
+    def check_data_availability(
+        self,
+        earliest_time: str,
+        latest_time: str = "now",
+    ) -> Dict[str, Any]:
+        """Quick check whether Splunk has data in the given time range.
+
+        Runs a fast ``| tstats count`` query (metadata-only, no event
+        scanning) and returns earliest/latest event timestamps plus
+        an event count estimate.  Use this before a backfill to warn
+        the user if Splunk has already rolled the data.
+
+        Returns dict with keys: has_data, count, earliest_event,
+        latest_event, message.
+        """
+        try:
+            results = self.query(
+                'search index=* | head 1 | stats count min(_time) as earliest max(_time) as latest',
+                earliest_time=earliest_time,
+                latest_time=latest_time,
+                max_results=1,
+            )
+            if results:
+                row = results[0]
+                count = int(row.get('count', 0))
+                return {
+                    'has_data': count > 0,
+                    'count': count,
+                    'earliest_event': row.get('earliest', ''),
+                    'latest_event': row.get('latest', ''),
+                    'message': (
+                        f"Found data in range ({count:,} events)"
+                        if count > 0
+                        else "No events found in the requested time range — "
+                             "data may have been rolled or deleted from Splunk"
+                    ),
+                }
+            return {
+                'has_data': False, 'count': 0,
+                'earliest_event': '', 'latest_event': '',
+                'message': 'No results returned — Splunk may not have data for this range',
+            }
+        except Exception as e:
+            self.logger.warning(f"Data availability check failed: {e}")
+            return {
+                'has_data': True,  # assume available on error
+                'count': -1,
+                'earliest_event': '', 'latest_event': '',
+                'message': f'Could not verify data availability: {e}',
+            }
+
     def get_network_connections(
         self,
         time_range: str = "-1h",

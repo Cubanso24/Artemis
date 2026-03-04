@@ -1283,8 +1283,8 @@
                                     <span id="pipe-data-ntlm" style="color:var(--text-primary);">—</span>
                                 </div>
                                 <div id="pipe-data-backfill" style="display:none; margin-top:4px; font-size:10px; padding:3px 6px; border-radius:4px; background:rgba(88,166,255,0.08); border:1px solid rgba(88,166,255,0.2); color:var(--accent-primary);">
-                                    <i class="fa-solid fa-clock-rotate-left"></i>
-                                    Backfill: <span id="pipe-data-backfill-date">—</span>
+                                    <i class="fa-solid fa-clock-rotate-left" id="pipe-data-backfill-icon"></i>
+                                    <span id="pipe-data-backfill-label">Backfill:</span> <span id="pipe-data-backfill-date">—</span>
                                     <span id="pipe-data-backfill-progress" style="margin-left:4px; opacity:0.8;"></span>
                                 </div>
                                 <div id="pipe-data-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
@@ -4747,13 +4747,36 @@
                         const hudEl = document.getElementById('hunt-devices');
                         if (hudEl) hudEl.textContent = Number(totalNodes).toLocaleString();
                     }
-                    const isBackfill = result.stage_detail === 'backfill_mapping';
-                    const isFetching = result.stage_detail === 'splunk_fetch';
+                    const sd = result.stage_detail || '';
+                    const isBackfill = sd === 'backfill_mapping';
+                    const isFetching = sd === 'splunk_fetch';
+                    const isDbReplay = sd === 'db_replay' || sd === 'map_rebuild';
+                    const isReuse = sd === 'reuse_existing' || sd === 'requeue_existing';
+                    const isRetention = sd === 'retention_check' || sd === 'retention_ok' || sd === 'retention_warning';
+                    const isBackfillQueue = sd === 'backfill_analysis_queued';
 
                     const statusEl = document.getElementById('pipe-data-status');
-                    statusEl.textContent = isBackfill ? 'Backfill' : isFetching ? 'Fetching' : 'Running';
-                    statusEl.style.background = isBackfill ? '#d2992233' : '#388bfd33';
-                    statusEl.style.color = isBackfill ? '#d29922' : '#4fc3f7';
+                    if (isDbReplay || isReuse) {
+                        statusEl.textContent = 'DB Replay';
+                        statusEl.style.background = '#ab47bc33';
+                        statusEl.style.color = '#ce93d8';
+                    } else if (isRetention) {
+                        statusEl.textContent = sd === 'retention_warning' ? 'Warning' : 'Checking';
+                        statusEl.style.background = sd === 'retention_warning' ? '#f8514933' : '#d2992233';
+                        statusEl.style.color = sd === 'retention_warning' ? '#f85149' : '#d29922';
+                    } else if (isBackfill || isBackfillQueue) {
+                        statusEl.textContent = 'Backfill';
+                        statusEl.style.background = '#d2992233';
+                        statusEl.style.color = '#d29922';
+                    } else if (isFetching) {
+                        statusEl.textContent = 'Fetching';
+                        statusEl.style.background = '#388bfd33';
+                        statusEl.style.color = '#4fc3f7';
+                    } else {
+                        statusEl.textContent = 'Running';
+                        statusEl.style.background = '#388bfd33';
+                        statusEl.style.color = '#4fc3f7';
+                    }
 
                     document.getElementById('pipe-data-cycle').textContent = cycle;
                     // Always update nodes if present; keep previous value if missing
@@ -4767,6 +4790,8 @@
                     const rtBfDiv = document.getElementById('pipe-data-backfill');
                     if (rtBfFrom) {
                         rtBfDiv.style.display = '';
+                        document.getElementById('pipe-data-backfill-label').textContent = 'Backfill:';
+                        document.getElementById('pipe-data-backfill-icon').className = 'fa-solid fa-clock-rotate-left';
                         const rtBfDate = rtBfFrom.includes('T') ? rtBfFrom.split('T')[0] : rtBfFrom;
                         document.getElementById('pipe-data-backfill-date').textContent = rtBfDate;
                         const rtWE = result.window_earliest || '';
@@ -4780,12 +4805,47 @@
                         }
                         if (rtW && rtTW) rtProg += ` (window ${rtW}/${rtTW})`;
                         document.getElementById('pipe-data-backfill-progress').textContent = rtProg;
+                    } else if (isDbReplay || isReuse) {
+                        // Show DB replay progress in the backfill area
+                        rtBfDiv.style.display = '';
+                        document.getElementById('pipe-data-backfill-label').textContent = 'Source:';
+                        document.getElementById('pipe-data-backfill-icon').className = 'fa-solid fa-database';
+                        document.getElementById('pipe-data-backfill-date').textContent = 'stored events';
+                        const rc = result.cycle || 0;
+                        const rtc = result.total_cycles || 0;
+                        const rte = result.total_events || 0;
+                        let rprog = '';
+                        if (isReuse && result.queued) {
+                            rprog = `Queued ${result.queued} cycles for analysis`;
+                        } else if (rc && rtc) {
+                            rprog = `Replaying cycle ${rc}/${rtc} (${Number(rte).toLocaleString()} events)`;
+                        } else if (rte) {
+                            rprog = `${Number(rte).toLocaleString()} events found`;
+                        }
+                        document.getElementById('pipe-data-backfill-progress').textContent = rprog;
                     } else {
                         rtBfDiv.style.display = 'none';
                     }
 
                     const detailEl = document.getElementById('pipe-data-detail');
-                    if (result.total_events) {
+                    detailEl.style.color = '';  // reset
+                    if (isDbReplay) {
+                        const rte = result.total_events || 0;
+                        const rc = result.cycle || 0;
+                        const rtc = result.total_cycles || 0;
+                        detailEl.textContent = `Replaying stored events: cycle ${rc}/${rtc} (${Number(rte).toLocaleString()} events → ${Number(totalNodes).toLocaleString()} nodes)`;
+                    } else if (isReuse) {
+                        const rte = result.total_events || 0;
+                        detailEl.textContent = `Using ${Number(rte).toLocaleString()} existing events from database (skipping Splunk)`;
+                    } else if (isRetention && result.retention_warning) {
+                        detailEl.textContent = result.retention_warning;
+                        detailEl.style.color = '#f85149';
+                    } else if (isRetention) {
+                        detailEl.textContent = 'Checking Splunk data availability...';
+                    } else if (isBackfillQueue) {
+                        const be = result.batch_events || 0;
+                        detailEl.textContent = `Queued ${Number(be).toLocaleString()} events for agent analysis (batch ${result.batches_queued || 0})`;
+                    } else if (result.total_events) {
                         detailEl.textContent = `Backfill: ${Number(result.total_events).toLocaleString()} events processed`;
                     } else if (result.error) {
                         detailEl.textContent = `Error: ${result.error}`;
