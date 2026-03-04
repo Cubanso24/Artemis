@@ -311,22 +311,58 @@ def _build_tasks(
     agents: Dict[str, Any],
     hunting_data: Dict[str, Any],
     network_state: Optional[NetworkState],
+    detector_findings: Optional[List[Any]] = None,
 ) -> List[Any]:
     """Build the CrewAI Task list for a single hunt cycle."""
 
     data_summary = format_hunting_data_summary(hunting_data)
     state_text = format_network_state(network_state) if network_state else ""
 
-    context_block = f"{state_text}\n\n{data_summary}"
+    # Build a summary of ML detector findings so the LLM has them upfront
+    findings_block = ""
+    _findings_by_agent: Dict[str, str] = {}
+    if detector_findings:
+        lines = ["=== ML DETECTOR FINDINGS (run before LLM analysis) ==="]
+        for output in detector_findings:
+            agent_lines = []
+            agent_name = getattr(output, 'agent_name', 'unknown')
+            if output.findings:
+                agent_lines.append(
+                    f"\n[{agent_name}] "
+                    f"{len(output.findings)} finding(s), "
+                    f"confidence={output.confidence:.2f}"
+                )
+                for f in output.findings:
+                    desc = f.description[:300] if hasattr(f, 'description') else str(f)[:300]
+                    agent_lines.append(f"  - [{f.activity_type}] {desc}")
+                    if hasattr(f, 'indicators') and f.indicators:
+                        agent_lines.append(
+                            f"    Indicators: {', '.join(str(i) for i in f.indicators[:5])}"
+                        )
+            elif output.confidence > 0:
+                agent_lines.append(
+                    f"\n[{agent_name}] No findings but confidence={output.confidence:.2f}"
+                )
+            if agent_lines:
+                agent_text = "\n".join(agent_lines)
+                lines.extend(agent_lines)
+                _findings_by_agent[agent_name] = agent_text
+        if len(lines) > 1:
+            findings_block = "\n".join(lines) + "\n"
+        else:
+            findings_block = "\n=== ML DETECTORS: No findings this cycle ===\n"
+
+    context_block = f"{state_text}\n\n{data_summary}\n\n{findings_block}"
 
     # 1. Hypothesis generation (lead analyst)
     hypothesis_task = Task(
         description=(
-            f"Analyse the following network state and hunting data, then "
-            f"generate 3-6 threat hypotheses.  For each hypothesis specify "
-            f"the type (kill_chain_stage, ttp_pattern, anomaly_investigation, "
-            f"insider_threat, apt_campaign), priority (0-1), confidence (0-1), "
-            f"and which specialist hunters should investigate.\n\n"
+            f"Analyse the following network state, hunting data, and ML "
+            f"detector findings, then generate 3-6 threat hypotheses.  For "
+            f"each hypothesis specify the type (kill_chain_stage, ttp_pattern, "
+            f"anomaly_investigation, insider_threat, apt_campaign), priority "
+            f"(0-1), confidence (0-1), and which specialist hunters should "
+            f"investigate.\n\n"
             f"{context_block}"
         ),
         expected_output=(
@@ -346,16 +382,23 @@ def _build_tasks(
         agent = agents.get(name)
         if agent is None:
             continue
+
+        # Include this agent's ML findings directly in the task description
+        agent_findings_text = _findings_by_agent.get(name, "No ML findings for this agent.")
+
         task = Task(
             description=(
                 f"Investigate your domain based on the lead analyst's "
-                f"hypotheses.  Steps:\n"
-                f"1. Call get_hunting_data_summary to understand the data.\n"
-                f"2. Call run_detector with '{name}' to get threshold findings.\n"
-                f"3. Call search_past_findings with a summary of any findings "
+                f"hypotheses and the ML detector findings below.\n\n"
+                f"YOUR ML DETECTOR RESULTS:\n{agent_findings_text}\n\n"
+                f"Steps:\n"
+                f"1. Review the ML detector findings above for your domain.\n"
+                f"2. Call search_past_findings with a summary of any findings "
                 f"   to check for historical context.\n"
-                f"4. Call search_threat_intel if indicators match known threats.\n"
-                f"5. Call query_network_baseline to filter out normal behaviour.\n"
+                f"3. Call search_threat_intel if indicators match known threats.\n"
+                f"4. Call query_network_baseline to filter out normal behaviour.\n"
+                f"5. Optionally call run_detector with '{name}' for a fresh "
+                f"   run if you need more detail.\n"
                 f"6. Produce your assessment: for each finding, state whether "
                 f"   it is a true positive or false positive, your confidence "
                 f"   (0-1), MITRE techniques, and recommended actions.\n"
@@ -482,16 +525,30 @@ class CrewOrchestrator:
         start = time.time()
         logger.info("Starting CrewAI hunt cycle")
 
-        # Build tools with current hunt context
+        # 1. Run ML detectors FIRST so the LLM has real findings to work with
+        logger.info("Running ML detectors before LLM synthesis...")
+        agent_outputs = self._run_detectors(data, network_state)
+        detector_elapsed = time.time() - start
+        total_findings = sum(len(o.findings) for o in agent_outputs)
+        logger.info(
+            f"ML detectors completed in {detector_elapsed:.1f}s: "
+            f"{total_findings} findings from {len(agent_outputs)} agents"
+        )
+
+        # 2. Build tools with current hunt context (detectors still
+        #    available as tools for deeper investigation if the LLM wants)
         tools = _make_tools(
             self.rag_store, self.detectors, data, network_state
         )
 
-        # Build agents and tasks
+        # 3. Build agents and tasks, injecting ML findings as context
         crew_agents = _build_agents(self.llm, tools)
-        tasks = _build_tasks(crew_agents, data, network_state)
+        tasks = _build_tasks(
+            crew_agents, data, network_state,
+            detector_findings=agent_outputs,
+        )
 
-        # Assemble and run the crew
+        # 4. Assemble and run the CrewAI crew for LLM synthesis
         manager_llm = None
         if self.process == Process.hierarchical:
             manager_llm = self.llm
@@ -508,11 +565,6 @@ class CrewOrchestrator:
 
         elapsed = time.time() - start
         logger.info(f"CrewAI hunt completed in {elapsed:.1f}s")
-
-        # Also run detectors directly to collect structured AgentOutput
-        # objects (the crew's text output supplements but doesn't replace
-        # the structured findings pipeline).
-        agent_outputs = self._run_detectors(data, network_state)
 
         # Build assessment dict matching the existing format
         assessment = self._build_assessment(result, agent_outputs, elapsed)
