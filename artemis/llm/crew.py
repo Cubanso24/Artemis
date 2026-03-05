@@ -847,6 +847,22 @@ class CrewOrchestrator:
             "stage": 3,
         })
 
+        # --- Force CPU-based embeddings during crew execution -----------
+        # Ollama can only serve one model at a time.  If RAG tools call
+        # Ollama for embeddings (nomic-embed-text), it evicts the main
+        # LLM (glm-4.7-flash:bf16) from VRAM.  Reloading a 131 k context
+        # model afterwards is extremely slow or fails with OOM, which
+        # causes the crew to hang with zero GPU utilisation.
+        # Setting the flag makes embed() use the lightweight
+        # sentence-transformers fallback on CPU instead.
+        from artemis.llm import rag as _rag_mod
+        _prev_embed_flag = _rag_mod._OLLAMA_EMBED_FAILED
+        _rag_mod._OLLAMA_EMBED_FAILED = True
+        logger.info(
+            "[DIAG] Forced CPU embeddings during crew execution "
+            "to prevent Ollama model eviction"
+        )
+
         # --- Enable LiteLLM verbose logging to see actual HTTP calls ---
         try:
             import litellm
@@ -892,6 +908,8 @@ class CrewOrchestrator:
             result = crew.kickoff()
         finally:
             _kickoff_done.set()
+            # Restore original Ollama embedding flag
+            _rag_mod._OLLAMA_EMBED_FAILED = _prev_embed_flag
 
         kickoff_elapsed = time.time() - kickoff_start
         elapsed = time.time() - start
