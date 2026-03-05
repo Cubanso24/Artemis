@@ -928,7 +928,7 @@ def _analysis_pipeline_process(job_id, db_path):
     from artemis.meta_learner.coordinator import MetaLearnerCoordinator
     from artemis.models.network_state import NetworkState
 
-    _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '3600'))  # 1 hour
+    _HUNT_TIMEOUT_S = int(os.environ.get('HUNT_TIMEOUT', '1200'))  # 20 min default
 
     # Ensure numexpr can use more cores in this subprocess too
     os.environ.setdefault("NUMEXPR_MAX_THREADS", "96")
@@ -1065,8 +1065,38 @@ def _analysis_pipeline_process(job_id, db_path):
                     time.sleep(1)
 
         analyses_completed = 0
+        _consecutive_failures = 0
+        _MAX_CONSECUTIVE_FAILURES = 3
 
         while not _stop:
+            # LLM health check — if we've had consecutive failures,
+            # back off to avoid burning CPU on a frozen Ollama instance
+            if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                _backoff_s = min(300, 60 * _consecutive_failures)
+                log.warning(
+                    f'{_consecutive_failures} consecutive hunt failures — '
+                    f'backing off {_backoff_s}s before retrying')
+                send('running',
+                     f'LLM issues: {_consecutive_failures} failures, '
+                     f'backing off {_backoff_s}s...',
+                     45, {'pipeline': 'analysis',
+                          'status': 'backoff',
+                          'consecutive_failures': _consecutive_failures})
+                for _ in range(int(_backoff_s)):
+                    if _stop:
+                        break
+                    time.sleep(1)
+                # Quick Ollama health check before resuming
+                try:
+                    _health_ok = coordinator.llm_client._check_ollama()
+                    if not _health_ok:
+                        log.warning('Ollama still not healthy — waiting...')
+                        continue
+                    log.info('Ollama health check passed — resuming')
+                    _consecutive_failures = 0  # Reset on health pass
+                except Exception:
+                    continue
+
             # Poll for pending analysis
             pending = db.get_pending_analysis()
 
@@ -1196,47 +1226,82 @@ def _analysis_pipeline_process(job_id, db_path):
                               'findings': findings_count,
                               'stage_detail': 'llm_synthesis'})
 
-                # Phase 2: Run full hunt (LLM synthesis uses the findings)
-                def _run_hunt():
-                    if _crew_orchestrator:
-                        return _crew_orchestrator.hunt(
-                            data=agent_data, network_state=context,
-                            pre_computed_outputs=ml_outputs)
-                    return coordinator.hunt(
-                        data=agent_data, network_state=context)
+                # Phase 2: Run full hunt (LLM synthesis).
+                #
+                # Run in a thread but use SIGALRM for a hard timeout.
+                # We're already in a subprocess (the analysis pipeline),
+                # so SIGALRM is safe and won't affect the web server.
+                # ThreadPoolExecutor.cancel() doesn't kill running threads,
+                # but SIGALRM raises an exception in the main thread that
+                # propagates through the blocking crew.kickoff() call.
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                    _fut = _pool.submit(_run_hunt)
-                    _hunt_start = time.time()
+                class _HuntTimeout(Exception):
+                    pass
+
+                _prev_alarm = _signal.getsignal(_signal.SIGALRM)
+
+                def _alarm_handler(signum, frame):
+                    raise _HuntTimeout(
+                        f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
+
+                _signal.signal(_signal.SIGALRM, _alarm_handler)
+
+                # Container for the result
+                _hunt_result = [None]
+                _hunt_error = [None]
+                _hunt_start = time.time()
+
+                def _run_hunt():
                     try:
-                        # Poll with short timeouts so we can send heartbeats
-                        while True:
-                            try:
-                                assessment = _fut.result(timeout=30)
-                                break  # Hunt completed
-                            except _cf.TimeoutError:
-                                elapsed = time.time() - _hunt_start
-                                if elapsed > _HUNT_TIMEOUT_S:
-                                    _fut.cancel()
-                                    log.error(
-                                        f'Cycle {analysis_cycle}: hunt timed out '
-                                        f'after {_HUNT_TIMEOUT_S}s — skipping')
-                                    raise TimeoutError(
-                                        f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
-                                # Send heartbeat so the UI knows the LLM is working
-                                send('running',
-                                     f'LLM analysis in progress ({int(elapsed)}s elapsed)...',
-                                     65,
-                                     {'pipeline': 'analysis',
-                                      'cycle': analysis_cycle,
-                                      'findings': findings_count,
-                                      'n_agents': _n_agents,
-                                      'llm_backend': _backend,
-                                      'stage_detail': 'llm_synthesis',
-                                      'elapsed_seconds': int(elapsed),
-                                      'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
-                    except TimeoutError:
-                        raise
+                        if _crew_orchestrator:
+                            _hunt_result[0] = _crew_orchestrator.hunt(
+                                data=agent_data, network_state=context,
+                                pre_computed_outputs=ml_outputs)
+                        else:
+                            _hunt_result[0] = coordinator.hunt(
+                                data=agent_data, network_state=context)
+                    except Exception as _he:
+                        _hunt_error[0] = _he
+
+                # Start hunt in a thread, arm SIGALRM as hard timeout
+                import threading as _thr
+                _hunt_thread = _thr.Thread(target=_run_hunt, daemon=True)
+                _signal.alarm(_HUNT_TIMEOUT_S)
+
+                try:
+                    _hunt_thread.start()
+                    # Poll with 30s intervals so we can send heartbeats
+                    while _hunt_thread.is_alive():
+                        _hunt_thread.join(timeout=30)
+                        if _hunt_thread.is_alive():
+                            elapsed = time.time() - _hunt_start
+                            send('running',
+                                 f'LLM analysis in progress ({int(elapsed)}s elapsed)...',
+                                 65,
+                                 {'pipeline': 'analysis',
+                                  'cycle': analysis_cycle,
+                                  'findings': findings_count,
+                                  'n_agents': _n_agents,
+                                  'llm_backend': _backend,
+                                  'stage_detail': 'llm_synthesis',
+                                  'elapsed_seconds': int(elapsed),
+                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+                except _HuntTimeout:
+                    log.error(
+                        f'Cycle {analysis_cycle}: hunt timed out '
+                        f'after {_HUNT_TIMEOUT_S}s')
+                    raise TimeoutError(
+                        f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
+                finally:
+                    _signal.alarm(0)  # Cancel alarm
+                    _signal.signal(_signal.SIGALRM, _prev_alarm)
+
+                # Check for errors
+                if _hunt_error[0]:
+                    raise _hunt_error[0]
+                assessment = _hunt_result[0]
+                if assessment is None:
+                    raise RuntimeError('Hunt thread completed but produced no result')
 
                 # Save findings (for non-CrewAI path, or any new findings
                 # the LLM-driven tools discovered beyond the initial ML run)
@@ -1275,6 +1340,7 @@ def _analysis_pipeline_process(job_id, db_path):
 
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1
+                _consecutive_failures = 0  # Reset on success
 
                 # Free disk space — delete raw events for this completed
                 # cycle since findings are now persisted in agent_findings.
@@ -1300,14 +1366,31 @@ def _analysis_pipeline_process(job_id, db_path):
                       'llm_backend': _backend,
                       'analyses_completed': analyses_completed})
 
+            except TimeoutError as te:
+                _consecutive_failures += 1
+                log.error(f'Analysis cycle {analysis_cycle} timed out: {te}')
+                # Skip this cycle (ML findings are already saved from Phase 1)
+                # but don't endlessly retry — mark complete so the pipeline
+                # advances to newer cycles with fresher data.
+                db.mark_analysis_complete(analysis_cycle)
+                send('running',
+                     f'Cycle {analysis_cycle} timed out (LLM synthesis skipped, '
+                     f'ML findings preserved) — advancing to next cycle',
+                     50,
+                     {'pipeline': 'analysis', 'cycle': analysis_cycle,
+                      'error': str(te),
+                      'consecutive_failures': _consecutive_failures})
+
             except Exception as ae:
+                _consecutive_failures += 1
                 log.error(f'Analysis cycle {analysis_cycle} error: {ae}')
                 log.error(traceback.format_exc())
                 db.mark_analysis_complete(analysis_cycle)  # Don't retry
                 send('running',
                      f'Cycle {analysis_cycle} analysis error: {ae}', 50,
                      {'pipeline': 'analysis', 'cycle': analysis_cycle,
-                      'error': str(ae)})
+                      'error': str(ae),
+                      'consecutive_failures': _consecutive_failures})
 
         send('complete',
              f'Analysis pipeline stopped ({analyses_completed} cycles analyzed)',

@@ -359,7 +359,7 @@ class LLMClient:
                 resp = _requests.post(
                     f"{self.ollama_url}/api/chat",
                     json=payload,
-                    timeout=3600,  # 1 hour — local models can be very slow
+                    timeout=300,  # 5 min — long enough for big prompts, short enough to detect freezes
                 )
         except LLMBusyError:
             self.logger.warning("LLM busy with hunt operations — chat deferred")

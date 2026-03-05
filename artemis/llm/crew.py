@@ -617,9 +617,23 @@ class CrewOrchestrator:
         if self.process == Process.hierarchical:
             manager_llm = self.llm
 
-        # CrewAI callbacks → agent monitoring
+        # CrewAI callbacks → agent monitoring.
+        # Callbacks are fired SYNCHRONOUSLY by CrewAI during kickoff(),
+        # so DB writes must be non-blocking to avoid SQLite lock contention
+        # causing the entire hunt to stall.
+        import threading as _threading
+
+        def _fire_bg(agent_name, activity_type, detail):
+            """Fire agent activity in a background daemon thread."""
+            t = _threading.Thread(
+                target=fire_agent_activity,
+                args=(agent_name, activity_type, detail),
+                daemon=True,
+            )
+            t.start()
+
         def _step_callback(step_output):
-            """Fires after each agent reasoning step."""
+            """Fires after each agent reasoning step (non-blocking)."""
             try:
                 agent_name = "unknown"
                 text = str(step_output)[:2000]
@@ -634,7 +648,7 @@ class CrewOrchestrator:
                 if hasattr(step_output, 'action'):
                     action = str(step_output.action)[:500]
 
-                fire_agent_activity(agent_name, "response", {
+                _fire_bg(agent_name, "response", {
                     "message": f"Step: {text[:200]}",
                     "output_preview": text[:2000],
                     "thought": thought,
@@ -644,7 +658,7 @@ class CrewOrchestrator:
                 pass
 
         def _task_callback(task_output):
-            """Fires after each CrewAI task completes."""
+            """Fires after each CrewAI task completes (non-blocking)."""
             try:
                 desc = ""
                 if hasattr(task_output, 'description'):
@@ -654,7 +668,7 @@ class CrewOrchestrator:
                 if hasattr(task_output, 'agent'):
                     agent_role = str(task_output.agent)[:50]
 
-                fire_agent_activity(agent_role or "crew", "response", {
+                _fire_bg(agent_role or "crew", "response", {
                     "message": f"Task complete: {desc}",
                     "output_preview": raw,
                 })
