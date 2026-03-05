@@ -75,6 +75,28 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
     """
     tools = []
 
+    # Check whether the RAG store actually has data.  If all collections
+    # are empty we skip the RAG tools entirely — this avoids injecting
+    # three extra tool schemas into every manager prompt (saves ~1-2 k
+    # tokens per LLM call) and prevents the LLM from wasting iterations
+    # calling tools that always return "No … found."
+    _rag_has_data = False
+    if rag_store is not None and rag_store.available:
+        try:
+            stats = rag_store.get_stats()
+            for coll_info in stats.get("collections", {}).values():
+                if coll_info.get("count", 0) > 0:
+                    _rag_has_data = True
+                    break
+        except Exception:
+            pass
+    if not _rag_has_data:
+        logger.info(
+            "[DIAG] RAG store is empty or unavailable — skipping RAG "
+            "tools (search_past_findings, search_threat_intel, "
+            "query_network_baseline)"
+        )
+
     # 1. Search past findings -------------------------------------------
     @crewai_tool
     def search_past_findings(query: str) -> str:
@@ -97,7 +119,8 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
             )
         return "\n".join(lines)
 
-    tools.append(search_past_findings)
+    if _rag_has_data:
+        tools.append(search_past_findings)
 
     # 2. Search threat intel --------------------------------------------
     @crewai_tool
@@ -116,7 +139,8 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
             lines.append(f"{i}. [{src}] {r['text'][:400]}")
         return "\n".join(lines)
 
-    tools.append(search_threat_intel)
+    if _rag_has_data:
+        tools.append(search_threat_intel)
 
     # 3. Query network baselines ----------------------------------------
     @crewai_tool
@@ -133,7 +157,8 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
             f"{i}. {r['text'][:400]}" for i, r in enumerate(results, 1)
         )
 
-    tools.append(query_network_baseline)
+    if _rag_has_data:
+        tools.append(query_network_baseline)
 
     # 4. Run threshold detectors ----------------------------------------
     @crewai_tool
@@ -151,8 +176,14 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
             output = det.analyze(hunting_data, network_state)
             if not output.findings:
                 return f"{agent_name}: No findings (confidence={output.confidence:.2f})"
-            lines = [f"{agent_name}: {len(output.findings)} finding(s)"]
-            for f in output.findings:
+            _MAX_TOOL_FINDINGS = 10
+            n_total = len(output.findings)
+            shown = output.findings[:_MAX_TOOL_FINDINGS]
+            lines = [
+                f"{agent_name}: {n_total} finding(s)"
+                + (f" (showing top {_MAX_TOOL_FINDINGS})" if n_total > _MAX_TOOL_FINDINGS else "")
+            ]
+            for f in shown:
                 lines.append(
                     f"  - [{f.activity_type}] {f.description[:200]}"
                     f"\n    Indicators: {', '.join(str(i) for i in f.indicators[:5])}"
@@ -184,7 +215,7 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
 
     tools.append(get_network_state)
 
-    return tools
+    return tools, _rag_has_data
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +367,7 @@ def _build_tasks(
     hunting_data: Dict[str, Any],
     network_state: Optional[NetworkState],
     detector_findings: Optional[List[Any]] = None,
+    rag_available: bool = True,
 ) -> List[Any]:
     """Build the CrewAI Task list for a single hunt cycle."""
 
@@ -386,6 +418,10 @@ def _build_tasks(
     context_block = f"{state_text}\n\n{data_summary}\n\n{findings_block}"
 
     # 1. Hypothesis generation (lead analyst)
+    _rag_hint = (
+        "You may optionally call search_past_findings or "
+        "search_threat_intel to check historical context.  "
+    ) if rag_available else ""
     hypothesis_desc = (
         f"Analyse the following network state, hunting data, and ML "
         f"detector findings, then generate 3-6 threat hypotheses.  For "
@@ -393,8 +429,7 @@ def _build_tasks(
         f"anomaly_investigation, insider_threat, apt_campaign), priority "
         f"(0-1), confidence (0-1), and which specialist hunters should "
         f"investigate.\n\n"
-        f"You may optionally call search_past_findings or "
-        f"search_threat_intel to check historical context.  When you "
+        f"{_rag_hint}When you "
         f"are ready to output your hypotheses, use:\n"
         f"Thought: I have analysed the data and can generate hypotheses.\n"
         f"Final Answer: <your numbered hypothesis list>\n\n"
@@ -430,21 +465,26 @@ def _build_tasks(
         agent_findings_text = _findings_by_agent.get(name, "No ML findings for this agent.")
         n_agent_findings = len(_findings_by_agent.get(name, "").split("\n")) - 1
 
+        _rag_steps = ""
+        if rag_available:
+            _rag_steps = (
+                f"2. Optionally call search_past_findings to check historical "
+                f"   context.  Example:\n"
+                f"   Action: search_past_findings\n"
+                f'   Action Input: {{"query": "beaconing to 1.2.3.4"}}\n\n'
+                f"3. Optionally call search_threat_intel if indicators match "
+                f"   known threats.\n"
+                f"4. Optionally call query_network_baseline to filter out "
+                f"   normal behaviour.\n"
+            )
         specialist_desc = (
             f"Investigate your domain based on the lead analyst's "
             f"hypotheses and the ML detector findings below.\n\n"
             f"YOUR ML DETECTOR RESULTS:\n{agent_findings_text}\n\n"
             f"Steps:\n"
             f"1. Review the ML detector findings above for your domain.\n"
-            f"2. Optionally call search_past_findings to check historical "
-            f"   context.  Example:\n"
-            f"   Action: search_past_findings\n"
-            f'   Action Input: {{"query": "beaconing to 1.2.3.4"}}\n\n'
-            f"3. Optionally call search_threat_intel if indicators match "
-            f"   known threats.\n"
-            f"4. Optionally call query_network_baseline to filter out "
-            f"   normal behaviour.\n"
-            f"5. When you have your assessment, respond with:\n"
+            f"{_rag_steps}"
+            f"{'5' if rag_available else '2'}. When you have your assessment, respond with:\n"
             f"   Thought: I have completed my investigation.\n"
             f"   Final Answer: <your assessment>\n\n"
             f"   Your assessment should include: for each finding, whether "
@@ -720,7 +760,7 @@ class CrewOrchestrator:
 
         # 2. Build tools with current hunt context (detectors still
         #    available as tools for deeper investigation if the LLM wants)
-        tools = _make_tools(
+        tools, rag_has_data = _make_tools(
             self.rag_store, self.detectors, data, network_state
         )
 
@@ -729,6 +769,7 @@ class CrewOrchestrator:
         tasks = _build_tasks(
             crew_agents, data, network_state,
             detector_findings=agent_outputs,
+            rag_available=rag_has_data,
         )
 
         agent_names = list(crew_agents.keys())
