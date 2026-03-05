@@ -758,6 +758,19 @@ class CrewOrchestrator:
                 "stage": 1.5,
             })
 
+        # --- Force CPU-based embeddings BEFORE building tools -----------
+        # _make_tools() → rag_store.get_stats() → _get_collection() →
+        # embed("dimension probe") would call Ollama for embeddings,
+        # loading nomic-embed-text and evicting the main LLM from VRAM.
+        # Set the flag now so all embed() calls use the lightweight
+        # sentence-transformers fallback on CPU instead.
+        from artemis.llm import rag as _rag_mod
+        _prev_embed_flag = _rag_mod._OLLAMA_EMBED_FAILED
+        _rag_mod._OLLAMA_EMBED_FAILED = True
+        logger.info(
+            "[DIAG] Forced CPU embeddings to prevent Ollama model eviction"
+        )
+
         # 2. Build tools with current hunt context (detectors still
         #    available as tools for deeper investigation if the LLM wants)
         logger.info("[DIAG] Building tools...")
@@ -904,21 +917,6 @@ class CrewOrchestrator:
             "stage": 3,
         })
 
-        # --- Force CPU-based embeddings during crew execution -----------
-        # Ollama can only serve one model at a time.  If RAG tools call
-        # Ollama for embeddings (nomic-embed-text), it evicts the main
-        # LLM (glm-4.7-flash:bf16) from VRAM.  Reloading a 131 k context
-        # model afterwards is extremely slow or fails with OOM, which
-        # causes the crew to hang with zero GPU utilisation.
-        # Setting the flag makes embed() use the lightweight
-        # sentence-transformers fallback on CPU instead.
-        from artemis.llm import rag as _rag_mod
-        _prev_embed_flag = _rag_mod._OLLAMA_EMBED_FAILED
-        _rag_mod._OLLAMA_EMBED_FAILED = True
-        logger.info(
-            "[DIAG] Forced CPU embeddings during crew execution "
-            "to prevent Ollama model eviction"
-        )
 
         # --- Enable LiteLLM verbose logging to see actual HTTP calls ---
         try:
