@@ -1562,53 +1562,86 @@ def _profile_pipeline_process(job_id, db_path):
             else:
                 profile_time_range = '-24h'
 
-            log.info(f'Profiling {unprofiled} devices '
-                     f'({len(target_ips)} IPs, {len(target_macs)} MACs, '
+            log.info(f'Profiling {unprofiled} devices one-at-a-time '
+                     f'({len(target_ips)} IPs, '
                      f'time_range={profile_time_range})')
-            send('running',
-                 f'Profiling {unprofiled} devices ({profile_time_range})...',
-                 20, {'pipeline': 'profile', 'unprofiled': unprofiled,
-                      'total_nodes': len(nm.nodes),
-                      'time_range': profile_time_range,
-                      'stage_detail': 'profiling'})
 
-            def _progress_cb(stage, message, pct):
+            # ── Profile one device at a time ──────────────────────────
+            # Running all devices in a single Splunk query builds a
+            # huge WHERE ... IN (...) clause that is slow and can time
+            # out.  Iterating per-device keeps each query fast and lets
+            # us report per-device progress + save incrementally.
+            _ip_list = sorted(target_ips)
+            _total_this_round = len(_ip_list)
+            _classified_this_round = 0
+
+            for _dev_idx, _dev_ip in enumerate(_ip_list):
                 if _stop:
-                    return
-                send('running', f'Profiling — {message}',
-                     20 + pct * 60 // 100,
-                     {'pipeline': 'profile', 'unprofiled': unprofiled,
+                    break
+
+                _pct = int((_dev_idx / max(_total_this_round, 1)) * 100)
+                send('running',
+                     f'Profiling device {_dev_idx + 1}/{_total_this_round}: '
+                     f'{_dev_ip} ({profile_time_range})',
+                     20 + _pct * 60 // 100,
+                     {'pipeline': 'profile',
+                      'unprofiled': _total_this_round - _dev_idx,
                       'total_nodes': len(nm.nodes),
                       'time_range': profile_time_range,
+                      'current_ip': _dev_ip,
+                      'device_index': _dev_idx + 1,
+                      'device_total': _total_this_round,
+                      'classified': _total_classified,
                       'stage_detail': 'profiling'})
 
-            try:
-                result = nm.profile_devices(
-                    pipeline.splunk,
-                    time_range=profile_time_range,
-                    progress_callback=_progress_cb,
-                    target_ips=target_ips,
-                    target_macs=target_macs,
-                )
-                # Merge enrichment data with the latest map on disk
-                # (the data pipeline may have written new connections)
-                nm.merge_enrichment_and_save()
+                # Find matching MAC for this IP (if known)
+                _dev_mac = None
+                for n in unprofiled_nodes:
+                    if n.ip == _dev_ip and n.mac_address:
+                        _dev_mac = n.mac_address
+                        break
+                _dev_macs = {_dev_mac} if _dev_mac else set()
 
-                classified = result.get('classified', 0)
-                _total_classified += classified
-                log.info(f'Profiling complete: {classified} classified '
-                         f'({_total_classified} total)')
-                send('running',
-                     f'Profiled {classified} devices — waiting for new nodes',
-                     90, {'pipeline': 'profile', 'unprofiled': 0,
-                          'total_nodes': len(nm.nodes),
-                          'classified': _total_classified,
-                          'time_range': profile_time_range})
-            except Exception as pe:
-                log.warning(f'Profile cycle error: {pe}')
-                log.warning(traceback.format_exc())
-                send('running', f'Profile error: {pe}', 50,
-                     {'pipeline': 'profile', 'error': str(pe)})
+                try:
+                    result = nm.profile_devices(
+                        pipeline.splunk,
+                        time_range=profile_time_range,
+                        target_ips={_dev_ip},
+                        target_macs=_dev_macs,
+                    )
+
+                    classified = result.get('classified', 0)
+                    _classified_this_round += classified
+                    _total_classified += classified
+
+                    if classified:
+                        log.info(f'  [{_dev_idx + 1}/{_total_this_round}] '
+                                 f'{_dev_ip}: classified')
+                    else:
+                        log.info(f'  [{_dev_idx + 1}/{_total_this_round}] '
+                                 f'{_dev_ip}: profiled (not classified)')
+
+                    # Save after each device so progress is durable
+                    # and visible in the UI immediately.
+                    nm.merge_enrichment_and_save()
+
+                except Exception as pe:
+                    log.warning(f'  [{_dev_idx + 1}/{_total_this_round}] '
+                                f'{_dev_ip}: error — {pe}')
+                    # Continue to next device on failure
+                    continue
+
+            log.info(f'Profiling round complete: {_classified_this_round} '
+                     f'classified out of {_total_this_round} '
+                     f'({_total_classified} total)')
+            send('running',
+                 f'Profiled {_total_this_round} devices '
+                 f'({_classified_this_round} classified) — '
+                 f'waiting for new nodes',
+                 90, {'pipeline': 'profile', 'unprofiled': 0,
+                      'total_nodes': len(nm.nodes),
+                      'classified': _total_classified,
+                      'time_range': profile_time_range})
 
             # Wait before next check (30s in 5s increments)
             for _ in range(6):

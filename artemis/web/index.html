@@ -5139,6 +5139,15 @@
                     if (ppData.total_nodes) document.getElementById('pipe-profile-total').textContent = Number(ppData.total_nodes).toLocaleString();
                     if (ppData.time_range) document.getElementById('pipe-profile-timerange').textContent = ppData.time_range;
 
+                    // Show per-device progress when profiling one-at-a-time
+                    const ppDetailEl = document.getElementById('pipe-profile-detail');
+                    if (ppData.current_ip && ppData.device_index && ppData.device_total) {
+                        ppDetailEl.textContent = `Profiling ${ppData.current_ip} (${ppData.device_index}/${ppData.device_total})`;
+                        ppDetailEl.style.display = '';
+                    } else if (ppData.stage_detail !== 'profiling') {
+                        ppDetailEl.textContent = '';
+                    }
+
                     document.getElementById('continuous-interval').value = status.interval_minutes || 15;
                     document.getElementById('continuous-lookback').value = status.lookback_minutes || 20;
                     addLog(`Reconnected to live ingestion (data: ${dp.running ? 'running' : 'stopped'}, analysis: ${ap.running ? 'running' : 'stopped'}, profiler: ${pp.running ? 'running' : 'stopped'})`, 'info');
