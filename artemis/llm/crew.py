@@ -760,17 +760,33 @@ class CrewOrchestrator:
 
         # 2. Build tools with current hunt context (detectors still
         #    available as tools for deeper investigation if the LLM wants)
-        tools, rag_has_data = _make_tools(
-            self.rag_store, self.detectors, data, network_state
-        )
+        logger.info("[DIAG] Building tools...")
+        try:
+            tools, rag_has_data = _make_tools(
+                self.rag_store, self.detectors, data, network_state
+            )
+            logger.info(f"[DIAG] Tools built: {len(tools)} tools, rag_has_data={rag_has_data}")
+        except Exception as e:
+            logger.error(f"[DIAG] _make_tools() FAILED: {e}", exc_info=True)
+            raise
 
         # 3. Build agents and tasks, injecting ML findings as context
-        crew_agents = _build_agents(self.llm, tools)
+        logger.info("[DIAG] Building agents...")
+        try:
+            crew_agents = _build_agents(self.llm, tools)
+            logger.info(f"[DIAG] Agents built: {list(crew_agents.keys())}")
+        except Exception as e:
+            logger.error(f"[DIAG] _build_agents() FAILED: {e}", exc_info=True)
+            raise
+
+        logger.info("[DIAG] Building tasks...")
         tasks = _build_tasks(
             crew_agents, data, network_state,
             detector_findings=agent_outputs,
             rag_available=rag_has_data,
         )
+
+        logger.info(f"[DIAG] Tasks built: {len(tasks)} tasks")
 
         agent_names = list(crew_agents.keys())
 
@@ -923,6 +939,38 @@ class CrewOrchestrator:
         )
         kickoff_start = time.time()
 
+        # --- Redirect stdout/stderr so CrewAI verbose print() goes to logger ---
+        import io as _io
+        import sys as _sys
+
+        class _LoggerWriter(_io.TextIOBase):
+            """Redirect write() calls to the Python logger."""
+            def __init__(self, log_fn, prefix=""):
+                self._log_fn = log_fn
+                self._prefix = prefix
+                self._buf = ""
+
+            def write(self, msg):
+                if not msg or msg == "\n":
+                    return len(msg) if msg else 0
+                self._buf += msg
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    line = line.rstrip()
+                    if line:
+                        self._log_fn(f"{self._prefix}{line}")
+                return len(msg)
+
+            def flush(self):
+                if self._buf.strip():
+                    self._log_fn(f"{self._prefix}{self._buf.rstrip()}")
+                    self._buf = ""
+
+        _orig_stdout = _sys.stdout
+        _orig_stderr = _sys.stderr
+        _sys.stdout = _LoggerWriter(logger.info, "[CrewAI] ")
+        _sys.stderr = _LoggerWriter(logger.warning, "[CrewAI:err] ")
+
         # --- Heartbeat thread: logs every 30s so we know it's alive ---
         import threading as _heartbeat_threading
 
@@ -949,6 +997,9 @@ class CrewOrchestrator:
             result = crew.kickoff()
         finally:
             _kickoff_done.set()
+            # Restore stdout/stderr
+            _sys.stdout = _orig_stdout
+            _sys.stderr = _orig_stderr
             # Restore original Ollama embedding flag
             _rag_mod._OLLAMA_EMBED_FAILED = _prev_embed_flag
 
