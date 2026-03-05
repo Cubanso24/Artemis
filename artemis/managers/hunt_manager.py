@@ -1574,24 +1574,34 @@ def _profile_pipeline_process(job_id, db_path):
             _ip_list = sorted(target_ips)
             _total_this_round = len(_ip_list)
             _classified_this_round = 0
+            _profile_times = []  # track per-device durations for avg
 
             for _dev_idx, _dev_ip in enumerate(_ip_list):
                 if _stop:
                     break
 
                 _pct = int((_dev_idx / max(_total_this_round, 1)) * 100)
+
+                # Compute average time and ETA
+                _avg_time = (sum(_profile_times) / len(_profile_times)
+                             if _profile_times else 0.0)
+                _remaining = _total_this_round - _dev_idx
+                _eta_seconds = int(_avg_time * _remaining)
+
                 send('running',
                      f'Profiling device {_dev_idx + 1}/{_total_this_round}: '
                      f'{_dev_ip} ({profile_time_range})',
                      20 + _pct * 60 // 100,
                      {'pipeline': 'profile',
-                      'unprofiled': _total_this_round - _dev_idx,
+                      'unprofiled': _remaining,
                       'total_nodes': len(nm.nodes),
                       'time_range': profile_time_range,
                       'current_ip': _dev_ip,
                       'device_index': _dev_idx + 1,
                       'device_total': _total_this_round,
                       'classified': _total_classified,
+                      'avg_device_time': round(_avg_time, 1),
+                      'eta_seconds': _eta_seconds,
                       'stage_detail': 'profiling'})
 
                 # Find matching MAC for this IP (if known)
@@ -1602,6 +1612,7 @@ def _profile_pipeline_process(job_id, db_path):
                         break
                 _dev_macs = {_dev_mac} if _dev_mac else set()
 
+                _dev_start = time.time()
                 try:
                     result = nm.profile_devices(
                         pipeline.splunk,
@@ -1609,6 +1620,8 @@ def _profile_pipeline_process(job_id, db_path):
                         target_ips={_dev_ip},
                         target_macs=_dev_macs,
                     )
+                    _dev_elapsed = time.time() - _dev_start
+                    _profile_times.append(_dev_elapsed)
 
                     classified = result.get('classified', 0)
                     _classified_this_round += classified
@@ -1616,18 +1629,21 @@ def _profile_pipeline_process(job_id, db_path):
 
                     if classified:
                         log.info(f'  [{_dev_idx + 1}/{_total_this_round}] '
-                                 f'{_dev_ip}: classified')
+                                 f'{_dev_ip}: classified ({_dev_elapsed:.1f}s)')
                     else:
                         log.info(f'  [{_dev_idx + 1}/{_total_this_round}] '
-                                 f'{_dev_ip}: profiled (not classified)')
+                                 f'{_dev_ip}: profiled, not classified '
+                                 f'({_dev_elapsed:.1f}s)')
 
                     # Save after each device so progress is durable
                     # and visible in the UI immediately.
                     nm.merge_enrichment_and_save()
 
                 except Exception as pe:
+                    _dev_elapsed = time.time() - _dev_start
+                    _profile_times.append(_dev_elapsed)
                     log.warning(f'  [{_dev_idx + 1}/{_total_this_round}] '
-                                f'{_dev_ip}: error — {pe}')
+                                f'{_dev_ip}: error ({_dev_elapsed:.1f}s) — {pe}')
                     # Continue to next device on failure
                     continue
 

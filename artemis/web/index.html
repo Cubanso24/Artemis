@@ -5142,7 +5142,18 @@
                     // Show per-device progress when profiling one-at-a-time
                     const ppDetailEl = document.getElementById('pipe-profile-detail');
                     if (ppData.current_ip && ppData.device_index && ppData.device_total) {
-                        ppDetailEl.textContent = `Profiling ${ppData.current_ip} (${ppData.device_index}/${ppData.device_total})`;
+                        let detailText = `Profiling ${ppData.current_ip} (${ppData.device_index}/${ppData.device_total})`;
+                        if (ppData.avg_device_time > 0) {
+                            detailText += ` · avg ${ppData.avg_device_time.toFixed(1)}s/device`;
+                        }
+                        if (ppData.eta_seconds > 0) {
+                            const etaM = Math.floor(ppData.eta_seconds / 60);
+                            const etaS = ppData.eta_seconds % 60;
+                            detailText += etaM > 0
+                                ? ` · ~${etaM}m ${etaS}s remaining`
+                                : ` · ~${etaS}s remaining`;
+                        }
+                        ppDetailEl.textContent = detailText;
                         ppDetailEl.style.display = '';
                     } else if (ppData.stage_detail !== 'profiling') {
                         ppDetailEl.textContent = '';
