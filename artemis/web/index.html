@@ -7767,7 +7767,9 @@
         function clearAgentMonitor() {
             _agentMonitorEvents = [];
             _agentStatuses = {};
-            _agentPollSinceId = 0;
+            // Keep _agentPollSinceId at its current value so the next poll
+            // only fetches events newer than what was already shown (resetting
+            // to 0 would re-fetch all historical events from the database).
             document.getElementById('agent-monitor-feed').innerHTML =
                 '<div style="text-align:center; opacity:0.4; margin-top:60px;">'
                 + '<i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>'
