@@ -57,7 +57,9 @@ class DatabaseManager:
                 result = fn(conn)
                 conn.commit()
                 return result
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as _oe:
+                logger.warning(f"[DIAG] _exec_with_retry attempt {attempt+1}/{max_retries} "
+                               f"OperationalError: {_oe}")
                 if attempt < max_retries - 1:
                     _time.sleep(1.0 * (2 ** attempt))
                 else:
@@ -947,9 +949,11 @@ class DatabaseManager:
 
     def save_synthesis(self, cycle: int, synthesis: Dict) -> Dict:
         """Save an LLM synthesis report."""
+        logger.info(f"[DIAG] save_synthesis called for cycle {cycle}")
         now = datetime.now().isoformat()
 
         def _do(conn):
+            logger.info(f"[DIAG] save_synthesis _do executing INSERT for cycle {cycle}")
             conn.execute(
                 "INSERT INTO llm_syntheses "
                 "(cycle, overall_severity, overall_confidence, reasoning, "
@@ -967,6 +971,7 @@ class DatabaseManager:
                  _dumps(synthesis),
                  now),
             )
+            logger.info(f"[DIAG] save_synthesis INSERT executed OK for cycle {cycle}")
             return {'cycle': cycle, 'created_at': now}
         return self._exec_with_retry(_do)
 

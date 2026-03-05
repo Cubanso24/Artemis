@@ -1308,6 +1308,7 @@ def _analysis_pipeline_process(job_id, db_path):
                          f'type={type(llm_synth).__name__}')
                 if llm_synth:
                     try:
+                        log.info(f'Cycle {analysis_cycle}: calling db.save_synthesis...')
                         db.save_synthesis(analysis_cycle, llm_synth)
                         log.info(f'Cycle {analysis_cycle}: saved LLM synthesis '
                                  f'(severity={llm_synth.get("overall_severity", "?")})')
@@ -1315,6 +1316,7 @@ def _analysis_pipeline_process(job_id, db_path):
                         log.error(f'Failed to save LLM synthesis: {se}',
                                   exc_info=True)
 
+                log.info(f'Cycle {analysis_cycle}: marking analysis complete...')
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1
                 _consecutive_failures = 0  # Reset on success
