@@ -1240,7 +1240,8 @@ def _analysis_pipeline_process(job_id, db_path):
                     return coordinator.hunt(
                         data=agent_data, network_state=context)
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                _pool = _cf.ThreadPoolExecutor(max_workers=1)
+                try:
                     _fut = _pool.submit(_run_hunt)
                     _hunt_start = time.time()
                     # Poll with short timeouts so we can send heartbeats
@@ -1271,6 +1272,10 @@ def _analysis_pipeline_process(job_id, db_path):
                                   'stage_detail': 'llm_synthesis',
                                   'elapsed_seconds': int(elapsed),
                                   'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+                finally:
+                    # Don't wait for worker threads — CrewAI may leave
+                    # background threads that prevent a clean join.
+                    _pool.shutdown(wait=False)
 
                 # Save findings (for non-CrewAI path, or any new findings
                 # the LLM-driven tools discovered beyond the initial ML run)
