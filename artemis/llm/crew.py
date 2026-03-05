@@ -563,6 +563,11 @@ class CrewOrchestrator:
         self.num_ctx = num_ctx or int(
             os.environ.get("OLLAMA_NUM_CTX", "131072")
         )
+
+        # --- Ollama connectivity pre-check ---
+        self._ollama_base = ollama_base
+        self._check_ollama_connectivity(ollama_base, llm_model)
+
         # request_timeout: prevent individual LLM calls from hanging forever.
         # 10 min is generous for local models with large context.
         self.llm = LLM(
@@ -583,6 +588,83 @@ class CrewOrchestrator:
             f"num_ctx={self.num_ctx}, "
             f"rag={'enabled' if rag_store else 'disabled'})"
         )
+
+    @staticmethod
+    def _check_ollama_connectivity(base_url: str, model: str) -> None:
+        """Pre-flight check: verify Ollama is reachable and model is loaded."""
+        import urllib.request
+        import json as _json
+
+        # 1. Check Ollama is up
+        try:
+            req = urllib.request.Request(
+                f"{base_url}/api/tags", method="GET"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = _json.loads(resp.read())
+                model_names = [
+                    m.get("name", "") for m in body.get("models", [])
+                ]
+                # Strip the "ollama/" prefix for comparison
+                bare_model = model.replace("ollama/", "")
+                logger.info(
+                    f"[DIAG] Ollama is UP at {base_url} — "
+                    f"available models: {model_names}"
+                )
+                if not any(bare_model in n for n in model_names):
+                    logger.warning(
+                        f"[DIAG] Model '{bare_model}' NOT found in "
+                        f"Ollama model list: {model_names}. "
+                        f"LLM calls will likely fail or trigger a pull."
+                    )
+                else:
+                    logger.info(
+                        f"[DIAG] Model '{bare_model}' confirmed available"
+                    )
+        except Exception as e:
+            logger.error(
+                f"[DIAG] Cannot reach Ollama at {base_url}: {e}. "
+                f"LLM calls WILL fail."
+            )
+
+    def _test_llm_call(self) -> bool:
+        """Send a tiny test prompt to verify the LLM actually responds."""
+        import urllib.request
+        import json as _json
+
+        bare_model = self.llm_model.replace("ollama/", "")
+        payload = _json.dumps({
+            "model": bare_model,
+            "prompt": "Say OK",
+            "stream": False,
+            "options": {"num_ctx": 512, "num_predict": 10},
+        }).encode()
+
+        try:
+            req = urllib.request.Request(
+                f"{self._ollama_base}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            logger.info(
+                f"[DIAG] Sending test prompt to Ollama "
+                f"({self._ollama_base}/api/generate, model={bare_model})..."
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = _json.loads(resp.read())
+                response_text = body.get("response", "")[:100]
+                logger.info(
+                    f"[DIAG] Ollama test call SUCCESS — "
+                    f"response: {response_text!r}"
+                )
+                return True
+        except Exception as e:
+            logger.error(
+                f"[DIAG] Ollama test call FAILED: {e}. "
+                f"The model may not be loaded or GPU may be unavailable."
+            )
+            return False
 
     def hunt(
         self,
@@ -650,6 +732,17 @@ class CrewOrchestrator:
         )
 
         agent_names = list(crew_agents.keys())
+
+        # --- Diagnostic: log prompt sizes for every task ---
+        for i, t in enumerate(tasks):
+            desc_len = len(t.description) if hasattr(t, 'description') else 0
+            agent_role = getattr(t.agent, 'role', 'unknown') if hasattr(t, 'agent') else 'unknown'
+            n_context = len(t.context) if hasattr(t, 'context') and t.context else 0
+            logger.info(
+                f"[DIAG] Task {i}: agent={agent_role}, "
+                f"desc_chars={desc_len}, context_tasks={n_context}"
+            )
+
         fire_agent_activity("coordinator", "stage", {
             "message": f"Assembled crew: {len(agent_names)} agents, "
                        f"{len(tasks)} tasks",
@@ -657,10 +750,26 @@ class CrewOrchestrator:
             "agents": agent_names,
         })
 
+        # --- Diagnostic: test LLM connectivity before crew kickoff ---
+        logger.info("[DIAG] Running Ollama test call before crew kickoff...")
+        llm_ok = self._test_llm_call()
+        if not llm_ok:
+            logger.error(
+                "[DIAG] Ollama test call failed — crew kickoff will "
+                "likely hang. Check Ollama logs and GPU status."
+            )
+            fire_agent_activity("coordinator", "error", {
+                "message": "Ollama test call failed — LLM may be unreachable",
+            })
+
         # 4. Assemble and run the CrewAI crew for LLM synthesis
         manager_llm = None
         if self.process == Process.hierarchical:
             manager_llm = self.llm
+            logger.info(
+                "[DIAG] Hierarchical mode — manager LLM will coordinate "
+                "all agents. First LLM call will be the manager prompt."
+            )
 
         # CrewAI callbacks → agent monitoring.
         # Callbacks are fired SYNCHRONOUSLY by CrewAI during kickoff(),
@@ -735,9 +844,57 @@ class CrewOrchestrator:
             "stage": 3,
         })
 
-        result = crew.kickoff()
+        # --- Enable LiteLLM verbose logging to see actual HTTP calls ---
+        try:
+            import litellm
+            litellm.set_verbose = True
+            logger.info(
+                f"[DIAG] LiteLLM version={litellm.__version__}, "
+                f"verbose=True"
+            )
+        except Exception as e:
+            logger.warning(f"[DIAG] Could not configure LiteLLM logging: {e}")
 
+        logger.info(
+            f"[DIAG] crew.kickoff() starting NOW — "
+            f"process={self.process}, "
+            f"agents={len(crew.agents)}, tasks={len(crew.tasks)}, "
+            f"manager_llm={'yes' if manager_llm else 'no'}"
+        )
+        kickoff_start = time.time()
+
+        # --- Heartbeat thread: logs every 30s so we know it's alive ---
+        import threading as _heartbeat_threading
+
+        _kickoff_done = _heartbeat_threading.Event()
+
+        def _heartbeat():
+            tick = 0
+            while not _kickoff_done.is_set():
+                _kickoff_done.wait(30)
+                if not _kickoff_done.is_set():
+                    tick += 1
+                    elapsed_hb = time.time() - kickoff_start
+                    logger.info(
+                        f"[DIAG] Heartbeat #{tick}: crew.kickoff() "
+                        f"still running ({elapsed_hb:.0f}s elapsed)"
+                    )
+
+        hb_thread = _heartbeat_threading.Thread(
+            target=_heartbeat, daemon=True
+        )
+        hb_thread.start()
+
+        try:
+            result = crew.kickoff()
+        finally:
+            _kickoff_done.set()
+
+        kickoff_elapsed = time.time() - kickoff_start
         elapsed = time.time() - start
+        logger.info(
+            f"[DIAG] crew.kickoff() returned after {kickoff_elapsed:.1f}s"
+        )
         logger.info(f"CrewAI hunt completed in {elapsed:.1f}s")
         fire_agent_activity("coordinator", "stage", {
             "message": f"CrewAI hunt completed in {elapsed:.1f}s",
