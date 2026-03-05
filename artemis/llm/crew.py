@@ -998,13 +998,20 @@ class CrewOrchestrator:
             f"[DIAG] crew.kickoff() returned after {kickoff_elapsed:.1f}s"
         )
         logger.info(f"CrewAI hunt completed in {elapsed:.1f}s")
-        fire_agent_activity("coordinator", "stage", {
-            "message": f"CrewAI hunt completed in {elapsed:.1f}s",
-            "stage": 5,
-        })
+        logger.info("[DIAG] About to fire_agent_activity...")
+        try:
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"CrewAI hunt completed in {elapsed:.1f}s",
+                "stage": 5,
+            })
+            logger.info("[DIAG] fire_agent_activity returned OK")
+        except Exception as _fae:
+            logger.error(f"[DIAG] fire_agent_activity failed: {_fae}")
 
         # Build assessment dict matching the existing format
+        logger.info("[DIAG] About to call _build_assessment...")
         assessment = self._build_assessment(result, agent_outputs, elapsed)
+        logger.info(f"[DIAG] _build_assessment returned OK, keys={list(assessment.keys())}")
 
         # Index findings into RAG for future hunts (non-blocking so a slow
         # embedding call can't prevent the assessment from being returned).
@@ -1021,6 +1028,7 @@ class CrewOrchestrator:
         )
         _idx_thread.start()
 
+        logger.info("[DIAG] hunt() returning assessment to caller")
         return assessment
 
     # ------------------------------------------------------------------
