@@ -1247,6 +1247,8 @@ def _analysis_pipeline_process(job_id, db_path):
                     while True:
                         try:
                             assessment = _fut.result(timeout=30)
+                            log.info(f'Cycle {analysis_cycle}: hunt() returned '
+                                     f'assessment with keys: {list(assessment.keys()) if assessment else "None"}')
                             break  # Hunt completed
                         except _cf.TimeoutError:
                             elapsed = time.time() - _hunt_start
@@ -1297,13 +1299,16 @@ def _analysis_pipeline_process(job_id, db_path):
 
                 # Persist LLM synthesis
                 llm_synth = assessment.get('llm_synthesis')
+                log.info(f'Cycle {analysis_cycle}: llm_synthesis present={llm_synth is not None}, '
+                         f'type={type(llm_synth).__name__}')
                 if llm_synth:
                     try:
                         db.save_synthesis(analysis_cycle, llm_synth)
                         log.info(f'Cycle {analysis_cycle}: saved LLM synthesis '
                                  f'(severity={llm_synth.get("overall_severity", "?")})')
                     except Exception as se:
-                        log.error(f'Failed to save LLM synthesis: {se}')
+                        log.error(f'Failed to save LLM synthesis: {se}',
+                                  exc_info=True)
 
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1
