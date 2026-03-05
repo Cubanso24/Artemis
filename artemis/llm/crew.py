@@ -75,42 +75,12 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
     """
     tools = []
 
-    # Check whether the RAG store actually has data.  If all collections
-    # are empty we skip the RAG tools entirely — this avoids injecting
-    # three extra tool schemas into every manager prompt (saves ~1-2 k
-    # tokens per LLM call) and prevents the LLM from wasting iterations
-    # calling tools that always return "No … found."
+    # Skip RAG entirely during tool building — ChromaDB lazy init hangs
+    # and blocks the entire LLM pipeline.  RAG data will be populated
+    # after the first successful hunt cycle; until then the store is
+    # empty so there's nothing to query anyway.  RAG tools will be
+    # re-enabled once the store has been pre-warmed at startup.
     _rag_has_data = False
-    if rag_store is not None:
-        import threading as _mt
-        _rag_result = [False]  # mutable container for thread result
-
-        def _check_rag():
-            try:
-                logger.info("[DIAG] _make_tools: checking rag_store.available...")
-                if not rag_store.available:
-                    logger.info("[DIAG] _make_tools: RAG store not available")
-                    return
-                logger.info("[DIAG] _make_tools: RAG available, calling get_stats()...")
-                stats = rag_store.get_stats()
-                logger.info(f"[DIAG] _make_tools: get_stats() returned: {stats}")
-                for coll_info in stats.get("collections", {}).values():
-                    if coll_info.get("count", 0) > 0:
-                        _rag_result[0] = True
-                        break
-            except Exception as e:
-                logger.warning(f"[DIAG] _make_tools: RAG check failed: {e}")
-
-        _rag_thread = _mt.Thread(target=_check_rag, daemon=True)
-        _rag_thread.start()
-        _rag_thread.join(timeout=15)  # 15s max for RAG init
-        if _rag_thread.is_alive():
-            logger.warning(
-                "[DIAG] _make_tools: RAG check timed out after 15s — "
-                "skipping RAG tools (ChromaDB or embedding init likely hung)"
-            )
-        else:
-            _rag_has_data = _rag_result[0]
     if not _rag_has_data:
         logger.info(
             "[DIAG] RAG store is empty or unavailable — skipping RAG "
