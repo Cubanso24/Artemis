@@ -572,17 +572,6 @@ class CrewOrchestrator:
             timeout=600,  # 10 min per LLM call
         )
 
-        # Force sequential for local models — hierarchical adds a manager
-        # agent that doubles LLM calls and must process ALL task contexts
-        # at once, which overwhelms local models.  Hierarchical only makes
-        # sense with fast cloud APIs.
-        _is_local = "ollama" in llm_model.lower()
-        if process == "hierarchical" and _is_local:
-            logger.warning(
-                "Overriding hierarchical→sequential for local Ollama model "
-                "(hierarchical mode overwhelms local LLMs)"
-            )
-            process = "sequential"
         self.process = (
             Process.hierarchical if process == "hierarchical"
             else Process.sequential
