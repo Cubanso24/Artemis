@@ -737,7 +737,10 @@ class CrewOrchestrator:
         for i, t in enumerate(tasks):
             desc_len = len(t.description) if hasattr(t, 'description') else 0
             agent_role = getattr(t.agent, 'role', 'unknown') if hasattr(t, 'agent') else 'unknown'
-            n_context = len(t.context) if hasattr(t, 'context') and t.context else 0
+            try:
+                n_context = len(t.context) if hasattr(t, 'context') and isinstance(t.context, list) else 0
+            except TypeError:
+                n_context = 0
             logger.info(
                 f"[DIAG] Task {i}: agent={agent_role}, "
                 f"desc_chars={desc_len}, context_tasks={n_context}"
