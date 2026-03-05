@@ -1006,8 +1006,20 @@ class CrewOrchestrator:
         # Build assessment dict matching the existing format
         assessment = self._build_assessment(result, agent_outputs, elapsed)
 
-        # Index findings into RAG for future hunts
-        self._index_to_rag(agent_outputs, data)
+        # Index findings into RAG for future hunts (non-blocking so a slow
+        # embedding call can't prevent the assessment from being returned).
+        import threading as _idx_threading
+
+        def _rag_index():
+            try:
+                self._index_to_rag(agent_outputs, data)
+            except Exception as e:
+                logger.error(f"RAG indexing failed (non-fatal): {e}")
+
+        _idx_thread = _idx_threading.Thread(
+            target=_rag_index, daemon=True, name="rag-index"
+        )
+        _idx_thread.start()
 
         return assessment
 
