@@ -365,7 +365,7 @@ class LLMClient:
             self.logger.warning("LLM busy with hunt operations — chat deferred")
             raise
         except _requests.Timeout:
-            self.logger.error("Ollama request timed out (3600s)")
+            self.logger.error("Ollama request timed out (300s)")
             return None
         except _requests.ConnectionError:
             self.logger.error(
