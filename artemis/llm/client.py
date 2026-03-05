@@ -30,7 +30,7 @@ from artemis.utils.logging_config import ArtemisLogger
 # Default Ollama models — good general-purpose choices
 _DEFAULT_OLLAMA_MODEL = "llama3.1"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
-_DEFAULT_OLLAMA_NUM_CTX = 131072  # llama3.1 supports 128k context
+_DEFAULT_OLLAMA_NUM_CTX = 262144  # 256k context (requires >= 48 GiB VRAM)
 
 
 class LLMClient:

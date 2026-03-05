@@ -1030,7 +1030,7 @@ def _analysis_pipeline_process(job_id, db_path):
                                 rag_store=getattr(coordinator, 'rag_store', None),
                                 llm_model=f"ollama/{_ollama_model}",
                                 process=_llm_cfg.get('crewai_process', 'sequential'),
-                                num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '131072')),
+                                num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '262144')),
                             )
                             log.info('CrewAI orchestrator initialised')
                     except Exception as _ce:

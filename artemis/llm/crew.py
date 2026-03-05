@@ -601,7 +601,7 @@ class CrewOrchestrator:
             os.environ.get("OLLAMA_URL", "http://localhost:11434"),
         )
         self.num_ctx = num_ctx or int(
-            os.environ.get("OLLAMA_NUM_CTX", "131072")
+            os.environ.get("OLLAMA_NUM_CTX", "262144")
         )
 
         # --- Ollama connectivity pre-check ---
