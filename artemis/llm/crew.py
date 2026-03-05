@@ -342,7 +342,10 @@ def _build_tasks(
     data_summary = format_hunting_data_summary(hunting_data)
     state_text = format_network_state(network_state) if network_state else ""
 
-    # Build a summary of ML detector findings so the LLM has them upfront
+    # Build a summary of ML detector findings so the LLM has them upfront.
+    # Cap per-agent findings to avoid overwhelming the context window —
+    # with 1000+ reconnaissance findings, the prompt would be enormous.
+    _MAX_FINDINGS_PER_AGENT = 10
     findings_block = ""
     _findings_by_agent: Dict[str, str] = {}
     if detector_findings:
@@ -351,17 +354,21 @@ def _build_tasks(
             agent_lines = []
             agent_name = getattr(output, 'agent_name', 'unknown')
             if output.findings:
+                n_total = len(output.findings)
+                shown = output.findings[:_MAX_FINDINGS_PER_AGENT]
                 agent_lines.append(
                     f"\n[{agent_name}] "
-                    f"{len(output.findings)} finding(s), "
+                    f"{n_total} finding(s), "
                     f"confidence={output.confidence:.2f}"
+                    + (f" (showing top {len(shown)} of {n_total})"
+                       if n_total > _MAX_FINDINGS_PER_AGENT else "")
                 )
-                for f in output.findings:
-                    desc = f.description[:300] if hasattr(f, 'description') else str(f)[:300]
+                for f in shown:
+                    desc = f.description[:200] if hasattr(f, 'description') else str(f)[:200]
                     agent_lines.append(f"  - [{f.activity_type}] {desc}")
                     if hasattr(f, 'indicators') and f.indicators:
                         agent_lines.append(
-                            f"    Indicators: {', '.join(str(i) for i in f.indicators[:5])}"
+                            f"    Indicators: {', '.join(str(i) for i in f.indicators[:3])}"
                         )
             elif output.confidence > 0:
                 agent_lines.append(
@@ -556,12 +563,26 @@ class CrewOrchestrator:
         self.num_ctx = num_ctx or int(
             os.environ.get("OLLAMA_NUM_CTX", "131072")
         )
+        # request_timeout: prevent individual LLM calls from hanging forever.
+        # 10 min is generous for local models with large context.
         self.llm = LLM(
             model=llm_model,
             base_url=ollama_base,
             num_ctx=self.num_ctx,
+            timeout=600,  # 10 min per LLM call
         )
 
+        # Force sequential for local models — hierarchical adds a manager
+        # agent that doubles LLM calls and must process ALL task contexts
+        # at once, which overwhelms local models.  Hierarchical only makes
+        # sense with fast cloud APIs.
+        _is_local = "ollama" in llm_model.lower()
+        if process == "hierarchical" and _is_local:
+            logger.warning(
+                "Overriding hierarchical→sequential for local Ollama model "
+                "(hierarchical mode overwhelms local LLMs)"
+            )
+            process = "sequential"
         self.process = (
             Process.hierarchical if process == "hierarchical"
             else Process.sequential
@@ -718,7 +739,6 @@ class CrewOrchestrator:
             verbose=self.verbose,
             step_callback=_step_callback,
             task_callback=_task_callback,
-            max_rpm=30,  # Rate-limit LLM calls
         )
 
         fire_agent_activity("coordinator", "stage", {
