@@ -214,12 +214,22 @@ def _build_agents(llm, tools: list) -> Dict[str, Any]:
             "You are the lead threat analyst for an enterprise SOC. "
             "You have deep expertise in MITRE ATT&CK, kill chain analysis, "
             "and APT campaign tracking.  You coordinate a team of specialist "
-            "hunters and produce actionable intelligence for incident response."
+            "hunters and produce actionable intelligence for incident response.\n\n"
+            "IMPORTANT: When you need to use a tool, format your response "
+            "EXACTLY as:\n"
+            "Thought: <your reasoning>\n"
+            "Action: <tool_name>\n"
+            "Action Input: {\"param\": \"value\"}\n\n"
+            "When you have your final answer and don't need any more tools:\n"
+            "Thought: I have enough information to provide my final answer.\n"
+            "Final Answer: <your complete response>"
         ),
         tools=tools,
         llm=llm,
         verbose=True,
         allow_delegation=True,
+        max_iter=8,
+        max_retry_limit=2,
     )
 
     # Specialist hunters
@@ -289,16 +299,29 @@ def _build_agents(llm, tools: list) -> Dict[str, Any]:
         },
     }
 
+    _react_instructions = (
+        "\n\nIMPORTANT: When you need to use a tool, format your response "
+        "EXACTLY as:\n"
+        "Thought: <your reasoning>\n"
+        "Action: <tool_name>\n"
+        "Action Input: {\"param\": \"value\"}\n\n"
+        "When you have your final answer and don't need any more tools:\n"
+        "Thought: I have enough information to provide my final answer.\n"
+        "Final Answer: <your complete response>"
+    )
+
     for name, cfg in _SPECIALIST_MAP.items():
-        backstory = AGENT_SYSTEM_PROMPTS.get(name, cfg["goal"])
+        base_backstory = AGENT_SYSTEM_PROMPTS.get(name, cfg["goal"])
         agents[name] = Agent(
             role=cfg["role"],
             goal=cfg["goal"],
-            backstory=backstory,
+            backstory=base_backstory + _react_instructions,
             tools=tools,
             llm=llm,
             verbose=True,
             allow_delegation=False,
+            max_iter=6,
+            max_retry_limit=2,
         )
 
     return agents
@@ -363,6 +386,11 @@ def _build_tasks(
         f"anomaly_investigation, insider_threat, apt_campaign), priority "
         f"(0-1), confidence (0-1), and which specialist hunters should "
         f"investigate.\n\n"
+        f"You may optionally call search_past_findings or "
+        f"search_threat_intel to check historical context.  When you "
+        f"are ready to output your hypotheses, use:\n"
+        f"Thought: I have analysed the data and can generate hypotheses.\n"
+        f"Final Answer: <your numbered hypothesis list>\n\n"
         f"{context_block}"
     )
     hypothesis_expected = (
@@ -401,16 +429,20 @@ def _build_tasks(
             f"YOUR ML DETECTOR RESULTS:\n{agent_findings_text}\n\n"
             f"Steps:\n"
             f"1. Review the ML detector findings above for your domain.\n"
-            f"2. Call search_past_findings with a summary of any findings "
-            f"   to check for historical context.\n"
-            f"3. Call search_threat_intel if indicators match known threats.\n"
-            f"4. Call query_network_baseline to filter out normal behaviour.\n"
-            f"5. Optionally call run_detector with '{name}' for a fresh "
-            f"   run if you need more detail.\n"
-            f"6. Produce your assessment: for each finding, state whether "
+            f"2. Optionally call search_past_findings to check historical "
+            f"   context.  Example:\n"
+            f"   Action: search_past_findings\n"
+            f'   Action Input: {{"query": "beaconing to 1.2.3.4"}}\n\n'
+            f"3. Optionally call search_threat_intel if indicators match "
+            f"   known threats.\n"
+            f"4. Optionally call query_network_baseline to filter out "
+            f"   normal behaviour.\n"
+            f"5. When you have your assessment, respond with:\n"
+            f"   Thought: I have completed my investigation.\n"
+            f"   Final Answer: <your assessment>\n\n"
+            f"   Your assessment should include: for each finding, whether "
             f"   it is a true positive or false positive, your confidence "
-            f"   (0-1), MITRE techniques, and recommended actions.\n"
-            f"   Also note any patterns the detector missed."
+            f"   (0-1), MITRE techniques, and recommended actions."
         )
         specialist_expected = (
             "A structured analysis with: findings (true/false positive "
@@ -443,10 +475,13 @@ def _build_tasks(
         "   by lateral movement).\n"
         "3. Assess kill chain progression.\n"
         "4. Flag likely false positives.\n"
-        "5. Produce a final report with: threat narrative, overall "
-        "   severity (low/medium/high/critical), overall confidence "
-        "   (0-1), correlated findings, false positives, and "
-        "   prioritised response actions."
+        "5. Respond with:\n"
+        "   Thought: I have reviewed all specialist findings.\n"
+        "   Final Answer: <your unified threat assessment>\n\n"
+        "   Include: threat narrative, overall severity "
+        "   (low/medium/high/critical), overall confidence (0-1), "
+        "   correlated findings, false positives, and prioritised "
+        "   response actions."
     )
     synthesis_expected = (
         "A unified threat assessment with: threat_narrative, "
@@ -683,6 +718,7 @@ class CrewOrchestrator:
             verbose=self.verbose,
             step_callback=_step_callback,
             task_callback=_task_callback,
+            max_rpm=30,  # Rate-limit LLM calls
         )
 
         fire_agent_activity("coordinator", "stage", {
