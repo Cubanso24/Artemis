@@ -1025,6 +1025,7 @@ class CrewOrchestrator:
                 import json as _sjson
                 import pathlib as _spath
                 _now = datetime.utcnow().isoformat()
+                _cycle = kwargs.get("cycle", 1)
 
                 # 1. JSON file backup (zero-dependency, can't fail on locks)
                 _sdir = _spath.Path(db_path).parent / "synthesis_backup"
@@ -1037,7 +1038,6 @@ class CrewOrchestrator:
 
                 # 2. Direct SQLite — save synthesis + mark cycle complete
                 #    in ONE transaction (atomic: both succeed or neither).
-                _cycle = kwargs.get("cycle", 1)
                 _sc = _sql3.connect(db_path, timeout=5)
                 _sc.execute("PRAGMA busy_timeout = 3000")
                 _sc.execute("PRAGMA journal_mode = WAL")
