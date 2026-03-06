@@ -1270,6 +1270,82 @@ def _analysis_pipeline_process(job_id, db_path):
                 finally:
                     _hunt_done.set()
 
+                # --- SAVE SYNTHESIS FIRST (before any other logging/DB) ---
+                # Use print(flush=True) to bypass logging handler locks that
+                # may be held by CrewAI background threads.
+                import sys as _sys
+                print(f'[HUNT] Cycle {analysis_cycle}: hunt() returned, '
+                      f'saving synthesis immediately...', flush=True,
+                      file=_sys.stderr)
+
+                llm_synth = assessment.get('llm_synthesis') if assessment else None
+
+                # 1. Emergency JSON file backup (bypasses SQLite entirely)
+                if llm_synth:
+                    try:
+                        import json as _json
+                        import pathlib as _pathlib
+                        _synth_dir = _pathlib.Path(db.db_path).parent / 'synthesis_backup'
+                        _synth_dir.mkdir(exist_ok=True)
+                        _backup_path = _synth_dir / f'cycle_{analysis_cycle}.json'
+                        _backup_path.write_text(_json.dumps(llm_synth, indent=2, default=str))
+                        print(f'[HUNT] JSON backup saved to {_backup_path}',
+                              flush=True, file=_sys.stderr)
+                    except Exception as _je:
+                        print(f'[HUNT] JSON backup failed: {_je}',
+                              flush=True, file=_sys.stderr)
+
+                # 2. Direct SQLite save (bypass _exec_with_retry to avoid
+                #    contention with daemon thread connections)
+                if llm_synth:
+                    try:
+                        import sqlite3 as _sql3
+                        import json as _json2
+                        _now = datetime.now().isoformat()
+                        _conn = _sql3.connect(db.db_path, timeout=10)
+                        _conn.execute("PRAGMA busy_timeout = 5000")
+                        _conn.execute("PRAGMA journal_mode = WAL")
+                        _conn.execute(
+                            "INSERT INTO llm_syntheses "
+                            "(cycle, overall_severity, overall_confidence, "
+                            "reasoning, kill_chain, correlations, "
+                            "false_positive_flags, recommended_actions, "
+                            "full_synthesis, created_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (analysis_cycle,
+                             llm_synth.get('overall_severity', 'low'),
+                             llm_synth.get('overall_confidence', 0.0),
+                             llm_synth.get('reasoning',
+                                           llm_synth.get('threat_narrative', '')),
+                             _json2.dumps(llm_synth.get('kill_chain_assessment', {})),
+                             _json2.dumps(llm_synth.get('correlations',
+                                          llm_synth.get('correlated_findings', []))),
+                             _json2.dumps(llm_synth.get('false_positive_flags',
+                                          llm_synth.get('likely_false_positives', []))),
+                             _json2.dumps(llm_synth.get('recommended_actions', [])),
+                             _json2.dumps(llm_synth),
+                             _now),
+                        )
+                        _conn.commit()
+                        _conn.close()
+                        print(f'[HUNT] Cycle {analysis_cycle}: synthesis saved to DB OK',
+                              flush=True, file=_sys.stderr)
+                    except Exception as _dbe:
+                        print(f'[HUNT] Direct DB save failed: {_dbe}',
+                              flush=True, file=_sys.stderr)
+                        # Fall back to the original db.save_synthesis path
+                        try:
+                            db.save_synthesis(analysis_cycle, llm_synth)
+                            print(f'[HUNT] Fallback db.save_synthesis OK',
+                                  flush=True, file=_sys.stderr)
+                        except Exception as _fbe:
+                            print(f'[HUNT] Fallback also failed: {_fbe}',
+                                  flush=True, file=_sys.stderr)
+                else:
+                    print(f'[HUNT] No llm_synthesis in assessment',
+                          flush=True, file=_sys.stderr)
+
+                # Now do remaining processing with regular logging
                 log.info(f'Cycle {analysis_cycle}: hunt() returned '
                          f'assessment with keys: '
                          f'{list(assessment.keys()) if assessment else "None"}')
@@ -1298,20 +1374,6 @@ def _analysis_pipeline_process(job_id, db_path):
                                 recommended_actions=ao_dict.get('recommended_actions', []),
                                 source_cycle=analysis_cycle,
                             )
-
-                # Persist LLM synthesis
-                llm_synth = assessment.get('llm_synthesis')
-                log.info(f'Cycle {analysis_cycle}: llm_synthesis present={llm_synth is not None}, '
-                         f'type={type(llm_synth).__name__}')
-                if llm_synth:
-                    try:
-                        log.info(f'Cycle {analysis_cycle}: calling db.save_synthesis...')
-                        db.save_synthesis(analysis_cycle, llm_synth)
-                        log.info(f'Cycle {analysis_cycle}: saved LLM synthesis '
-                                 f'(severity={llm_synth.get("overall_severity", "?")})')
-                    except Exception as se:
-                        log.error(f'Failed to save LLM synthesis: {se}',
-                                  exc_info=True)
 
                 log.info(f'Cycle {analysis_cycle}: marking analysis complete...')
                 db.mark_analysis_complete(analysis_cycle)

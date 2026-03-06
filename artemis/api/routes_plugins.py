@@ -807,6 +807,33 @@ async def get_latest_synthesis():
     """Get the most recent LLM synthesis report."""
     result = db_manager.get_latest_synthesis()
     if not result:
+        # Fallback: check JSON backup files written by hunt_manager
+        import pathlib, json as _json
+        _synth_dir = pathlib.Path(db_manager.db_path).parent / 'synthesis_backup'
+        if _synth_dir.exists():
+            _files = sorted(_synth_dir.glob('cycle_*.json'), reverse=True)
+            if _files:
+                try:
+                    _data = _json.loads(_files[0].read_text())
+                    return {
+                        'id': 0,
+                        'cycle': int(_files[0].stem.split('_')[1]),
+                        'overall_severity': _data.get('overall_severity', 'low'),
+                        'overall_confidence': _data.get('overall_confidence', 0.0),
+                        'reasoning': _data.get('reasoning',
+                                               _data.get('threat_narrative', '')),
+                        'kill_chain': _data.get('kill_chain_assessment', {}),
+                        'correlations': _data.get('correlations',
+                                                  _data.get('correlated_findings', [])),
+                        'false_positive_flags': _data.get('false_positive_flags',
+                                                          _data.get('likely_false_positives', [])),
+                        'recommended_actions': _data.get('recommended_actions', []),
+                        'full_synthesis': _data,
+                        'created_at': _files[0].stat().st_mtime,
+                        'source': 'json_backup',
+                    }
+                except Exception:
+                    pass
         return JSONResponse(status_code=404,
                             content={"error": "No synthesis reports yet"})
     return result
