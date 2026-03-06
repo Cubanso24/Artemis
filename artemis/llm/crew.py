@@ -702,6 +702,7 @@ class CrewOrchestrator:
         data: Dict[str, Any],
         network_state: Optional[NetworkState] = None,
         pre_computed_outputs: Optional[List[Any]] = None,
+        db_path: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Run a CrewAI-orchestrated hunt cycle.
@@ -1012,6 +1013,59 @@ class CrewOrchestrator:
         logger.info("[DIAG] About to call _build_assessment...")
         assessment = self._build_assessment(result, agent_outputs, elapsed)
         logger.info(f"[DIAG] _build_assessment returned OK, keys={list(assessment.keys())}")
+
+        # --- PERSIST SYNTHESIS NOW before returning to caller ---
+        # The caller process intermittently dies between return and save.
+        # Save directly here using a short-lived SQLite connection.
+        llm_synth = assessment.get("llm_synthesis")
+        if llm_synth and db_path:
+            import sys as _save_sys
+            try:
+                import sqlite3 as _sql3
+                import json as _sjson
+                import pathlib as _spath
+                _now = datetime.utcnow().isoformat()
+
+                # 1. JSON file backup (zero-dependency, can't fail on locks)
+                _sdir = _spath.Path(db_path).parent / "synthesis_backup"
+                _sdir.mkdir(exist_ok=True)
+                (_sdir / "latest.json").write_text(
+                    _sjson.dumps(llm_synth, indent=2, default=str))
+                print(f"[CREW] JSON backup written to {_sdir / 'latest.json'}",
+                      flush=True, file=_save_sys.stderr)
+
+                # 2. Direct SQLite INSERT (short timeout, own connection)
+                _sc = _sql3.connect(db_path, timeout=5)
+                _sc.execute("PRAGMA busy_timeout = 3000")
+                _sc.execute("PRAGMA journal_mode = WAL")
+                _sc.execute(
+                    "INSERT INTO llm_syntheses "
+                    "(cycle, overall_severity, overall_confidence, "
+                    "reasoning, kill_chain, correlations, "
+                    "false_positive_flags, recommended_actions, "
+                    "full_synthesis, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (kwargs.get("cycle", 1),
+                     llm_synth.get("overall_severity", "low"),
+                     llm_synth.get("overall_confidence", 0.0),
+                     llm_synth.get("reasoning",
+                                   llm_synth.get("threat_narrative", "")),
+                     _sjson.dumps(llm_synth.get("kill_chain_assessment", {})),
+                     _sjson.dumps(llm_synth.get("correlations",
+                                  llm_synth.get("correlated_findings", []))),
+                     _sjson.dumps(llm_synth.get("false_positive_flags",
+                                  llm_synth.get("likely_false_positives", []))),
+                     _sjson.dumps(llm_synth.get("recommended_actions", [])),
+                     _sjson.dumps(llm_synth, default=str),
+                     _now),
+                )
+                _sc.commit()
+                _sc.close()
+                print(f"[CREW] Synthesis saved to DB (cycle={kwargs.get('cycle', 1)})",
+                      flush=True, file=_save_sys.stderr)
+            except Exception as _se:
+                print(f"[CREW] Synthesis save failed: {_se}",
+                      flush=True, file=_save_sys.stderr)
 
         # Return assessment immediately — RAG indexing is best-effort and
         # must NEVER block the return path.

@@ -1263,7 +1263,9 @@ def _analysis_pipeline_process(job_id, db_path):
                     if _crew_orchestrator:
                         assessment = _crew_orchestrator.hunt(
                             data=agent_data, network_state=context,
-                            pre_computed_outputs=ml_outputs)
+                            pre_computed_outputs=ml_outputs,
+                            db_path=db_path,
+                            cycle=analysis_cycle)
                     else:
                         assessment = coordinator.hunt(
                             data=agent_data, network_state=context)
