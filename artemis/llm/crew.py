@@ -1034,7 +1034,9 @@ class CrewOrchestrator:
                 print(f"[CREW] JSON backup written to {_sdir / 'latest.json'}",
                       flush=True, file=_save_sys.stderr)
 
-                # 2. Direct SQLite INSERT (short timeout, own connection)
+                # 2. Direct SQLite — save synthesis + mark cycle complete
+                #    in ONE transaction (atomic: both succeed or neither).
+                _cycle = kwargs.get("cycle", 1)
                 _sc = _sql3.connect(db_path, timeout=5)
                 _sc.execute("PRAGMA busy_timeout = 3000")
                 _sc.execute("PRAGMA journal_mode = WAL")
@@ -1045,7 +1047,7 @@ class CrewOrchestrator:
                     "false_positive_flags, recommended_actions, "
                     "full_synthesis, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (kwargs.get("cycle", 1),
+                    (_cycle,
                      llm_synth.get("overall_severity", "low"),
                      llm_synth.get("overall_confidence", 0.0),
                      llm_synth.get("reasoning",
@@ -1059,30 +1061,15 @@ class CrewOrchestrator:
                      _sjson.dumps(llm_synth, default=str),
                      _now),
                 )
+                _sc.execute(
+                    "UPDATE analysis_queue SET status = 'complete', "
+                    "completed_at = ? WHERE cycle = ?",
+                    (_now, _cycle),
+                )
                 _sc.commit()
                 _sc.close()
-                print(f"[CREW] Synthesis saved to DB (cycle={kwargs.get('cycle', 1)})",
+                print(f"[CREW] Cycle {_cycle}: synthesis saved + marked complete",
                       flush=True, file=_save_sys.stderr)
-
-                # Also mark the analysis cycle complete — the caller
-                # process consistently dies before it can do this.
-                _cycle = kwargs.get("cycle", 1)
-                try:
-                    _mc = _sql3.connect(db_path, timeout=5)
-                    _mc.execute("PRAGMA busy_timeout = 3000")
-                    _mc.execute("PRAGMA journal_mode = WAL")
-                    _mc.execute(
-                        "UPDATE analysis_queue SET status = 'complete', "
-                        "completed_at = ? WHERE cycle = ?",
-                        (_now, _cycle),
-                    )
-                    _mc.commit()
-                    _mc.close()
-                    print(f"[CREW] Cycle {_cycle} marked complete",
-                          flush=True, file=_save_sys.stderr)
-                except Exception as _mce:
-                    print(f"[CREW] mark_complete failed: {_mce}",
-                          flush=True, file=_save_sys.stderr)
             except Exception as _se:
                 print(f"[CREW] Synthesis save failed: {_se}",
                       flush=True, file=_save_sys.stderr)

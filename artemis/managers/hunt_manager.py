@@ -963,6 +963,25 @@ def _analysis_pipeline_process(job_id, db_path):
     send('running', 'Starting analysis pipeline...', 0,
          {'pipeline': 'analysis', 'status': 'initializing'})
 
+    # Recover any cycles stuck at 'in_progress' from a previous crash.
+    # Reset them to 'pending' so they'll be retried.
+    try:
+        _rc = db._connect()
+        _stuck = _rc.execute(
+            "SELECT cycle FROM analysis_queue WHERE status = 'in_progress'"
+        ).fetchall()
+        if _stuck:
+            _rc.execute(
+                "UPDATE analysis_queue SET status = 'pending', "
+                "started_at = NULL WHERE status = 'in_progress'"
+            )
+            _rc.commit()
+            log.info(f'Reset {len(_stuck)} stuck in_progress cycles to pending: '
+                     f'{[r[0] for r in _stuck]}')
+        _rc.close()
+    except Exception as _re:
+        log.warning(f'Could not reset stuck cycles: {_re}')
+
     _MAX_INIT_RETRIES = 5
 
     try:
