@@ -1013,22 +1013,28 @@ class CrewOrchestrator:
         assessment = self._build_assessment(result, agent_outputs, elapsed)
         logger.info(f"[DIAG] _build_assessment returned OK, keys={list(assessment.keys())}")
 
-        # Index findings into RAG for future hunts (non-blocking so a slow
-        # embedding call can't prevent the assessment from being returned).
-        import threading as _idx_threading
-
-        def _rag_index():
-            try:
-                self._index_to_rag(agent_outputs, data)
-            except Exception as e:
-                logger.error(f"RAG indexing failed (non-fatal): {e}")
-
-        _idx_thread = _idx_threading.Thread(
-            target=_rag_index, daemon=True, name="rag-index"
-        )
-        _idx_thread.start()
-
+        # Return assessment immediately — RAG indexing is best-effort and
+        # must NEVER block the return path.
         logger.info("[DIAG] hunt() returning assessment to caller")
+
+        # Schedule RAG indexing in a daemon thread AFTER confirming we can
+        # return.  Previous placement before the return caused intermittent
+        # hangs (thread creation or GIL contention with CrewAI threads).
+        try:
+            import threading as _idx_threading
+
+            def _rag_index():
+                try:
+                    self._index_to_rag(agent_outputs, data)
+                except Exception as e:
+                    logger.error(f"RAG indexing failed (non-fatal): {e}")
+
+            _idx_threading.Thread(
+                target=_rag_index, daemon=True, name="rag-index"
+            ).start()
+        except Exception as _rag_err:
+            logger.warning(f"[DIAG] RAG thread start failed (non-fatal): {_rag_err}")
+
         return assessment
 
     # ------------------------------------------------------------------
