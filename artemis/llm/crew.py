@@ -1029,9 +1029,10 @@ class CrewOrchestrator:
                 # 1. JSON file backup (zero-dependency, can't fail on locks)
                 _sdir = _spath.Path(db_path).parent / "synthesis_backup"
                 _sdir.mkdir(exist_ok=True)
-                (_sdir / "latest.json").write_text(
+                _bk_name = f"cycle_{_cycle}.json"
+                (_sdir / _bk_name).write_text(
                     _sjson.dumps(llm_synth, indent=2, default=str))
-                print(f"[CREW] JSON backup written to {_sdir / 'latest.json'}",
+                print(f"[CREW] JSON backup written to {_sdir / _bk_name}",
                       flush=True, file=_save_sys.stderr)
 
                 # 2. Direct SQLite — save synthesis + mark cycle complete
@@ -1147,11 +1148,16 @@ class CrewOrchestrator:
             "recommendations": [],
             "agent_outputs": agent_outputs,
             "llm_synthesis": {
-                "threat_narrative": crew_text,
+                # Field names must match what the frontend reads from
+                # full_synthesis: reasoning, correlations, false_positive_flags,
+                # kill_chain_assessment, recommended_actions.
+                "reasoning": crew_text,
+                "threat_narrative": crew_text,  # backward compat
                 "overall_severity": severity.value if hasattr(severity, "value") else str(severity),
                 "overall_confidence": max_confidence,
-                "correlated_findings": [],
-                "likely_false_positives": [],
+                "kill_chain_assessment": {},
+                "correlations": [],
+                "false_positive_flags": [],
                 "recommended_actions": [],
                 "orchestration": "crewai",
             },
