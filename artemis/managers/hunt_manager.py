@@ -921,7 +921,6 @@ def _analysis_pipeline_process(job_id, db_path):
     if analysis is slow, and will catch up by processing cycles in order.
     """
     import os, logging, traceback, json, time, signal as _signal
-    import concurrent.futures as _cf
     from datetime import datetime
     from artemis.managers.db_manager import DatabaseManager
     from artemis.plugins.network_mapper import NetworkMapperPlugin
@@ -1232,50 +1231,48 @@ def _analysis_pipeline_process(job_id, db_path):
                 # and enforce a timeout.  The executor thread can't be
                 # forcibly killed, but the timeout lets us mark the cycle
                 # complete and advance rather than blocking forever.
-                def _run_hunt():
+                # Run hunt with a heartbeat thread (no ThreadPoolExecutor —
+                # CrewAI's background threads interfere with executor shutdown
+                # and future delivery).
+                import threading as _hunt_threading
+
+                _hunt_start = time.time()
+                _hunt_done = _hunt_threading.Event()
+
+                def _heartbeat():
+                    """Send periodic status updates while hunt runs."""
+                    while not _hunt_done.wait(30):
+                        elapsed = int(time.time() - _hunt_start)
+                        send('running',
+                             f'LLM analysis in progress ({elapsed}s elapsed)...',
+                             65,
+                             {'pipeline': 'analysis',
+                              'cycle': analysis_cycle,
+                              'findings': findings_count,
+                              'n_agents': _n_agents,
+                              'llm_backend': _backend,
+                              'stage_detail': 'llm_synthesis',
+                              'elapsed_seconds': elapsed,
+                              'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+
+                _hb = _hunt_threading.Thread(
+                    target=_heartbeat, daemon=True, name='hunt-heartbeat')
+                _hb.start()
+
+                try:
                     if _crew_orchestrator:
-                        return _crew_orchestrator.hunt(
+                        assessment = _crew_orchestrator.hunt(
                             data=agent_data, network_state=context,
                             pre_computed_outputs=ml_outputs)
-                    return coordinator.hunt(
-                        data=agent_data, network_state=context)
-
-                _pool = _cf.ThreadPoolExecutor(max_workers=1)
-                try:
-                    _fut = _pool.submit(_run_hunt)
-                    _hunt_start = time.time()
-                    # Poll with short timeouts so we can send heartbeats
-                    while True:
-                        try:
-                            assessment = _fut.result(timeout=30)
-                            log.info(f'Cycle {analysis_cycle}: hunt() returned '
-                                     f'assessment with keys: {list(assessment.keys()) if assessment else "None"}')
-                            break  # Hunt completed
-                        except _cf.TimeoutError:
-                            elapsed = time.time() - _hunt_start
-                            if elapsed > _HUNT_TIMEOUT_S:
-                                _fut.cancel()
-                                log.error(
-                                    f'Cycle {analysis_cycle}: hunt timed out '
-                                    f'after {_HUNT_TIMEOUT_S}s — skipping')
-                                raise TimeoutError(
-                                    f'Hunt exceeded {_HUNT_TIMEOUT_S}s timeout')
-                            # Send heartbeat so the UI knows the LLM is working
-                            send('running',
-                                 f'LLM analysis in progress ({int(elapsed)}s elapsed)...',
-                                 65,
-                                 {'pipeline': 'analysis',
-                                  'cycle': analysis_cycle,
-                                  'findings': findings_count,
-                                  'n_agents': _n_agents,
-                                  'llm_backend': _backend,
-                                  'stage_detail': 'llm_synthesis',
-                                  'elapsed_seconds': int(elapsed),
-                                  'orchestration': 'crewai' if _crew_orchestrator else 'standard'})
+                    else:
+                        assessment = coordinator.hunt(
+                            data=agent_data, network_state=context)
                 finally:
-                    # Don't wait for worker threads — CrewAI may leave
-                    # background threads that prevent a clean join.
-                    _pool.shutdown(wait=False)
+                    _hunt_done.set()
+
+                log.info(f'Cycle {analysis_cycle}: hunt() returned '
+                         f'assessment with keys: '
+                         f'{list(assessment.keys()) if assessment else "None"}')
 
                 # Save findings (for non-CrewAI path, or any new findings
                 # the LLM-driven tools discovered beyond the initial ML run)
