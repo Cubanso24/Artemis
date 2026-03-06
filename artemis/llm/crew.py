@@ -1018,6 +1018,22 @@ class CrewOrchestrator:
         # The caller process intermittently dies between return and save.
         # Save directly here using a short-lived SQLite connection.
         llm_synth = assessment.get("llm_synthesis")
+        logger.info(f"[DIAG] save check: llm_synth={llm_synth is not None}, "
+                    f"db_path={db_path!r}")
+
+        # Auto-detect db_path if not passed
+        if not db_path:
+            import pathlib as _p
+            for _candidate in [
+                _p.Path("artemis.db"),
+                _p.Path("/home/user/Artemis/artemis.db"),
+                _p.Path.cwd() / "artemis.db",
+            ]:
+                if _candidate.exists():
+                    db_path = str(_candidate)
+                    logger.info(f"[DIAG] Auto-detected db_path={db_path}")
+                    break
+
         if llm_synth and db_path:
             import sys as _save_sys
             try:
