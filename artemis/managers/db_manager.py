@@ -986,17 +986,29 @@ class DatabaseManager:
             ).fetchall()
             results = []
             for r in rows:
+                full = json.loads(r['full_synthesis'])
+                # Normalize field names for frontend compatibility:
+                # older entries may use threat_narrative instead of reasoning,
+                # correlated_findings instead of correlations, etc.
+                if 'reasoning' not in full and 'threat_narrative' in full:
+                    full['reasoning'] = full['threat_narrative']
+                if 'correlations' not in full and 'correlated_findings' in full:
+                    full['correlations'] = full['correlated_findings']
+                if 'false_positive_flags' not in full and 'likely_false_positives' in full:
+                    full['false_positive_flags'] = full['likely_false_positives']
+                if 'kill_chain_assessment' not in full:
+                    full['kill_chain_assessment'] = {}
                 results.append({
                     'id': r['id'],
                     'cycle': r['cycle'],
                     'overall_severity': r['overall_severity'],
                     'overall_confidence': r['overall_confidence'],
-                    'reasoning': r['reasoning'],
+                    'reasoning': r['reasoning'] or full.get('reasoning', ''),
                     'kill_chain': json.loads(r['kill_chain']),
                     'correlations': json.loads(r['correlations']),
                     'false_positive_flags': json.loads(r['false_positive_flags']),
                     'recommended_actions': json.loads(r['recommended_actions']),
-                    'full_synthesis': json.loads(r['full_synthesis']),
+                    'full_synthesis': full,
                     'created_at': r['created_at'],
                 })
             return results
