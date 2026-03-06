@@ -1063,6 +1063,26 @@ class CrewOrchestrator:
                 _sc.close()
                 print(f"[CREW] Synthesis saved to DB (cycle={kwargs.get('cycle', 1)})",
                       flush=True, file=_save_sys.stderr)
+
+                # Also mark the analysis cycle complete — the caller
+                # process consistently dies before it can do this.
+                _cycle = kwargs.get("cycle", 1)
+                try:
+                    _mc = _sql3.connect(db_path, timeout=5)
+                    _mc.execute("PRAGMA busy_timeout = 3000")
+                    _mc.execute("PRAGMA journal_mode = WAL")
+                    _mc.execute(
+                        "UPDATE analysis_queue SET status = 'complete', "
+                        "completed_at = ? WHERE cycle = ?",
+                        (_now, _cycle),
+                    )
+                    _mc.commit()
+                    _mc.close()
+                    print(f"[CREW] Cycle {_cycle} marked complete",
+                          flush=True, file=_save_sys.stderr)
+                except Exception as _mce:
+                    print(f"[CREW] mark_complete failed: {_mce}",
+                          flush=True, file=_save_sys.stderr)
             except Exception as _se:
                 print(f"[CREW] Synthesis save failed: {_se}",
                       flush=True, file=_save_sys.stderr)
