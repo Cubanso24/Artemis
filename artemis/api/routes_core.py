@@ -55,6 +55,15 @@ async def get_agent_activity(since_id: int = 0):
     return db.get_agent_activity(since_id=since_id, limit=200)
 
 
+@router.delete("/api/agent-activity")
+async def clear_agent_activity():
+    """Delete all agent activity events from the DB."""
+    from artemis.managers.db_manager import DatabaseManager
+    db = DatabaseManager()
+    db.clear_agent_activity()
+    return {"status": "cleared"}
+
+
 @router.get("/static/{path:path}")
 async def serve_static(path: str):
     """Serve static files."""
