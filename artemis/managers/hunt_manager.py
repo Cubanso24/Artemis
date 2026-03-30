@@ -1139,13 +1139,37 @@ def _analysis_pipeline_process(job_id, db_path):
             event_counts = pending.get('event_counts', {})
             total_events = sum(event_counts.values())
 
+            # ── Skip stale cycles whose events were already cleaned up ──
+            # After analysis completes, cleanup_analyzed_events deletes raw
+            # event rows.  If a cycle is later re-queued (e.g. on restart)
+            # but its events are gone, there's nothing to analyze — skip it
+            # so the pipeline advances to cycles that have actual data.
+            actual_counts = db.get_event_counts_for_cycle(analysis_cycle)
+            actual_total = sum(actual_counts.values())
+            if actual_total == 0:
+                log.warning(
+                    f'Cycle {analysis_cycle}: no events in store '
+                    f'(expected {total_events:,}) — events were likely '
+                    f'cleaned up after prior analysis.  Skipping.')
+                db.mark_analysis_complete(analysis_cycle)
+                send('running',
+                     f'Skipped cycle {analysis_cycle} (events cleaned up)',
+                     50, {'pipeline': 'analysis',
+                          'cycle': analysis_cycle,
+                          'stage_detail': 'skipped_stale'})
+                continue
+
             log.info(f'Analyzing cycle {analysis_cycle} '
-                     f'({total_events:,} events)')
+                     f'({actual_total:,} events)')
             db.mark_analysis_started(analysis_cycle)
 
             _backend = getattr(coordinator.llm_client, 'backend', 'none')
             _n_agents = len(coordinator.agents)
             _orch_label = 'CrewAI' if _crew_orchestrator else _backend
+
+            # Use verified counts from the DB instead of stale queue metadata
+            total_events = actual_total
+            event_counts = actual_counts
 
             send('running',
                  f'Analyzing cycle {analysis_cycle}: {total_events:,} events '

@@ -930,7 +930,9 @@ class DatabaseManager:
             conn.close()
 
     def clear_findings(self) -> int:
-        """Delete all findings and LLM syntheses. Returns count deleted."""
+        """Delete all findings and LLM syntheses, and re-queue any
+        analysis cycles that still have events so they get re-analyzed.
+        Returns count of findings deleted."""
         conn = self._connect()
         try:
             count = conn.execute(
@@ -938,6 +940,20 @@ class DatabaseManager:
             ).fetchone()[0]
             conn.execute("DELETE FROM agent_findings")
             conn.execute("DELETE FROM llm_syntheses")
+
+            # Reset completed analysis cycles back to 'pending' so the
+            # analysis pipeline will re-process them and regenerate
+            # findings.  Only reset cycles whose events still exist —
+            # stale cycles (events cleaned up) will be skipped by the
+            # analysis pipeline automatically.
+            conn.execute(
+                "UPDATE analysis_queue SET "
+                "status = 'pending', "
+                "started_at = NULL, "
+                "completed_at = NULL "
+                "WHERE status = 'complete'"
+            )
+
             conn.commit()
             return count
         finally:
