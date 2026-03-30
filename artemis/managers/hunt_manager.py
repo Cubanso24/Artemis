@@ -377,7 +377,7 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
     _last_progress = _time.monotonic()
 
     send('running',
-         f'Rebuilding network map from {max_cycle} stored cycles...',
+         f'Rebuilding network map from {max_cycle} stored batches...',
          10, {'pipeline': 'data',
               'stage_detail': 'db_replay',
               'cycle': 0, 'total_cycles': max_cycle,
@@ -422,7 +422,7 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
                         _last_progress = _time.monotonic()
                         pct = 10 + int(35 * c / max(max_cycle, 1))
                         send('running',
-                             f'Replaying stored data: cycle {c}/{max_cycle} '
+                             f'Replaying stored data: batch {c}/{max_cycle} '
                              f'({total_mapped:,} events, {len(nm.nodes)} nodes)...',
                              pct, {'pipeline': 'data',
                                    'stage_detail': 'db_replay',
@@ -446,7 +446,7 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
             nm.save_map()
             pct = 10 + int(35 * c / max(max_cycle, 1))
             send('running',
-                 f'Replaying stored data: cycle {c}/{max_cycle} '
+                 f'Replaying stored data: batch {c}/{max_cycle} '
                  f'({total_mapped:,} events, {len(nm.nodes)} nodes)...',
                  pct, {'pipeline': 'data',
                        'stage_detail': 'db_replay',
@@ -560,11 +560,11 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
             if total_stored > 0:
                 log.info(
                     f'Backfill requested but {total_stored:,} events '
-                    f'already stored across {cycle} cycles — '
+                    f'already stored across {cycle} batches — '
                     f'skipping Splunk re-download')
                 send('running',
                      f'Found {total_stored:,} existing events in '
-                     f'{cycle} cycles — rebuilding map...',
+                     f'{cycle} batches — rebuilding map...',
                      10, {'pipeline': 'data',
                           'stage_detail': 'reuse_existing',
                           'total_events': total_stored,
@@ -581,9 +581,9 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                         db.requeue_analysis(c, evt_counts)
                         queued += 1
 
-                log.info(f'Ensured {queued} cycles are queued for analysis')
+                log.info(f'Ensured {queued} batches are queued for analysis')
                 send('running',
-                     f'Queued {queued} cycles for analysis — '
+                     f'Queued {queued} batches for analysis — '
                      f'rebuilding network map from stored events...',
                      20, {'pipeline': 'data',
                           'stage_detail': 'requeue_existing',

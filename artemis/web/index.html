@@ -1271,7 +1271,7 @@
                                     <span id="pipe-data-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#388bfd33; color:#4fc3f7;">—</span>
                                 </div>
                                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
-                                    <span style="color:var(--text-secondary);">Cycle:</span>
+                                    <span id="pipe-data-cycle-label" style="color:var(--text-secondary);">Cycle:</span>
                                     <span id="pipe-data-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
                                     <span style="color:var(--text-secondary);">Nodes:</span>
                                     <span id="pipe-data-nodes" style="color:var(--text-primary); font-weight:500;">—</span>
@@ -1297,7 +1297,7 @@
                                     <span id="pipe-analysis-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#ab47bc33; color:#ab47bc;">—</span>
                                 </div>
                                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
-                                    <span style="color:var(--text-secondary);">Cycle:</span>
+                                    <span id="pipe-analysis-cycle-label" style="color:var(--text-secondary);">Cycle:</span>
                                     <span id="pipe-analysis-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
                                     <span style="color:var(--text-secondary);">Events:</span>
                                     <span id="pipe-analysis-events" style="color:var(--text-primary); font-weight:500;">—</span>
@@ -4696,6 +4696,10 @@
             }
         }
 
+        // Track whether data pipeline is in backfill mode so analysis
+        // pipeline can label cycles as "batches" accordingly.
+        let _dataInBackfillMode = false;
+
         function handleContinuousProgress(data) {
             const result = data.result || {};
             const pipeline = data.pipeline || '';
@@ -4755,6 +4759,9 @@
                     const isRetention = sd === 'retention_check' || sd === 'retention_ok' || sd === 'retention_warning';
                     const isBackfillQueue = sd === 'backfill_analysis_queued';
 
+                    // Track backfill mode globally so analysis pipeline can adapt labels
+                    _dataInBackfillMode = isDbReplay || isBackfill || isBackfillQueue || isReuse || isRetention;
+
                     const statusEl = document.getElementById('pipe-data-status');
                     if (isDbReplay || isReuse) {
                         statusEl.textContent = 'DB Replay';
@@ -4778,7 +4785,17 @@
                         statusEl.style.color = '#4fc3f7';
                     }
 
-                    document.getElementById('pipe-data-cycle').textContent = cycle;
+                    // During backfill/replay, show batch progress instead of raw cycle number
+                    const cycleLabel = document.getElementById('pipe-data-cycle-label');
+                    if (isDbReplay || isBackfill || isBackfillQueue || isReuse) {
+                        cycleLabel.textContent = 'Batch:';
+                        const totalCycles = result.total_cycles || 0;
+                        document.getElementById('pipe-data-cycle').textContent =
+                            totalCycles ? `${cycle} / ${Number(totalCycles).toLocaleString()}` : cycle;
+                    } else {
+                        cycleLabel.textContent = 'Cycle:';
+                        document.getElementById('pipe-data-cycle').textContent = cycle;
+                    }
                     // Always update nodes if present; keep previous value if missing
                     if (totalNodes) document.getElementById('pipe-data-nodes').textContent = Number(totalNodes).toLocaleString();
                     if (newConns != null) document.getElementById('pipe-data-conns').textContent = Number(newConns).toLocaleString();
@@ -4816,9 +4833,9 @@
                         const rte = result.total_events || 0;
                         let rprog = '';
                         if (isReuse && result.queued) {
-                            rprog = `Queued ${result.queued} cycles for analysis`;
+                            rprog = `Queued ${result.queued} batches for analysis`;
                         } else if (rc && rtc) {
-                            rprog = `Replaying cycle ${rc}/${rtc} (${Number(rte).toLocaleString()} events)`;
+                            rprog = `Replaying batch ${rc}/${rtc} (${Number(rte).toLocaleString()} events)`;
                         } else if (rte) {
                             rprog = `${Number(rte).toLocaleString()} events found`;
                         }
@@ -4833,7 +4850,7 @@
                         const rte = result.total_events || 0;
                         const rc = result.cycle || 0;
                         const rtc = result.total_cycles || 0;
-                        detailEl.textContent = `Replaying stored events: cycle ${rc}/${rtc} (${Number(rte).toLocaleString()} events → ${Number(totalNodes).toLocaleString()} nodes)`;
+                        detailEl.textContent = `Replaying stored events: batch ${rc}/${rtc} (${Number(rte).toLocaleString()} events → ${Number(totalNodes).toLocaleString()} nodes)`;
                     } else if (isReuse) {
                         const rte = result.total_events || 0;
                         detailEl.textContent = `Using ${Number(rte).toLocaleString()} existing events from database (skipping Splunk)`;
@@ -4902,12 +4919,15 @@
                     }
 
                     const currentCycle = result.cycle || 0;
-                    document.getElementById('pipe-analysis-cycle').textContent = currentCycle ? `#${currentCycle}` : (isInit ? 'Init' : isIdle ? 'Waiting' : '—');
+                    const batchLabel = _dataInBackfillMode ? 'Batch:' : 'Cycle:';
+                    const batchPrefix = _dataInBackfillMode ? 'Batch' : '#';
+                    document.getElementById('pipe-analysis-cycle-label').textContent = batchLabel;
+                    document.getElementById('pipe-analysis-cycle').textContent = currentCycle ? `${batchPrefix}${_dataInBackfillMode ? ' ' : ''}${currentCycle}` : (isInit ? 'Init' : isIdle ? 'Waiting' : '—');
                     document.getElementById('pipe-analysis-events').textContent = totalEvents ? Number(totalEvents).toLocaleString() : (isIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent = nAgents ? `${nAgents} agents` : '—';
                     document.getElementById('pipe-analysis-llm').textContent = orch === 'crewai' ? `CrewAI (${llmBackend})` : (llmBackend !== '—' ? llmBackend : '—');
                     document.getElementById('pipe-analysis-findings').textContent = findings > 0 ? findings : '0';
-                    document.getElementById('pipe-analysis-completed').textContent = `${completed} cycles`;
+                    document.getElementById('pipe-analysis-completed').textContent = `${completed} ${_dataInBackfillMode ? 'batches' : 'cycles'}`;
 
                     // LLM active badge
                     document.getElementById('pipe-analysis-llm-badge').style.display = isLlmActive ? 'inline' : 'none';
@@ -5000,10 +5020,33 @@
 
                     // --- Data pipeline card ---
                     const dpStatus = document.getElementById('pipe-data-status');
-                    dpStatus.textContent = dp.running ? 'Running' : 'Stopped';
-                    dpStatus.style.background = dp.running ? '#388bfd33' : '#8b949e33';
-                    dpStatus.style.color = dp.running ? '#4fc3f7' : '#8b949e';
-                    document.getElementById('pipe-data-cycle').textContent = status.cycle || dp.cycle || '—';
+                    // Check if data pipeline is in backfill mode
+                    const dpStageDetail = dpExtra.stage_detail || dp.stage_detail || '';
+                    const dpIsBackfill = ['db_replay', 'map_rebuild', 'reuse_existing',
+                        'requeue_existing', 'backfill_mapping', 'backfill_analysis_queued',
+                        'retention_check', 'retention_ok', 'retention_warning'].includes(dpStageDetail);
+                    _dataInBackfillMode = dpIsBackfill;
+
+                    if (dpIsBackfill) {
+                        dpStatus.textContent = dpStageDetail === 'db_replay' ? 'DB Replay' : 'Backfill';
+                        dpStatus.style.background = '#d2992233';
+                        dpStatus.style.color = '#d29922';
+                    } else {
+                        dpStatus.textContent = dp.running ? 'Running' : 'Stopped';
+                        dpStatus.style.background = dp.running ? '#388bfd33' : '#8b949e33';
+                        dpStatus.style.color = dp.running ? '#4fc3f7' : '#8b949e';
+                    }
+                    const dpCycleLabel = document.getElementById('pipe-data-cycle-label');
+                    const dpCycleVal = status.cycle || dp.cycle || 0;
+                    const dpTotalCycles = dpExtra.total_cycles || 0;
+                    if (dpIsBackfill) {
+                        dpCycleLabel.textContent = 'Batch:';
+                        document.getElementById('pipe-data-cycle').textContent =
+                            dpTotalCycles ? `${dpCycleVal} / ${Number(dpTotalCycles).toLocaleString()}` : (dpCycleVal || '—');
+                    } else {
+                        dpCycleLabel.textContent = 'Cycle:';
+                        document.getElementById('pipe-data-cycle').textContent = dpCycleVal || '—';
+                    }
                     document.getElementById('pipe-data-nodes').textContent =
                         (status.total_nodes || dp.total_nodes) ? Number(status.total_nodes || dp.total_nodes).toLocaleString() : '—';
                     document.getElementById('pipe-data-conns').textContent = '—';
@@ -5070,8 +5113,11 @@
                         apStatus.style.color = '#8b949e';
                     }
                     const apCycle = apData.cycle || 0;
+                    const apBatchLabel = _dataInBackfillMode ? 'Batch:' : 'Cycle:';
+                    const apBatchPrefix = _dataInBackfillMode ? 'Batch' : '#';
+                    document.getElementById('pipe-analysis-cycle-label').textContent = apBatchLabel;
                     document.getElementById('pipe-analysis-cycle').textContent =
-                        apCycle ? `#${apCycle}` : (apIsInit ? 'Init' : apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
+                        apCycle ? `${apBatchPrefix}${_dataInBackfillMode ? ' ' : ''}${apCycle}` : (apIsInit ? 'Init' : apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
                     document.getElementById('pipe-analysis-events').textContent =
                         apData.total_events ? Number(apData.total_events).toLocaleString() : (apIsIdle ? '0' : '—');
                     document.getElementById('pipe-analysis-agents').textContent =
@@ -5082,7 +5128,7 @@
                         (apIsLlm && elapsedSec) ? `${llmText} (${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s)` : llmText;
                     document.getElementById('pipe-analysis-findings').textContent = apData.findings || '0';
                     document.getElementById('pipe-analysis-completed').textContent =
-                        `${apData.analyses_completed || 0} cycles`;
+                        `${apData.analyses_completed || 0} ${_dataInBackfillMode ? 'batches' : 'cycles'}`;
                     const llmBadge = document.getElementById('pipe-analysis-llm-badge');
                     if (apIsLlm) {
                         llmBadge.style.display = 'inline';
@@ -7170,14 +7216,30 @@
                         const ing = await ingestResp.json();
                         const statusEl = document.getElementById('hunt-status-text');
                         if (statusEl && ing.running) {
-                            // Extract cycle from extra field, or parse from message as fallback
-                            let cycle = ing.cycle || 0;
-                            if (!cycle && ing.message) {
-                                const m = ing.message.match(/Cycle\s+(\d+)/i);
-                                if (m) cycle = parseInt(m[1], 10);
+                            // Check if we're in backfill/replay mode
+                            const dp = ing.data_pipeline || {};
+                            const dpExtra = dp.last_progress || {};
+                            const dpStage = dpExtra.stage_detail || dp.stage_detail || '';
+                            const isBackfillMode = ['db_replay', 'map_rebuild', 'reuse_existing',
+                                'requeue_existing', 'backfill_mapping', 'backfill_analysis_queued',
+                                'retention_check', 'retention_ok', 'retention_warning'].includes(dpStage);
+
+                            if (isBackfillMode) {
+                                const rc = dpExtra.cycle || ing.cycle || 0;
+                                const rtc = dpExtra.total_cycles || 0;
+                                const progress = rtc ? ` ${rc}/${rtc}` : (rc ? ` ${rc}` : '');
+                                statusEl.textContent = `LIVE INGESTION — BACKFILL${progress}`;
+                                statusEl.style.color = '#d29922';
+                            } else {
+                                // Normal live mode — show cycle number
+                                let cycle = ing.cycle || 0;
+                                if (!cycle && ing.message) {
+                                    const m = ing.message.match(/Cycle\s+(\d+)/i);
+                                    if (m) cycle = parseInt(m[1], 10);
+                                }
+                                statusEl.textContent = `LIVE INGESTION — CYCLE ${cycle}`;
+                                statusEl.style.color = '#3fb950';
                             }
-                            statusEl.textContent = `LIVE INGESTION — CYCLE ${cycle}`;
-                            statusEl.style.color = '#3fb950';
                         }
                         const logEl = document.getElementById('hunt-log-line');
                         if (logEl && ing.running && ing.message) {
