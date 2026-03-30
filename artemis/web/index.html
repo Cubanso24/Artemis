@@ -1116,7 +1116,7 @@
             <button class="tab" onclick="showTab('llm-intel-tab')"><i class="fa-solid fa-brain"></i> LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
             <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
-            <button class="tab" onclick="showTab('logs')"><i class="fa-solid fa-terminal"></i> Live Logs</button>
+            <button class="tab" onclick="showTab('system-tab')"><i class="fa-solid fa-gauge-high"></i> System</button>
         </div>
 
 
@@ -2061,10 +2061,114 @@
             </div><!-- end analyst-subtab-monitor-content -->
         </div>
 
-        <div id="logs" class="tab-content">
+        <!-- Hidden log output for addLog() compatibility -->
+        <div id="log-output" style="display:none;"></div>
+
+        <div id="system-tab" class="tab-content">
             <div class="card">
-                <h2>Live System Logs</h2>
-                <div id="log-output"></div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div>
+                        <h2 style="margin:0;"><i class="fa-solid fa-gauge-high" style="margin-right:6px;"></i> SYSTEM RESOURCES</h2>
+                        <p style="color:var(--text-secondary); margin:4px 0 0; font-size:13px;">
+                            Real-time server resource utilization — auto-refreshes every 5 seconds.
+                        </p>
+                    </div>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <span id="sys-uptime" style="font-size:12px; color:var(--text-secondary);"></span>
+                        <button class="btn btn-secondary" onclick="loadSystemResources()" style="padding:6px 12px; font-size:12px;">
+                            <i class="fa-solid fa-rotate"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Resource gauges grid -->
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px;">
+
+                    <!-- CPU -->
+                    <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                            <i class="fa-solid fa-microchip" style="color:#58a6ff; font-size:16px;"></i>
+                            <span style="font-weight:600; font-size:14px;">CPU</span>
+                            <span id="sys-cpu-pct" style="margin-left:auto; font-size:20px; font-weight:700; color:#58a6ff;">—</span>
+                        </div>
+                        <div style="background:var(--bg-primary); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px;">
+                            <div id="sys-cpu-bar" style="height:100%; background:#58a6ff; border-radius:4px; width:0%; transition:width 0.5s;"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary);">
+                            <span>Cores: <strong id="sys-cpu-cores" style="color:var(--text-primary);">—</strong></span>
+                            <span>Freq: <strong id="sys-cpu-freq" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                    </div>
+
+                    <!-- RAM -->
+                    <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                            <i class="fa-solid fa-memory" style="color:#7ee787; font-size:16px;"></i>
+                            <span style="font-weight:600; font-size:14px;">Memory</span>
+                            <span id="sys-mem-pct" style="margin-left:auto; font-size:20px; font-weight:700; color:#7ee787;">—</span>
+                        </div>
+                        <div style="background:var(--bg-primary); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px;">
+                            <div id="sys-mem-bar" style="height:100%; background:#7ee787; border-radius:4px; width:0%; transition:width 0.5s;"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary);">
+                            <span>Used: <strong id="sys-mem-used" style="color:var(--text-primary);">—</strong></span>
+                            <span>Total: <strong id="sys-mem-total" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                            <span>Available: <strong id="sys-mem-avail" style="color:var(--text-primary);">—</strong></span>
+                            <span>Swap: <strong id="sys-swap" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                    </div>
+
+                    <!-- Disk -->
+                    <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                            <i class="fa-solid fa-hard-drive" style="color:#f0883e; font-size:16px;"></i>
+                            <span style="font-weight:600; font-size:14px;">Disk</span>
+                            <span id="sys-disk-pct" style="margin-left:auto; font-size:20px; font-weight:700; color:#f0883e;">—</span>
+                        </div>
+                        <div style="background:var(--bg-primary); border-radius:4px; height:8px; overflow:hidden; margin-bottom:8px;">
+                            <div id="sys-disk-bar" style="height:100%; background:#f0883e; border-radius:4px; width:0%; transition:width 0.5s;"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary);">
+                            <span>Used: <strong id="sys-disk-used" style="color:var(--text-primary);">—</strong></span>
+                            <span>Total: <strong id="sys-disk-total" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                            <span>Free: <strong id="sys-disk-free" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                    </div>
+
+                    <!-- Network -->
+                    <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                            <i class="fa-solid fa-network-wired" style="color:#d2a8ff; font-size:16px;"></i>
+                            <span style="font-weight:600; font-size:14px;">Network I/O</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                            <div style="background:var(--bg-primary); border-radius:6px; padding:10px; text-align:center;">
+                                <div style="font-size:16px; font-weight:700; color:#7ee787;" id="sys-net-sent">—</div>
+                                <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;"><i class="fa-solid fa-arrow-up" style="margin-right:2px;"></i>Sent</div>
+                                <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;" id="sys-net-sent-rate"></div>
+                            </div>
+                            <div style="background:var(--bg-primary); border-radius:6px; padding:10px; text-align:center;">
+                                <div style="font-size:16px; font-weight:700; color:#58a6ff;" id="sys-net-recv">—</div>
+                                <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;"><i class="fa-solid fa-arrow-down" style="margin-right:2px;"></i>Received</div>
+                                <div style="font-size:10px; color:var(--text-secondary); margin-top:2px;" id="sys-net-recv-rate"></div>
+                            </div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:8px;">
+                            <span>Packets TX: <strong id="sys-net-pkts-sent" style="color:var(--text-primary);">—</strong></span>
+                            <span>Packets RX: <strong id="sys-net-pkts-recv" style="color:var(--text-primary);">—</strong></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GPU Section (shown dynamically if GPUs detected) -->
+                <div id="sys-gpu-section" style="display:none; margin-top:16px;">
+                    <h3 style="margin-bottom:12px;"><i class="fa-solid fa-display" style="margin-right:6px; color:#f97583;"></i>GPU</h3>
+                    <div id="sys-gpu-cards" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -2204,7 +2308,7 @@
                     showTabByName('settings-tab');
                     break;
                 case 'l':
-                    showTabByName('logs');
+                    showTabByName('system');
                     break;
                 case 't':
                     toggleTheme();
@@ -5781,6 +5885,9 @@
             } else if (tabName === 'analyst-tab') {
                 // Focus the chat input when switching to analyst tab
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
+            } else if (tabName === 'system-tab') {
+                loadSystemResources();
+                _startSystemPolling();
             }
         }
 
@@ -6790,6 +6897,183 @@
 
 
         // ========================================
+        // System Resources
+        // ========================================
+
+        let _sysPollingInterval = null;
+        let _lastNetSent = null;
+        let _lastNetRecv = null;
+        let _lastNetTime = null;
+
+        function _formatBytes(bytes) {
+            if (bytes == null) return '—';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            let val = bytes;
+            while (val >= 1024 && i < units.length - 1) { val /= 1024; i++; }
+            return val < 10 ? `${val.toFixed(1)} ${units[i]}` : `${Math.round(val)} ${units[i]}`;
+        }
+
+        function _formatUptime(seconds) {
+            const d = Math.floor(seconds / 86400);
+            const h = Math.floor((seconds % 86400) / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            let s = '';
+            if (d > 0) s += `${d}d `;
+            if (h > 0 || d > 0) s += `${h}h `;
+            s += `${m}m`;
+            return s.trim();
+        }
+
+        function _barColor(pct) {
+            if (pct >= 90) return '#f85149';
+            if (pct >= 75) return '#f0883e';
+            if (pct >= 60) return '#d29922';
+            return null;  // use default color
+        }
+
+        function _startSystemPolling() {
+            if (_sysPollingInterval) return;
+            _sysPollingInterval = setInterval(() => {
+                const sysTab = document.getElementById('system-tab');
+                if (sysTab && sysTab.style.display !== 'none') {
+                    loadSystemResources();
+                } else {
+                    clearInterval(_sysPollingInterval);
+                    _sysPollingInterval = null;
+                }
+            }, 5000);
+        }
+
+        async function loadSystemResources() {
+            try {
+                const resp = await fetch('/api/system-resources');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const now = Date.now();
+
+                // CPU
+                const cpuPct = data.cpu.percent || 0;
+                document.getElementById('sys-cpu-pct').textContent = `${cpuPct}%`;
+                document.getElementById('sys-cpu-bar').style.width = `${cpuPct}%`;
+                const cpuColor = _barColor(cpuPct);
+                if (cpuColor) {
+                    document.getElementById('sys-cpu-bar').style.background = cpuColor;
+                    document.getElementById('sys-cpu-pct').style.color = cpuColor;
+                } else {
+                    document.getElementById('sys-cpu-bar').style.background = '#58a6ff';
+                    document.getElementById('sys-cpu-pct').style.color = '#58a6ff';
+                }
+                document.getElementById('sys-cpu-cores').textContent = data.cpu.count || '—';
+                document.getElementById('sys-cpu-freq').textContent =
+                    data.cpu.freq_mhz ? `${Math.round(data.cpu.freq_mhz)} MHz` : '—';
+
+                // Memory
+                const memPct = data.memory.percent || 0;
+                document.getElementById('sys-mem-pct').textContent = `${memPct}%`;
+                document.getElementById('sys-mem-bar').style.width = `${memPct}%`;
+                const memColor = _barColor(memPct);
+                if (memColor) {
+                    document.getElementById('sys-mem-bar').style.background = memColor;
+                    document.getElementById('sys-mem-pct').style.color = memColor;
+                } else {
+                    document.getElementById('sys-mem-bar').style.background = '#7ee787';
+                    document.getElementById('sys-mem-pct').style.color = '#7ee787';
+                }
+                document.getElementById('sys-mem-used').textContent = _formatBytes(data.memory.used);
+                document.getElementById('sys-mem-total').textContent = _formatBytes(data.memory.total);
+                document.getElementById('sys-mem-avail').textContent = _formatBytes(data.memory.available);
+                document.getElementById('sys-swap').textContent =
+                    data.swap.total > 0 ? `${_formatBytes(data.swap.used)} / ${_formatBytes(data.swap.total)}` : 'None';
+
+                // Disk
+                const diskPct = data.disk.percent || 0;
+                document.getElementById('sys-disk-pct').textContent = `${diskPct}%`;
+                document.getElementById('sys-disk-bar').style.width = `${diskPct}%`;
+                const diskColor = _barColor(diskPct);
+                if (diskColor) {
+                    document.getElementById('sys-disk-bar').style.background = diskColor;
+                    document.getElementById('sys-disk-pct').style.color = diskColor;
+                } else {
+                    document.getElementById('sys-disk-bar').style.background = '#f0883e';
+                    document.getElementById('sys-disk-pct').style.color = '#f0883e';
+                }
+                document.getElementById('sys-disk-used').textContent = _formatBytes(data.disk.used);
+                document.getElementById('sys-disk-total').textContent = _formatBytes(data.disk.total);
+                document.getElementById('sys-disk-free').textContent = _formatBytes(data.disk.free);
+
+                // Network
+                document.getElementById('sys-net-sent').textContent = _formatBytes(data.network.bytes_sent);
+                document.getElementById('sys-net-recv').textContent = _formatBytes(data.network.bytes_recv);
+                document.getElementById('sys-net-pkts-sent').textContent = Number(data.network.packets_sent).toLocaleString();
+                document.getElementById('sys-net-pkts-recv').textContent = Number(data.network.packets_recv).toLocaleString();
+
+                // Network rate calculation
+                if (_lastNetSent != null && _lastNetTime != null) {
+                    const elapsed = (now - _lastNetTime) / 1000;
+                    if (elapsed > 0) {
+                        const sentRate = (data.network.bytes_sent - _lastNetSent) / elapsed;
+                        const recvRate = (data.network.bytes_recv - _lastNetRecv) / elapsed;
+                        document.getElementById('sys-net-sent-rate').textContent = `${_formatBytes(sentRate)}/s`;
+                        document.getElementById('sys-net-recv-rate').textContent = `${_formatBytes(recvRate)}/s`;
+                    }
+                }
+                _lastNetSent = data.network.bytes_sent;
+                _lastNetRecv = data.network.bytes_recv;
+                _lastNetTime = now;
+
+                // Uptime
+                document.getElementById('sys-uptime').textContent =
+                    data.uptime_seconds ? `Uptime: ${_formatUptime(data.uptime_seconds)}` : '';
+
+                // GPU
+                const gpuSection = document.getElementById('sys-gpu-section');
+                const gpus = data.gpus || [];
+                if (gpus.length > 0) {
+                    gpuSection.style.display = '';
+                    const gpuCards = document.getElementById('sys-gpu-cards');
+                    gpuCards.innerHTML = gpus.map((gpu, i) => {
+                        const memPct = gpu.memory_total_mb > 0
+                            ? Math.round((gpu.memory_used_mb / gpu.memory_total_mb) * 100) : 0;
+                        const gpuColor = _barColor(gpu.utilization) || '#f97583';
+                        const memGpuColor = _barColor(memPct) || '#d2a8ff';
+                        return `
+                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+                                <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                                    <i class="fa-solid fa-display" style="color:#f97583;"></i>
+                                    <span style="font-weight:600; font-size:13px;">${escapeHtml(gpu.name)}</span>
+                                </div>
+                                <div style="margin-bottom:8px;">
+                                    <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:3px;">
+                                        <span style="color:var(--text-secondary);">Utilization</span>
+                                        <span style="font-weight:700; color:${gpuColor};">${gpu.utilization}%</span>
+                                    </div>
+                                    <div style="background:var(--bg-primary); border-radius:4px; height:6px; overflow:hidden;">
+                                        <div style="height:100%; background:${gpuColor}; border-radius:4px; width:${gpu.utilization}%; transition:width 0.5s;"></div>
+                                    </div>
+                                </div>
+                                <div>
+                                    <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:3px;">
+                                        <span style="color:var(--text-secondary);">VRAM</span>
+                                        <span style="font-weight:700; color:${memGpuColor};">${Math.round(gpu.memory_used_mb)} / ${Math.round(gpu.memory_total_mb)} MB</span>
+                                    </div>
+                                    <div style="background:var(--bg-primary); border-radius:4px; height:6px; overflow:hidden;">
+                                        <div style="height:100%; background:${memGpuColor}; border-radius:4px; width:${memPct}%; transition:width 0.5s;"></div>
+                                    </div>
+                                </div>
+                            </div>`;
+                    }).join('');
+                } else {
+                    gpuSection.style.display = 'none';
+                }
+
+            } catch (e) {
+                console.debug('System resources refresh error:', e);
+            }
+        }
+
+
+        // ========================================
         // Attack Timeline
         // ========================================
 
@@ -7335,18 +7619,13 @@
 
         function addLog(message, type = 'info') {
             const logOutput = document.getElementById('log-output');
-            const timestamp = new Date().toLocaleTimeString();
-            const logClass = `log-${type}`;
-
+            if (!logOutput) return;  // Element may be hidden/absent
             const logLine = document.createElement('div');
-            logLine.className = `log-line ${logClass}`;
-            logLine.textContent = `[${timestamp}] ${message}`;
-
+            logLine.className = `log-line log-${type}`;
+            logLine.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
             logOutput.appendChild(logLine);
-            logOutput.scrollTop = logOutput.scrollHeight;
-
-            // Keep only last 100 logs
-            while (logOutput.children.length > 100) {
+            // Keep only last 50 entries (hidden buffer)
+            while (logOutput.children.length > 50) {
                 logOutput.removeChild(logOutput.firstChild);
             }
         }

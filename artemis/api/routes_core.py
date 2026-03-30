@@ -55,6 +55,82 @@ async def get_agent_activity(since_id: int = 0):
     return db.get_agent_activity(since_id=since_id, limit=200)
 
 
+@router.get("/api/system-resources")
+async def get_system_resources():
+    """Return current system resource usage (CPU, RAM, disk, GPU, network)."""
+    import psutil
+    import time
+
+    cpu_pct = psutil.cpu_percent(interval=0)
+    cpu_count = psutil.cpu_count(logical=True)
+    cpu_freq = psutil.cpu_freq()
+
+    mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    disk = psutil.disk_usage('/')
+
+    net = psutil.net_io_counters()
+    boot_time = psutil.boot_time()
+    uptime = int(time.time() - boot_time)
+
+    result = {
+        'cpu': {
+            'percent': cpu_pct,
+            'count': cpu_count,
+            'freq_mhz': round(cpu_freq.current, 0) if cpu_freq else None,
+        },
+        'memory': {
+            'total': mem.total,
+            'used': mem.used,
+            'available': mem.available,
+            'percent': mem.percent,
+        },
+        'swap': {
+            'total': swap.total,
+            'used': swap.used,
+            'percent': swap.percent,
+        },
+        'disk': {
+            'total': disk.total,
+            'used': disk.used,
+            'free': disk.free,
+            'percent': disk.percent,
+        },
+        'network': {
+            'bytes_sent': net.bytes_sent,
+            'bytes_recv': net.bytes_recv,
+            'packets_sent': net.packets_sent,
+            'packets_recv': net.packets_recv,
+        },
+        'uptime_seconds': uptime,
+    }
+
+    # GPU detection (nvidia-smi)
+    try:
+        import subprocess
+        nv = subprocess.run(
+            ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total,name',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=3,
+        )
+        if nv.returncode == 0 and nv.stdout.strip():
+            gpus = []
+            for line in nv.stdout.strip().split('\n'):
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 4:
+                    gpus.append({
+                        'name': parts[3],
+                        'utilization': float(parts[0]),
+                        'memory_used_mb': float(parts[1]),
+                        'memory_total_mb': float(parts[2]),
+                    })
+            result['gpus'] = gpus
+    except Exception:
+        result['gpus'] = []
+
+    return result
+
+
 @router.delete("/api/agent-activity")
 async def clear_agent_activity():
     """Delete all agent activity events from the DB."""

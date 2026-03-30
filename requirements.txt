@@ -25,6 +25,7 @@ fastapi>=0.104.0               # Modern web framework
 uvicorn[standard]>=0.24.0      # ASGI server
 websockets>=12.0               # Real-time communication
 pydantic>=2.0.0                # Data validation
+psutil>=5.9.0                  # System resource monitoring
 
 # Autonomous hunting scheduler
 apscheduler>=3.10.0             # Job scheduling for autonomous hunt cadence
