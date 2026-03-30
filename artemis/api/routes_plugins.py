@@ -502,6 +502,70 @@ async def reset_findings():
     return {'status': 'cleared', 'deleted': count}
 
 
+@router.get("/api/timeline")
+async def get_timeline():
+    """Get chronological timeline of attack findings and LLM syntheses."""
+    import json as _json
+
+    events = []
+
+    # Findings as timeline events
+    findings = db_manager.get_findings(limit=500, include_dismissed=False)
+    for f in findings:
+        events.append({
+            'id': f.get('finding_id', ''),
+            'type': 'finding',
+            'timestamp': f.get('created_at', ''),
+            'title': f.get('activity_type', 'Finding'),
+            'description': f.get('description', ''),
+            'severity': f.get('severity', 'low'),
+            'confidence': f.get('confidence', 0),
+            'agent': f.get('agent_name', ''),
+            'indicators': f.get('indicators', []),
+            'affected_assets': f.get('affected_assets', []),
+            'mitre_tactics': f.get('mitre_tactics', []),
+            'mitre_techniques': f.get('mitre_techniques', []),
+            'evidence_count': f.get('evidence_count', 0),
+            'source_cycle': f.get('source_cycle', 0),
+        })
+
+    # LLM syntheses as timeline events
+    try:
+        syntheses = db_manager.get_syntheses(limit=50)
+        for s in syntheses:
+            full = s.get('full_synthesis') or {}
+            if isinstance(full, str):
+                try:
+                    full = _json.loads(full)
+                except Exception:
+                    full = {}
+            events.append({
+                'id': f"synthesis-{s.get('id', 0)}",
+                'type': 'synthesis',
+                'timestamp': s.get('created_at', ''),
+                'title': f"Threat Synthesis — Batch {s.get('cycle', '?')}",
+                'description': (full.get('reasoning') or
+                                full.get('threat_narrative') or
+                                s.get('reasoning', '')),
+                'severity': s.get('overall_severity', 'low'),
+                'confidence': s.get('overall_confidence', 0),
+                'agent': 'LLM Synthesis',
+                'indicators': [],
+                'affected_assets': [],
+                'mitre_tactics': [],
+                'mitre_techniques': [],
+                'evidence_count': 0,
+                'source_cycle': s.get('cycle', 0),
+            })
+    except Exception:
+        pass
+
+    # Sort by timestamp descending (newest first)
+    events.sort(key=lambda e: e.get('timestamp', ''), reverse=True)
+
+    return events
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")
