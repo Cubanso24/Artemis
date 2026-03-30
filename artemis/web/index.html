@@ -2052,6 +2052,7 @@
             checkBgProfileStatus();
             checkContinuousStatus();
             _refreshFindingsBadge();
+            loadLLMSynthesis();  // Refresh LLM Intel badge on page load
 
             // Show network graph tab by default
             showTab('network-graph-tab');
@@ -5395,6 +5396,8 @@
                 const data = await resp.json();
                 addLog(`Cleared ${data.deleted} findings`, 'info');
                 loadFindings();
+                // Also refresh LLM syntheses — clear_findings deletes them too
+                loadLLMSynthesis();
             } catch(e) {
                 addLog(`Failed to reset findings: ${e.message}`, 'error');
             }
@@ -5459,6 +5462,10 @@
             document.getElementById('llm-actions-section').style.display = 'none';
             ['llm-severity-val','llm-confidence-val','llm-correlations-val','llm-actions-val','llm-cycle-val']
                 .forEach(id => document.getElementById(id).textContent = '--');
+            // Hide the LLM Intel tab badge when no syntheses exist
+            const badge = document.getElementById('llm-intel-badge');
+            badge.style.display = 'none';
+            badge.textContent = '0';
         }
 
         function renderLLMSynthesis(s) {
