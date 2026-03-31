@@ -941,25 +941,18 @@ class DatabaseManager:
             conn.execute("DELETE FROM agent_findings")
             conn.execute("DELETE FROM llm_syntheses")
 
-            # Only reset cycles whose events still exist in hunt_events.
-            # Stale cycles (events cleaned up after prior analysis) are
-            # left as 'complete' so the pipeline doesn't waste time
-            # iterating through thousands of empty cycles.
-            cycles_with_events = conn.execute(
-                "SELECT DISTINCT cycle FROM hunt_events"
-            ).fetchall()
-            live_cycles = {r[0] for r in cycles_with_events}
-
-            if live_cycles:
-                placeholders = ','.join('?' * len(live_cycles))
-                conn.execute(
-                    f"UPDATE analysis_queue SET "
-                    f"status = 'pending', "
-                    f"started_at = NULL, "
-                    f"completed_at = NULL "
-                    f"WHERE status = 'complete' AND cycle IN ({placeholders})",
-                    list(live_cycles),
-                )
+            # Reset completed analysis cycles back to 'pending' so the
+            # analysis pipeline will re-process them and regenerate
+            # findings.  Only reset cycles whose events still exist —
+            # stale cycles (events cleaned up) will be skipped by the
+            # analysis pipeline automatically.
+            conn.execute(
+                "UPDATE analysis_queue SET "
+                "status = 'pending', "
+                "started_at = NULL, "
+                "completed_at = NULL "
+                "WHERE status = 'complete'"
+            )
 
             conn.commit()
             return count
@@ -1498,17 +1491,6 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_cycles_with_events(self) -> List[int]:
-        """Return sorted list of cycle numbers that have events stored."""
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT DISTINCT cycle FROM hunt_events ORDER BY cycle"
-            ).fetchall()
-            return [r[0] for r in rows]
-        finally:
-            conn.close()
-
     def get_unqueued_event_cycles(self) -> List[Dict]:
         """Return cycles that have stored events but no analysis_queue entry.
 
@@ -1537,29 +1519,25 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def cleanup_analyzed_events(self, cycle: int = None,
-                                batch_size: int = 100_000) -> int:
-        """Delete events for completed analysis cycles.
+    def cleanup_analyzed_events(self, batch_size: int = 100_000) -> int:
+        """Delete events for cycles that have completed analysis.
 
-        When *cycle* is given, only that cycle's events are removed.
-        Otherwise all complete cycles are cleaned.  Deletes in batches
-        to avoid massive WAL growth.  Returns total rows deleted.
+        Keeps events for pending/in_progress cycles so agents can still
+        read them.  Deletes in batches to avoid massive WAL growth.
+        Returns total rows deleted.
         """
         total_deleted = 0
+        conn = self._connect()
+        try:
+            # Find cycles that are fully analyzed
+            complete = conn.execute(
+                "SELECT cycle FROM analysis_queue WHERE status = 'complete'"
+            ).fetchall()
+            complete_cycles = [r[0] for r in complete]
+        finally:
+            conn.close()
 
-        if cycle is not None:
-            target_cycles = [cycle]
-        else:
-            conn = self._connect()
-            try:
-                complete = conn.execute(
-                    "SELECT cycle FROM analysis_queue WHERE status = 'complete'"
-                ).fetchall()
-                target_cycles = [r[0] for r in complete]
-            finally:
-                conn.close()
-
-        for cyc in target_cycles:
+        for cyc in complete_cycles:
             while True:
                 conn = self._connect()
                 try:

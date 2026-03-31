@@ -1112,10 +1112,11 @@
             <button class="tab" onclick="showTab('findings-tab')"><i class="fa-solid fa-flag"></i> Findings <span id="findings-badge" style="display:none; background:#f85149; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('network-maps-tab')"><i class="fa-solid fa-map-location-dot"></i> Network Maps</button>
             <button class="tab" onclick="showTab('sigma-tab')"><i class="fa-solid fa-shield-halved"></i> Sigma Rules</button>
-            <button class="tab" onclick="showTab('timeline-tab')"><i class="fa-solid fa-timeline"></i> Timeline <span id="timeline-badge" style="display:none; background:#d29922; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
+            <button class="tab" onclick="showTab('threat-intel-tab')"><i class="fa-solid fa-binoculars"></i> Threat Intel</button>
             <button class="tab" onclick="showTab('llm-intel-tab')"><i class="fa-solid fa-brain"></i> LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
             <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
+            <button class="tab" onclick="showTab('logs')"><i class="fa-solid fa-terminal"></i> Live Logs</button>
         </div>
 
 
@@ -1741,12 +1742,14 @@
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- Threat Intelligence Configuration -->
-            <div class="card" style="margin-top:16px;">
-                <h2><i class="fa-solid fa-shield-halved" style="margin-right:6px;"></i> Threat Intelligence</h2>
-                <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
-                    Configure threat intel API keys and monitor the background enrichment worker.
+        <!-- Threat Intel Tab -->
+        <div id="threat-intel-tab" class="tab-content">
+            <div class="card">
+                <h2><i class="fa-solid fa-shield-halved"></i> Threat Intelligence Enrichment</h2>
+                <p style="color:var(--text-secondary); margin-bottom:12px;">
+                    Look up IPs and domains against free threat intel sources. The background worker continuously enriches IPs discovered during profiling.
                 </p>
 
                 <!-- Enrichment Summary Dashboard -->
@@ -1758,14 +1761,36 @@
                 <!-- Background worker status -->
                 <div id="ti-worker-status" style="margin-bottom:16px;"></div>
 
-                <!-- Source status -->
-                <div id="ti-sources-status" style="margin-bottom:16px;"></div>
+                <!-- Lookup form -->
+                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:20px;">
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Indicator</label>
+                        <input type="text" id="ti-indicator" placeholder="8.8.8.8 or example.com"
+                            style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); width:280px;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Type</label>
+                        <select id="ti-type" style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
+                            <option value="ip">IP Address</option>
+                            <option value="domain">Domain</option>
+                        </select>
+                    </div>
+                    <button class="btn" onclick="lookupThreatIntel()">
+                        <i class="fa-solid fa-magnifying-glass"></i> Lookup
+                    </button>
+                </div>
 
-                <!-- API Key Configuration -->
-                <h3 style="margin-top:16px;"><i class="fa-solid fa-key"></i> API Keys</h3>
+                <!-- Results -->
+                <div id="ti-results" style="display:none;"></div>
+            </div>
+
+            <!-- API Key Configuration -->
+            <div class="card" style="margin-top:16px;">
+                <h3><i class="fa-solid fa-key"></i> API Key Configuration</h3>
                 <p style="color:var(--text-secondary); margin-bottom:12px; font-size:13px;">
                     All sources work on free tiers. Add API keys to enable sources and increase rate limits.
                 </p>
+                <div id="ti-sources-status" style="margin-bottom:16px;"></div>
                 <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:12px;">
                     <div>
                         <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">AbuseIPDB Key</label>
@@ -1791,77 +1816,8 @@
                 <button class="btn" onclick="saveThreatIntelConfig()" style="margin-top:12px;">
                     <i class="fa-solid fa-floppy-disk"></i> Save Keys
                 </button>
-
-                <!-- Manual Lookup -->
-                <h3 style="margin-top:20px;"><i class="fa-solid fa-magnifying-glass"></i> Manual Lookup</h3>
-                <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:12px;">
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Indicator</label>
-                        <input type="text" id="ti-indicator" placeholder="8.8.8.8 or example.com"
-                            style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); width:280px;">
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text-secondary);">Type</label>
-                        <select id="ti-type" style="padding:8px 12px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary);">
-                            <option value="ip">IP Address</option>
-                            <option value="domain">Domain</option>
-                        </select>
-                    </div>
-                    <button class="btn" onclick="lookupThreatIntel()">
-                        <i class="fa-solid fa-magnifying-glass"></i> Lookup
-                    </button>
-                </div>
-                <div id="ti-results" style="display:none;"></div>
             </div>
-        </div>
 
-        <!-- Timeline Tab -->
-        <div id="timeline-tab" class="tab-content">
-            <div class="card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                    <div>
-                        <h2 style="margin:0;"><i class="fa-solid fa-timeline" style="margin-right:6px;"></i> ATTACK TIMELINE</h2>
-                        <p style="color:var(--text-secondary); margin:4px 0 0; font-size:13px;">
-                            LLM-synthesized threat assessments — ordered by actual event time, not detection time.
-                        </p>
-                    </div>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <select id="timeline-severity-filter" onchange="loadTimeline()" style="padding:6px 10px; border-radius:4px; border:1px solid var(--border-color); background:var(--bg-primary); color:var(--text-primary); font-size:12px;">
-                            <option value="">All Severities</option>
-                            <option value="critical">Critical</option>
-                            <option value="high">High</option>
-                            <option value="medium">Medium</option>
-                            <option value="low">Low</option>
-                        </select>
-                        <!-- Only LLM syntheses shown (ML findings excluded to reduce false positives) -->
-                        <button class="btn btn-secondary" onclick="loadTimeline()" style="padding:6px 12px; font-size:12px;">
-                            <i class="fa-solid fa-rotate"></i> Refresh
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Timeline stats bar -->
-                <div id="timeline-stats" style="display:flex; gap:16px; margin-bottom:16px; padding:10px 14px; background:var(--bg-primary); border-radius:6px; border:1px solid var(--border-color); font-size:12px;">
-                    <span style="color:var(--text-secondary);">Events: <strong id="timeline-total" style="color:var(--text-primary);">0</strong></span>
-                    <span style="color:#f85149;">Critical: <strong id="timeline-critical">0</strong></span>
-                    <span style="color:#f0883e;">High: <strong id="timeline-high">0</strong></span>
-                    <span style="color:#d29922;">Medium: <strong id="timeline-medium">0</strong></span>
-                    <span style="color:#58a6ff;">Low: <strong id="timeline-low">0</strong></span>
-                    <span style="color:var(--text-secondary); margin-left:auto;">MITRE Tactics: <strong id="timeline-tactics" style="color:var(--text-primary);">—</strong></span>
-                </div>
-
-                <!-- Timeline container -->
-                <div id="timeline-container" style="position:relative; padding-left:32px;">
-                    <!-- Vertical line -->
-                    <div id="timeline-line" style="position:absolute; left:14px; top:0; bottom:0; width:2px; background:var(--border-color);"></div>
-                    <div id="timeline-events" style="display:flex; flex-direction:column; gap:0;">
-                        <div style="text-align:center; padding:40px 0; color:var(--text-secondary); opacity:0.6;">
-                            <i class="fa-solid fa-timeline" style="font-size:32px; display:block; margin-bottom:8px;"></i>
-                            No LLM syntheses yet. Start continuous ingestion to generate threat assessments.
-                        </div>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- ============================================ -->
@@ -2056,9 +2012,12 @@
             </div><!-- end analyst-subtab-monitor-content -->
         </div>
 
-        <!-- Hidden log output for addLog() compatibility -->
-        <div id="log-output" style="display:none;"></div>
-
+        <div id="logs" class="tab-content">
+            <div class="card">
+                <h2>Live System Logs</h2>
+                <div id="log-output"></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -2094,7 +2053,6 @@
             checkContinuousStatus();
             _refreshFindingsBadge();
             loadLLMSynthesis();  // Refresh LLM Intel badge on page load
-            loadTimeline();      // Refresh Timeline badge on page load
 
             // Show network graph tab by default
             showTab('network-graph-tab');
@@ -2196,7 +2154,7 @@
                     showTabByName('settings-tab');
                     break;
                 case 'l':
-                    showTabByName('system');
+                    showTabByName('logs');
                     break;
                 case 't':
                     toggleTheme();
@@ -5438,9 +5396,8 @@
                 const data = await resp.json();
                 addLog(`Cleared ${data.deleted} findings`, 'info');
                 loadFindings();
-                // Also refresh LLM syntheses and timeline — clear_findings deletes them too
+                // Also refresh LLM syntheses — clear_findings deletes them too
                 loadLLMSynthesis();
-                loadTimeline();
             } catch(e) {
                 addLog(`Failed to reset findings: ${e.message}`, 'error');
             }
@@ -5759,8 +5716,10 @@
                 loadNetworkMaps();
             } else if (tabName === 'sigma-tab') {
                 loadSigmaRules();
-            } else if (tabName === 'timeline-tab') {
-                loadTimeline();
+            } else if (tabName === 'threat-intel-tab') {
+                loadThreatIntelStatus();
+                loadEnrichmentSummary();
+                loadLLMSettings();
             } else if (tabName === 'findings-tab') {
                 loadFindings();
             } else if (tabName === 'llm-intel-tab') {
@@ -5768,8 +5727,6 @@
             } else if (tabName === 'settings-tab') {
                 loadPlugins();
                 loadLLMSettings();
-                loadThreatIntelStatus();
-                loadEnrichmentSummary();
             } else if (tabName === 'analyst-tab') {
                 // Focus the chat input when switching to analyst tab
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
@@ -6781,173 +6738,6 @@
         });
 
 
-
-        // ========================================
-        // Attack Timeline
-        // ========================================
-
-        const _sevColors = {
-            critical: '#f85149', high: '#f0883e', medium: '#d29922', low: '#58a6ff'
-        };
-        const _sevIcons = {
-            critical: 'fa-skull-crossbones', high: 'fa-triangle-exclamation',
-            medium: 'fa-exclamation', low: 'fa-info-circle'
-        };
-
-        async function loadTimeline() {
-            try {
-                const resp = await fetch('/api/timeline');
-                if (!resp.ok) return;
-                let events = await resp.json();
-
-                // Apply severity filter
-                const sevFilter = document.getElementById('timeline-severity-filter').value;
-                if (sevFilter) events = events.filter(e => e.severity === sevFilter);
-
-                // Update stats
-                const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-                const allTactics = new Set();
-                events.forEach(e => {
-                    counts[e.severity] = (counts[e.severity] || 0) + 1;
-                    (e.mitre_tactics || []).forEach(t => allTactics.add(t));
-                });
-                document.getElementById('timeline-total').textContent = events.length;
-                document.getElementById('timeline-critical').textContent = counts.critical;
-                document.getElementById('timeline-high').textContent = counts.high;
-                document.getElementById('timeline-medium').textContent = counts.medium;
-                document.getElementById('timeline-low').textContent = counts.low;
-                document.getElementById('timeline-tactics').textContent =
-                    allTactics.size ? Array.from(allTactics).sort().join(', ') : '—';
-
-                // Update badge
-                const badge = document.getElementById('timeline-badge');
-                if (events.length > 0) {
-                    badge.style.display = 'inline';
-                    badge.textContent = events.length > 99 ? '99+' : events.length;
-                } else {
-                    badge.style.display = 'none';
-                }
-
-                renderTimeline(events);
-            } catch (e) {
-                console.error('Timeline load error:', e);
-            }
-        }
-
-        function renderTimeline(events) {
-            const container = document.getElementById('timeline-events');
-            const line = document.getElementById('timeline-line');
-
-            if (!events.length) {
-                line.style.display = 'none';
-                container.innerHTML = `
-                    <div style="text-align:center; padding:40px 0; color:var(--text-secondary); opacity:0.6;">
-                        <i class="fa-solid fa-timeline" style="font-size:32px; display:block; margin-bottom:8px;"></i>
-                        No LLM syntheses yet. Start continuous ingestion to generate threat assessments.
-                    </div>`;
-                return;
-            }
-
-            line.style.display = '';
-
-            // Group events by date
-            const grouped = {};
-            events.forEach(e => {
-                const ts = e.timestamp || '';
-                const date = ts.includes('T') ? ts.split('T')[0] : (ts.split(' ')[0] || 'Unknown');
-                if (!grouped[date]) grouped[date] = [];
-                grouped[date].push(e);
-            });
-
-            let html = '';
-            for (const [date, dayEvents] of Object.entries(grouped)) {
-                const dateLabel = _formatTimelineDate(date);
-                html += `
-                    <div style="position:relative; margin-bottom:4px;">
-                        <div style="position:absolute; left:-26px; top:4px; width:10px; height:10px; border-radius:50%; background:var(--accent-primary); border:2px solid var(--bg-secondary); z-index:1;"></div>
-                        <div style="font-size:11px; font-weight:700; color:var(--accent-primary); text-transform:uppercase; letter-spacing:0.5px; padding:4px 0; margin-bottom:2px;">
-                            <i class="fa-regular fa-calendar" style="margin-right:4px;"></i>${escapeHtml(dateLabel)}
-                            <span style="font-weight:400; color:var(--text-secondary); margin-left:6px;">${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}</span>
-                        </div>
-                    </div>`;
-
-                for (const evt of dayEvents) {
-                    html += _renderTimelineEvent(evt);
-                }
-            }
-
-            container.innerHTML = html;
-        }
-
-        function _formatTimelineDate(dateStr) {
-            try {
-                const d = new Date(dateStr + 'T00:00:00');
-                const today = new Date();
-                today.setHours(0,0,0,0);
-                const diff = Math.floor((today - d) / 86400000);
-                if (diff === 0) return 'Today';
-                if (diff === 1) return 'Yesterday';
-                return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-            } catch { return dateStr; }
-        }
-
-        function _renderTimelineEvent(evt) {
-            const sev = evt.severity || 'low';
-            const color = _sevColors[sev] || '#58a6ff';
-            const icon = _sevIcons[sev] || 'fa-info-circle';
-            const typeIcon = 'fa-brain';
-            const typeLabel = 'LLM Synthesis';
-            const ts = evt.timestamp || '';
-            const time = ts.includes('T') ? ts.split('T')[1].slice(0, 8) : (ts.split(' ')[1] || '');
-
-            const tactics = (evt.mitre_tactics || []).map(t =>
-                `<span style="background:rgba(88,166,255,0.15); color:#58a6ff; padding:1px 6px; border-radius:3px; font-size:10px; margin-right:3px;">${escapeHtml(t)}</span>`
-            ).join('');
-
-            const techniques = (evt.mitre_techniques || []).map(t =>
-                `<span style="background:var(--bg-primary); padding:1px 6px; border-radius:3px; font-size:10px; margin-right:3px;">${escapeHtml(t)}</span>`
-            ).join('');
-
-            const indicators = (evt.indicators || []).slice(0, 5).map(i =>
-                `<span style="background:var(--bg-primary); color:var(--text-secondary); padding:1px 5px; border-radius:3px; font-size:10px; margin-right:3px; font-family:monospace;">${escapeHtml(typeof i === 'string' ? i : (i.value || i.indicator || JSON.stringify(i)))}</span>`
-            ).join('');
-
-            const assets = (evt.affected_assets || []).slice(0, 5).map(a =>
-                `<span style="background:rgba(249,117,131,0.12); color:#f97583; padding:1px 5px; border-radius:3px; font-size:10px; margin-right:3px; font-family:monospace;">${escapeHtml(typeof a === 'string' ? a : (a.hostname || a.ip || JSON.stringify(a)))}</span>`
-            ).join('');
-
-            const desc = (evt.description || '').length > 300
-                ? evt.description.slice(0, 300) + '...'
-                : (evt.description || '');
-
-            return `
-                <div style="position:relative; margin-bottom:8px; margin-left:4px;">
-                    <div style="position:absolute; left:-30px; top:12px; width:6px; height:6px; border-radius:50%; background:${color};"></div>
-                    <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-left:3px solid ${color}; border-radius:4px; padding:10px 14px; transition:background 0.15s;" onmouseenter="this.style.background='var(--bg-primary)'" onmouseleave="this.style.background='var(--bg-tertiary)'">
-                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-                            <span style="color:${color}; font-size:12px;"><i class="fa-solid ${icon}"></i></span>
-                            <span style="font-weight:600; font-size:13px; color:var(--text-primary);">${escapeHtml(evt.title)}</span>
-                            <span style="background:${color}22; color:${color}; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:600; text-transform:uppercase;">${escapeHtml(sev)}</span>
-                            ${evt.confidence ? `<span style="font-size:10px; color:var(--text-secondary);">${Math.round(evt.confidence * 100)}% conf</span>` : ''}
-                            <span style="margin-left:auto; font-size:10px; color:var(--text-secondary);">
-                                <i class="fa-solid ${typeIcon}" style="margin-right:3px;"></i>${escapeHtml(typeLabel)}
-                            </span>
-                        </div>
-                        <p style="font-size:12px; color:var(--text-secondary); margin:4px 0 6px; line-height:1.4;">${escapeHtml(desc)}</p>
-                        <div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;">
-                            ${tactics}${techniques}${indicators}${assets}
-                        </div>
-                        <div style="display:flex; gap:8px; margin-top:6px; font-size:10px; color:var(--text-secondary);">
-                            <span><i class="fa-regular fa-clock" style="margin-right:2px;"></i>${escapeHtml(time)}</span>
-                            <span>Batch #${evt.source_cycle || '?'}</span>
-                            ${evt.evidence_count ? `<span><i class="fa-solid fa-file-lines" style="margin-right:2px;"></i>${evt.evidence_count} evidence</span>` : ''}
-                            ${(evt.false_positives || []).length ? `<span style="color:#d29922;"><i class="fa-solid fa-triangle-exclamation" style="margin-right:2px;"></i>${evt.false_positives.length} likely FP</span>` : ''}
-                        </div>
-                    </div>
-                </div>`;
-        }
-
-
         // ========================================
         // Threat Intel Functions
         // ========================================
@@ -7320,19 +7110,24 @@
         function lookupFromBadge(ip) {
             document.getElementById('ti-indicator').value = ip;
             document.getElementById('ti-type').value = 'ip';
-            showTab('settings-tab');
+            showTab('threat-intel-tab');
             lookupThreatIntel();
         }
 
         function addLog(message, type = 'info') {
             const logOutput = document.getElementById('log-output');
-            if (!logOutput) return;  // Element may be hidden/absent
+            const timestamp = new Date().toLocaleTimeString();
+            const logClass = `log-${type}`;
+
             const logLine = document.createElement('div');
-            logLine.className = `log-line log-${type}`;
-            logLine.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logLine.className = `log-line ${logClass}`;
+            logLine.textContent = `[${timestamp}] ${message}`;
+
             logOutput.appendChild(logLine);
-            // Keep only last 50 entries (hidden buffer)
-            while (logOutput.children.length > 50) {
+            logOutput.scrollTop = logOutput.scrollHeight;
+
+            // Keep only last 100 logs
+            while (logOutput.children.length > 100) {
                 logOutput.removeChild(logOutput.firstChild);
             }
         }

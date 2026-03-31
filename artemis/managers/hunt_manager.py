@@ -570,13 +570,12 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                           'total_events': total_stored,
                           'total_cycles': cycle})
 
-                # Re-queue cycles that still have events for fresh analysis.
-                # Use a single query to find cycles with events instead of
-                # iterating 1..max_cycle (which is very slow with thousands
-                # of backfill batches, most of which are already cleaned up).
+                # Re-queue all cycles for fresh analysis.  Use
+                # requeue_analysis (not queue_analysis) so that
+                # previously-completed cycles are reset to 'pending'
+                # — on restart we want a fresh analysis pass.
                 queued = 0
-                live_cycles = db.get_cycles_with_events()
-                for c in live_cycles:
+                for c in range(1, cycle + 1):
                     evt_counts = db.get_event_counts_for_cycle(c)
                     if evt_counts:
                         db.requeue_analysis(c, evt_counts)
@@ -1428,10 +1427,8 @@ def _analysis_pipeline_process(job_id, db_path):
 
                 # Free disk space — delete raw events for this completed
                 # cycle since findings are now persisted in agent_findings.
-                # Pass the specific cycle to avoid iterating thousands of
-                # already-clean cycles (which blocks the pipeline).
                 try:
-                    _freed = db.cleanup_analyzed_events(cycle=analysis_cycle)
+                    _freed = db.cleanup_analyzed_events()
                     if _freed:
                         log.info(f'Cleaned up {_freed:,} analyzed event rows')
                 except Exception as _ce:
