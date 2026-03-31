@@ -895,6 +895,23 @@ async def delete_annotation(ann_id: int):
     return {'status': 'deleted', 'id': ann_id}
 
 
+@router.delete("/api/llm-synthesis")
+async def clear_all_syntheses():
+    """Delete all LLM synthesis reports."""
+    count = db_manager.clear_llm_syntheses()
+    return {'status': 'cleared', 'deleted': count}
+
+
+@router.delete("/api/llm-synthesis/{synthesis_id}")
+async def delete_synthesis(synthesis_id: int):
+    """Delete a single LLM synthesis report."""
+    deleted = db_manager.delete_synthesis(synthesis_id)
+    if not deleted:
+        return JSONResponse(status_code=404,
+                            content={"error": "Synthesis not found"})
+    return {'status': 'deleted', 'id': synthesis_id}
+
+
 # --- Analysis queue status ------------------------------------------------
 
 @router.get("/api/analysis-queue/status")

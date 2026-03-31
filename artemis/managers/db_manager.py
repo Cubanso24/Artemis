@@ -959,6 +959,31 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def clear_llm_syntheses(self) -> int:
+        """Delete all LLM synthesis reports. Returns count deleted."""
+        conn = self._connect()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM llm_syntheses"
+            ).fetchone()[0]
+            conn.execute("DELETE FROM llm_syntheses")
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def delete_synthesis(self, synthesis_id: int) -> bool:
+        """Delete a single LLM synthesis report by ID."""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM llm_syntheses WHERE id = ?", (synthesis_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
     # LLM synthesis reports
     # ------------------------------------------------------------------

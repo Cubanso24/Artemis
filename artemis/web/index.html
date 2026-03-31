@@ -1508,7 +1508,7 @@
                     AI-powered threat synthesis from Claude — correlates findings across all hunting agents, assesses kill chain progression, and provides actionable recommendations.
                 </p>
 
-                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+                <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap; align-items:center;">
                     <button class="btn btn-secondary" onclick="loadLLMSynthesis()">
                         <i class="fa-solid fa-rotate"></i> Refresh
                     </button>
@@ -1518,6 +1518,12 @@
                     <select id="llm-history-select" onchange="loadLLMSynthesisById(this.value)" style="padding:8px 12px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:13px;">
                         <option value="">Latest Report</option>
                     </select>
+                    <button class="btn btn-secondary" onclick="deleteCurrentSynthesis()" id="llm-delete-one-btn" style="display:none; color:var(--danger); border-color:var(--danger);" title="Delete currently selected report">
+                        <i class="fa-solid fa-trash"></i> Delete Report
+                    </button>
+                    <button class="btn btn-secondary" onclick="deleteAllSyntheses()" id="llm-delete-all-btn" style="display:none; color:var(--danger); border-color:var(--danger);" title="Delete all LLM reports">
+                        <i class="fa-solid fa-trash-can"></i> Delete All Reports
+                    </button>
                 </div>
 
                 <!-- Summary cards -->
@@ -5437,6 +5443,10 @@
                 badge.textContent = _llmSyntheses.length;
                 badge.style.display = '';
 
+                // Show delete buttons when there are reports
+                document.getElementById('llm-delete-all-btn').style.display = '';
+                document.getElementById('llm-delete-one-btn').style.display = '';
+
                 renderLLMSynthesis(_llmSyntheses[0]);
             } catch(e) {
                 console.error('LLM synthesis load error:', e);
@@ -5466,6 +5476,9 @@
             const badge = document.getElementById('llm-intel-badge');
             badge.style.display = 'none';
             badge.textContent = '0';
+            // Hide delete buttons when no reports
+            document.getElementById('llm-delete-all-btn').style.display = 'none';
+            document.getElementById('llm-delete-one-btn').style.display = 'none';
         }
 
         function renderLLMSynthesis(s) {
@@ -5585,6 +5598,61 @@
                 actionsSection.style.display = '';
             } else {
                 actionsSection.style.display = 'none';
+            }
+        }
+
+        async function deleteAllSyntheses() {
+            if (!confirm('Delete ALL LLM synthesis reports?\n\nThis will remove all AI threat analysis history. This cannot be undone.')) return;
+            try {
+                const resp = await fetch('/api/llm-synthesis', { method: 'DELETE' });
+                const result = await resp.json();
+                if (resp.ok) {
+                    addLog(`Deleted ${result.deleted} LLM synthesis reports`, 'info');
+                    _llmSyntheses = [];
+                    renderLLMEmpty();
+                } else {
+                    alert(result.error || 'Failed to delete reports');
+                }
+            } catch(e) {
+                console.error('Delete all syntheses error:', e);
+                alert('Failed to delete reports: ' + e.message);
+            }
+        }
+
+        async function deleteCurrentSynthesis() {
+            const sel = document.getElementById('llm-history-select');
+            const idx = sel.value === '' ? 0 : parseInt(sel.value);
+            const synth = _llmSyntheses[idx];
+            if (!synth) return;
+            if (!confirm(`Delete LLM report for Cycle ${synth.cycle}?\n\nSeverity: ${(synth.overall_severity || '').toUpperCase()}\nCreated: ${new Date(synth.created_at).toLocaleString()}`)) return;
+            try {
+                const resp = await fetch(`/api/llm-synthesis/${synth.id}`, { method: 'DELETE' });
+                const result = await resp.json();
+                if (resp.ok) {
+                    addLog(`Deleted LLM report for cycle ${synth.cycle}`, 'info');
+                    // Remove from local array and re-render
+                    _llmSyntheses.splice(idx, 1);
+                    if (_llmSyntheses.length) {
+                        // Re-populate dropdown
+                        sel.innerHTML = '<option value="">Latest Report</option>';
+                        _llmSyntheses.forEach((s, i) => {
+                            const dt = new Date(s.created_at).toLocaleString();
+                            const sev = (s.overall_severity || '').toUpperCase();
+                            sel.innerHTML += `<option value="${i}">Cycle ${s.cycle} — ${sev} — ${dt}</option>`;
+                        });
+                        sel.value = '';
+                        const badge = document.getElementById('llm-intel-badge');
+                        badge.textContent = _llmSyntheses.length;
+                        renderLLMSynthesis(_llmSyntheses[0]);
+                    } else {
+                        renderLLMEmpty();
+                    }
+                } else {
+                    alert(result.error || 'Failed to delete report');
+                }
+            } catch(e) {
+                console.error('Delete synthesis error:', e);
+                alert('Failed to delete report: ' + e.message);
             }
         }
 
