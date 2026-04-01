@@ -64,6 +64,14 @@ async def clear_agent_activity():
     return {"status": "cleared"}
 
 
+@router.get("/api/agent-monitoring/stats")
+async def get_agent_monitoring_stats():
+    """Return per-agent performance metrics for the monitoring dashboard."""
+    from artemis.managers.db_manager import DatabaseManager
+    db = DatabaseManager()
+    return db.get_agent_monitoring_stats()
+
+
 @router.get("/static/{path:path}")
 async def serve_static(path: str):
     """Serve static files."""

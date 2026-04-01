@@ -941,6 +941,84 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_agent_monitoring_stats(self) -> Dict:
+        """Return per-agent performance metrics for the monitoring dashboard."""
+        conn = self._connect()
+        try:
+            # Per-agent stats: count, avg confidence, severity breakdown, last active
+            rows = conn.execute(
+                "SELECT agent_name, COUNT(*) as cnt, "
+                "AVG(confidence) as avg_conf, "
+                "MAX(created_at) as last_active, "
+                "SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) as critical, "
+                "SUM(CASE WHEN severity='high' THEN 1 ELSE 0 END) as high, "
+                "SUM(CASE WHEN severity='medium' THEN 1 ELSE 0 END) as medium, "
+                "SUM(CASE WHEN severity='low' THEN 1 ELSE 0 END) as low "
+                "FROM agent_findings WHERE dismissed = 0 "
+                "GROUP BY agent_name ORDER BY cnt DESC"
+            ).fetchall()
+            agents = []
+            for r in rows:
+                agents.append({
+                    'agent_name': r[0],
+                    'findings_count': r[1],
+                    'avg_confidence': round(r[2], 3) if r[2] else 0,
+                    'last_active': r[3],
+                    'severity': {
+                        'critical': r[4], 'high': r[5],
+                        'medium': r[6], 'low': r[7],
+                    },
+                })
+
+            # MITRE technique coverage per agent
+            tech_rows = conn.execute(
+                "SELECT agent_name, mitre_techniques "
+                "FROM agent_findings WHERE dismissed = 0"
+            ).fetchall()
+            tech_map = {}
+            for r in tech_rows:
+                name = r[0]
+                techs = json.loads(r[1]) if r[1] else []
+                if name not in tech_map:
+                    tech_map[name] = set()
+                tech_map[name].update(techs)
+            for a in agents:
+                a['mitre_techniques'] = sorted(tech_map.get(a['agent_name'], set()))
+
+            # Recent activity counts (last 1h, 24h)
+            activity_1h = conn.execute(
+                "SELECT agent, COUNT(*) FROM agent_activity "
+                "WHERE created_at > datetime('now', '-1 hour') "
+                "GROUP BY agent"
+            ).fetchall()
+            activity_24h = conn.execute(
+                "SELECT agent, COUNT(*) FROM agent_activity "
+                "WHERE created_at > datetime('now', '-24 hours') "
+                "GROUP BY agent"
+            ).fetchall()
+            act_1h = {r[0]: r[1] for r in activity_1h}
+            act_24h = {r[0]: r[1] for r in activity_24h}
+            for a in agents:
+                a['activity_1h'] = act_1h.get(a['agent_name'], 0)
+                a['activity_24h'] = act_24h.get(a['agent_name'], 0)
+
+            # Overall totals
+            total_findings = sum(a['findings_count'] for a in agents)
+            total_critical = sum(a['severity']['critical'] for a in agents)
+            total_high = sum(a['severity']['high'] for a in agents)
+
+            return {
+                'agents': agents,
+                'totals': {
+                    'agent_count': len(agents),
+                    'total_findings': total_findings,
+                    'total_critical': total_critical,
+                    'total_high': total_high,
+                },
+            }
+        finally:
+            conn.close()
+
     def clear_findings(self) -> int:
         """Delete all findings and LLM syntheses, and re-queue any
         analysis cycles that still have events so they get re-analyzed.

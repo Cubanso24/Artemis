@@ -1116,6 +1116,7 @@
             <button class="tab" onclick="showTab('llm-intel-tab')"><i class="fa-solid fa-brain"></i> LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
             <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
+            <button class="tab" onclick="showTab('agent-monitoring-tab')"><i class="fa-solid fa-gauge-high"></i> Agent Monitoring <span id="agent-mon-tab-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('logs')"><i class="fa-solid fa-terminal"></i> Live Logs</button>
         </div>
 
@@ -1824,6 +1825,51 @@
                 </button>
             </div>
 
+        </div>
+
+        <!-- ============================================ -->
+        <!-- Agent Monitoring Tab                        -->
+        <!-- ============================================ -->
+        <div id="agent-monitoring-tab" class="tab-content">
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h2 style="margin:0;"><i class="fa-solid fa-gauge-high" style="margin-right:8px;"></i> AGENT MONITORING DASHBOARD</h2>
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn btn-secondary" onclick="loadAgentMonitoringStats()" style="padding:6px 12px; font-size:12px;">
+                            <i class="fa-solid fa-rotate"></i> Refresh
+                        </button>
+                        <span id="agent-mon-last-refresh" style="font-size:11px; opacity:0.5; align-self:center;">--</span>
+                    </div>
+                </div>
+
+                <!-- Overview stat cards -->
+                <div id="agent-mon-overview" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:20px;">
+                    <div class="stat-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:16px; text-align:center;">
+                        <div style="font-size:28px; font-weight:700; color:var(--accent-primary);" id="agent-mon-total-agents">0</div>
+                        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7; margin-top:4px;">Active Agents</div>
+                    </div>
+                    <div class="stat-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:16px; text-align:center;">
+                        <div style="font-size:28px; font-weight:700; color:var(--text-primary);" id="agent-mon-total-findings">0</div>
+                        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7; margin-top:4px;">Total Findings</div>
+                    </div>
+                    <div class="stat-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:16px; text-align:center;">
+                        <div style="font-size:28px; font-weight:700; color:var(--severity-critical, #f85149);" id="agent-mon-total-critical">0</div>
+                        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7; margin-top:4px;">Critical Findings</div>
+                    </div>
+                    <div class="stat-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:16px; text-align:center;">
+                        <div style="font-size:28px; font-weight:700; color:var(--severity-high, #f0883e);" id="agent-mon-total-high">0</div>
+                        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7; margin-top:4px;">High Findings</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Per-Agent Performance Cards -->
+            <div id="agent-mon-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
+                <div class="card" style="text-align:center; opacity:0.5; padding:40px;">
+                    <i class="fa-solid fa-gauge-high" style="font-size:36px; margin-bottom:12px; display:block;"></i>
+                    Agent performance data will appear here after hunts run.
+                </div>
+            </div>
         </div>
 
         <!-- ============================================ -->
@@ -5795,6 +5841,8 @@
             } else if (tabName === 'settings-tab') {
                 loadPlugins();
                 loadLLMSettings();
+            } else if (tabName === 'agent-monitoring-tab') {
+                loadAgentMonitoringStats();
             } else if (tabName === 'analyst-tab') {
                 // Focus the chat input when switching to analyst tab
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
@@ -7665,6 +7713,117 @@
             msg.textContent = content;
             container.appendChild(msg);
             container.scrollTop = container.scrollHeight;
+        }
+
+        // ========================================
+        // Agent Monitoring Dashboard (top-level tab)
+        // ========================================
+
+        const _agentMonColors = {
+            c2_hunter: { color: '#f85149', icon: 'fa-tower-broadcast', label: 'C2 Hunter' },
+            reconnaissance_hunter: { color: '#f0883e', icon: 'fa-binoculars', label: 'Recon Hunter' },
+            defense_evasion_hunter: { color: '#d2a8ff', icon: 'fa-eye-slash', label: 'Defense Evasion' },
+            lateral_movement_hunter: { color: '#7ee787', icon: 'fa-arrows-left-right', label: 'Lateral Movement' },
+            credential_access_hunter: { color: '#ffa657', icon: 'fa-key', label: 'Credential Access' },
+            initial_access_hunter: { color: '#ff7b72', icon: 'fa-door-open', label: 'Initial Access' },
+            execution_persistence_hunter: { color: '#79c0ff', icon: 'fa-microchip', label: 'Exec/Persist' },
+            collection_exfiltration_hunter: { color: '#56d4dd', icon: 'fa-file-export', label: 'Collection/Exfil' },
+            impact_hunter: { color: '#ff9bce', icon: 'fa-explosion', label: 'Impact' },
+        };
+
+        async function loadAgentMonitoringStats() {
+            try {
+                const resp = await fetch('/api/agent-monitoring/stats');
+                if (!resp.ok) return;
+                const data = await resp.json();
+
+                // Update overview cards
+                document.getElementById('agent-mon-total-agents').textContent = data.totals.agent_count;
+                document.getElementById('agent-mon-total-findings').textContent = data.totals.total_findings;
+                document.getElementById('agent-mon-total-critical').textContent = data.totals.total_critical;
+                document.getElementById('agent-mon-total-high').textContent = data.totals.total_high;
+                document.getElementById('agent-mon-last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+                // Update badge
+                const badge = document.getElementById('agent-mon-tab-badge');
+                if (data.totals.total_critical > 0) {
+                    badge.textContent = data.totals.total_critical;
+                    badge.style.display = 'inline';
+                    badge.style.background = '#f85149';
+                } else {
+                    badge.style.display = 'none';
+                }
+
+                // Build per-agent cards
+                const grid = document.getElementById('agent-mon-grid');
+                if (data.agents.length === 0) {
+                    grid.innerHTML = '<div class="card" style="text-align:center; opacity:0.5; padding:40px;"><i class="fa-solid fa-gauge-high" style="font-size:36px; margin-bottom:12px; display:block;"></i>No agent findings yet. Start a hunt to see agent performance metrics.</div>';
+                    return;
+                }
+
+                grid.innerHTML = data.agents.map(agent => {
+                    const meta = _agentMonColors[agent.agent_name] || { color: '#8b949e', icon: 'fa-robot', label: agent.agent_name };
+                    const confPct = Math.round(agent.avg_confidence * 100);
+                    const confColor = confPct >= 80 ? '#7ee787' : confPct >= 50 ? '#d29922' : '#f85149';
+                    const lastActive = agent.last_active ? _timeAgo(agent.last_active) : 'Never';
+                    const techTags = (agent.mitre_techniques || []).slice(0, 6).map(t =>
+                        `<span style="display:inline-block; background:rgba(88,166,255,0.12); color:#58a6ff; padding:2px 7px; border-radius:3px; font-size:10px; margin:2px;">${t}</span>`
+                    ).join('');
+                    const moreTechs = (agent.mitre_techniques || []).length > 6
+                        ? `<span style="font-size:10px; opacity:0.5; margin-left:4px;">+${agent.mitre_techniques.length - 6} more</span>` : '';
+
+                    return `<div class="card" style="border-left:4px solid ${meta.color}; padding:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <i class="fa-solid ${meta.icon}" style="color:${meta.color}; font-size:18px;"></i>
+                                <h3 style="margin:0; font-size:14px;">${meta.label}</h3>
+                            </div>
+                            <span style="font-size:11px; opacity:0.5;">${lastActive}</span>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px;">
+                            <div style="text-align:center; background:var(--bg-primary); padding:8px; border-radius:6px;">
+                                <div style="font-size:20px; font-weight:700;">${agent.findings_count}</div>
+                                <div style="font-size:10px; opacity:0.6; text-transform:uppercase;">Findings</div>
+                            </div>
+                            <div style="text-align:center; background:var(--bg-primary); padding:8px; border-radius:6px;">
+                                <div style="font-size:20px; font-weight:700; color:${confColor};">${confPct}%</div>
+                                <div style="font-size:10px; opacity:0.6; text-transform:uppercase;">Avg Confidence</div>
+                            </div>
+                            <div style="text-align:center; background:var(--bg-primary); padding:8px; border-radius:6px;">
+                                <div style="font-size:20px; font-weight:700;">${agent.activity_24h}</div>
+                                <div style="font-size:10px; opacity:0.6; text-transform:uppercase;">Events 24h</div>
+                            </div>
+                        </div>
+
+                        <!-- Severity breakdown bar -->
+                        <div style="margin-bottom:10px;">
+                            <div style="display:flex; gap:4px; font-size:10px; margin-bottom:4px;">
+                                ${agent.severity.critical > 0 ? `<span style="color:#f85149;"><i class="fa-solid fa-circle"></i> ${agent.severity.critical} Crit</span>` : ''}
+                                ${agent.severity.high > 0 ? `<span style="color:#f0883e;"><i class="fa-solid fa-circle"></i> ${agent.severity.high} High</span>` : ''}
+                                ${agent.severity.medium > 0 ? `<span style="color:#d29922;"><i class="fa-solid fa-circle"></i> ${agent.severity.medium} Med</span>` : ''}
+                                ${agent.severity.low > 0 ? `<span style="color:#7ee787;"><i class="fa-solid fa-circle"></i> ${agent.severity.low} Low</span>` : ''}
+                            </div>
+                            <div style="display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--bg-primary);">
+                                ${agent.severity.critical > 0 ? `<div style="flex:${agent.severity.critical}; background:#f85149;"></div>` : ''}
+                                ${agent.severity.high > 0 ? `<div style="flex:${agent.severity.high}; background:#f0883e;"></div>` : ''}
+                                ${agent.severity.medium > 0 ? `<div style="flex:${agent.severity.medium}; background:#d29922;"></div>` : ''}
+                                ${agent.severity.low > 0 ? `<div style="flex:${agent.severity.low}; background:#7ee787;"></div>` : ''}
+                            </div>
+                        </div>
+
+                        <!-- MITRE Techniques -->
+                        ${(agent.mitre_techniques || []).length > 0 ? `
+                        <div>
+                            <div style="font-size:10px; text-transform:uppercase; opacity:0.5; margin-bottom:4px; letter-spacing:0.04em;">MITRE Techniques</div>
+                            <div style="display:flex; flex-wrap:wrap; gap:2px;">${techTags}${moreTechs}</div>
+                        </div>` : ''}
+                    </div>`;
+                }).join('');
+
+            } catch(e) {
+                console.error('Failed to load agent monitoring stats:', e);
+            }
         }
 
         // --- Agent Monitor ---
