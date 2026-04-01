@@ -81,13 +81,27 @@ class CaseGenerator:
         affected_assets = self._extract_affected_assets(assessment)
 
         # Check for deduplication against existing open cases
+        logger.info(
+            f"[DEDUP] Checking dedup: techniques={mitre_techniques}, "
+            f"assets={affected_assets}, window={self.dedup_window_hours}h, "
+            f"findings={finding_ids}"
+        )
         existing = self.db.get_open_cases_for_dedup(
             mitre_techniques=mitre_techniques,
             affected_assets=affected_assets,
             window_hours=self.dedup_window_hours,
         )
+        logger.info(
+            f"[DEDUP] Found {len(existing)} matching open case(s)"
+            + (f": {[c['case_id'] for c in existing]}" if existing else "")
+        )
 
         if existing:
+            logger.info(
+                f"[DEDUP] Merging {len(finding_ids)} findings into "
+                f"existing case {existing[0]['case_id']} "
+                f"(title: {existing[0].get('title', 'N/A')})"
+            )
             return self._merge_into_existing(existing[0], finding_ids, assessment)
 
         return self._create_new_case(

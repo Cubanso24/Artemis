@@ -629,14 +629,26 @@ class DatabaseManager:
                 (cutoff,),
             ).fetchall()
 
+            logger.debug(
+                f"[DEDUP] {len(rows)} open cases within {window_hours}h window "
+                f"(cutoff={cutoff})"
+            )
+
             technique_set = set(mitre_techniques)
             asset_set = set(affected_assets)
             matches = []
             for r in rows:
                 case_techniques = set(json.loads(r["mitre_techniques"]))
                 case_assets = set(json.loads(r["affected_assets"]))
+                tech_overlap = technique_set & case_techniques
+                asset_overlap = asset_set & case_assets
+                logger.debug(
+                    f"[DEDUP] Case {r['case_id']}: "
+                    f"tech_overlap={tech_overlap or 'none'}, "
+                    f"asset_overlap={asset_overlap or 'none'}"
+                )
                 # Match if overlapping techniques AND overlapping assets
-                if (technique_set & case_techniques) and (asset_set & case_assets):
+                if tech_overlap and asset_overlap:
                     matches.append(self._row_to_case_dict(r))
             return matches
         finally:
