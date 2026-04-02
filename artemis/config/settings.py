@@ -73,6 +73,10 @@ class ArtemisConfig:
     auto_investigate_threshold: float = 0.80  # auto-create + recommend actions
     case_dedup_window_hours: int = 1        # group findings within window
 
+    # Iterative hunting — LLM can request follow-up hunt rounds
+    max_hunt_iterations: int = 3             # max follow-up rounds per cycle (1 = single pass)
+    followup_confidence_threshold: float = 0.5  # min confidence to trigger follow-up
+
     # Hunt scheduler
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 15

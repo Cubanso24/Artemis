@@ -18,6 +18,7 @@ from artemis.llm.prompts import (
     COORDINATOR_HYPOTHESIS_SYSTEM,
     COORDINATOR_DIRECTIVE_SYSTEM,
     COORDINATOR_SYNTHESIS_SYSTEM,
+    COORDINATOR_FOLLOWUP_SYSTEM,
     format_network_state,
     format_hunting_data_summary,
     format_agent_output,
@@ -332,5 +333,78 @@ class CoordinatorLLM:
         self.logger.info(
             f"LLM synthesis: severity={result.get('overall_severity', '?')}, "
             f"confidence={result.get('overall_confidence', 0):.2f}"
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Follow-up Evaluation
+    # ------------------------------------------------------------------
+
+    def evaluate_followup(
+        self,
+        agent_outputs: list,
+        network_state: NetworkState,
+        iteration: int,
+        all_agents: list,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Evaluate whether a follow-up hunting round is needed.
+
+        Examines current findings and determines if unexplored leads,
+        partial kill chains, or suspicious patterns warrant another round
+        with different or additional agents.
+
+        Args:
+            agent_outputs: Findings from the current round.
+            network_state: Current network context.
+            iteration: Current iteration number (1-based).
+            all_agents: Names of all available agents.
+
+        Returns:
+            Dict with continue_hunting, reasoning, and followup_hypotheses,
+            or None if the LLM is unavailable.
+        """
+        if not self.available:
+            return None
+
+        total_findings = sum(len(o.findings) for o in agent_outputs)
+        if total_findings == 0:
+            return {"continue_hunting": False,
+                    "reasoning": "No findings to follow up on",
+                    "followup_hypotheses": []}
+
+        state_text = format_network_state(network_state)
+        outputs_text = "\n\n".join(
+            format_agent_output(o) for o in agent_outputs if o.findings
+        )
+        agents_that_ran = [o.agent_name for o in agent_outputs]
+        agents_available = [a for a in all_agents if a not in agents_that_ran]
+
+        user_message = (
+            f"Hunt iteration: {iteration}\n"
+            f"Agents that ran this round: {', '.join(agents_that_ran)}\n"
+            f"Agents available for follow-up: {', '.join(agents_available) or 'none (all ran)'}\n\n"
+            f"{state_text}\n\n"
+            f"=== CURRENT FINDINGS ===\n{outputs_text}\n\n"
+            "Evaluate whether a follow-up hunting round is warranted. "
+            "Consider partial kill chains, unexplored IOCs, and whether "
+            "different agents could provide corroborating evidence."
+        )
+
+        result = self.client.coordinator_json(
+            messages=[{"role": "user", "content": user_message}],
+            system=COORDINATOR_FOLLOWUP_SYSTEM,
+            max_tokens=2048,
+        )
+
+        if result is None:
+            self.logger.warning("Follow-up evaluation LLM call failed")
+            return None
+
+        should_continue = result.get("continue_hunting", False)
+        self.logger.info(
+            f"Follow-up evaluation (iter {iteration}): "
+            f"continue={should_continue}, "
+            f"reason={result.get('reasoning', '?')[:100]}"
         )
         return result

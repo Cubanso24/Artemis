@@ -1033,6 +1033,9 @@ def _analysis_pipeline_process(job_id, db_path):
                     enable_parallel_execution=True,
                     max_workers=4,
                     llm_backend=_llm_backend,
+                    max_hunt_iterations=int(_llm_cfg.get('max_hunt_iterations', 3)),
+                    followup_confidence_threshold=float(
+                        _llm_cfg.get('followup_confidence_threshold', 0.5)),
                 )
                 log.info(f'Initialized {len(coordinator.agents)} hunting agents')
 

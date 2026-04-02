@@ -24,7 +24,7 @@ from artemis.agents import (
 )
 from artemis.models.network_state import NetworkState, TimeFeatures
 from artemis.models.agent_output import AgentOutput
-from artemis.models.threat_hypothesis import ThreatHypothesis
+from artemis.models.threat_hypothesis import ThreatHypothesis, HypothesisType
 from artemis.meta_learner.context_assessment import ContextAssessor
 from artemis.meta_learner.agent_selector import AgentSelector
 from artemis.meta_learner.confidence_aggregator import ConfidenceAggregator
@@ -62,6 +62,8 @@ class MetaLearnerCoordinator:
         llm_agent_model: Optional[str] = None,
         llm_enabled: bool = True,
         llm_backend: str = "auto",
+        max_hunt_iterations: int = 3,
+        followup_confidence_threshold: float = 0.5,
     ):
         """
         Initialize Meta-Learner Coordinator.
@@ -75,6 +77,8 @@ class MetaLearnerCoordinator:
             llm_agent_model: Model for agent tier
             llm_enabled: Set False to disable all LLM features
             llm_backend: "anthropic", "ollama", or "auto"
+            max_hunt_iterations: Max follow-up rounds per hunt cycle
+            followup_confidence_threshold: Min confidence to trigger follow-up
         """
         self.logger = ArtemisLogger.setup_logger("artemis.meta_learner.coordinator")
 
@@ -82,6 +86,8 @@ class MetaLearnerCoordinator:
         self.deployment_mode = deployment_mode
         self.enable_parallel_execution = enable_parallel_execution
         self.max_workers = max_workers
+        self.max_hunt_iterations = max_hunt_iterations
+        self.followup_confidence_threshold = followup_confidence_threshold
 
         # Baseline agents (always running in adaptive mode)
         self.baseline_agents = ["c2_hunter", "reconnaissance_hunter", "defense_evasion_hunter"]
@@ -237,45 +243,107 @@ class MetaLearnerCoordinator:
         else:
             context = self._gather_context(context_data or {})
 
-        # Stage 2: Threat Hypothesis Generation (LLM-enhanced)
-        fire_agent_activity("coordinator", "stage", {
-            "message": "Generating threat hypotheses",
-            "stage": 2,
-        })
-        hypotheses = self._generate_hypotheses(
-            initial_signals or [], context, data
-        )
+        # Iterative hunting loop — the LLM can request follow-up rounds
+        all_agent_outputs: List[AgentOutput] = []
+        agents_run_so_far: List[str] = []
 
-        # Stage 3: Agent Selection
-        fire_agent_activity("coordinator", "stage", {
-            "message": f"Selecting agents from {len(hypotheses)} hypotheses",
-            "stage": 3,
-        })
-        selected_agents = self._select_agents(hypotheses, context)
+        for iteration in range(1, self.max_hunt_iterations + 1):
+            iter_label = f"[iter {iteration}/{self.max_hunt_iterations}]"
 
-        # Stage 3.5: Generate agent directives (LLM)
-        self._current_directives = self._generate_directives(
-            hypotheses, selected_agents, context
-        )
+            # Stage 2: Threat Hypothesis Generation (LLM-enhanced)
+            if iteration == 1:
+                fire_agent_activity("coordinator", "stage", {
+                    "message": f"{iter_label} Generating threat hypotheses",
+                    "stage": 2,
+                })
+                hypotheses = self._generate_hypotheses(
+                    initial_signals or [], context, data
+                )
+            # Follow-up iterations use hypotheses from the LLM follow-up evaluation
+            # (set at the end of the previous iteration)
 
-        # Stage 4: Resource Allocation & Agent Execution
-        fire_agent_activity("coordinator", "stage", {
-            "message": f"Executing {len(selected_agents)} agents",
-            "stage": 4,
-            "agents": [name for name, _ in selected_agents],
-        })
-        agent_outputs = self._execute_agents(selected_agents, data, context)
+            # Stage 3: Agent Selection
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"{iter_label} Selecting agents from {len(hypotheses)} hypotheses",
+                "stage": 3,
+            })
+            selected_agents = self._select_agents(hypotheses, context)
 
-        # Stage 4.5: LLM enrichment of agent outputs
-        fire_agent_activity("coordinator", "stage", {
-            "message": "LLM enrichment of agent outputs",
-            "stage": 4.5,
-        })
-        agent_outputs = self._enrich_with_llm(
-            agent_outputs, data, context
-        )
+            # On follow-up rounds, prefer agents that haven't run yet
+            if iteration > 1:
+                new_agents = [
+                    (name, score) for name, score in selected_agents
+                    if name not in agents_run_so_far
+                ]
+                if new_agents:
+                    selected_agents = new_agents
+                # If all agents already ran, the selection stands as-is
+                # (re-running with new directives can still find new things)
 
-        # Stage 4.6: Deduplicate findings across agents
+            # Stage 3.5: Generate agent directives (LLM)
+            self._current_directives = self._generate_directives(
+                hypotheses, selected_agents, context
+            )
+
+            # Stage 4: Resource Allocation & Agent Execution
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"{iter_label} Executing {len(selected_agents)} agents",
+                "stage": 4,
+                "agents": [name for name, _ in selected_agents],
+            })
+            agent_outputs = self._execute_agents(selected_agents, data, context)
+
+            # Stage 4.5: LLM enrichment of agent outputs
+            fire_agent_activity("coordinator", "stage", {
+                "message": f"{iter_label} LLM enrichment of agent outputs",
+                "stage": 4.5,
+            })
+            agent_outputs = self._enrich_with_llm(
+                agent_outputs, data, context
+            )
+
+            # Track cumulative outputs
+            agents_run_so_far.extend(o.agent_name for o in agent_outputs)
+            all_agent_outputs.extend(agent_outputs)
+
+            # Evaluate whether to continue hunting (skip on last allowed iteration)
+            if iteration < self.max_hunt_iterations and self.coordinator_llm:
+                fire_agent_activity("coordinator", "stage", {
+                    "message": f"{iter_label} Evaluating follow-up hunting",
+                    "stage": 4.7,
+                })
+                followup = self.coordinator_llm.evaluate_followup(
+                    all_agent_outputs, context, iteration,
+                    list(self.agents.keys()),
+                )
+                if followup and followup.get("continue_hunting"):
+                    # Build hypotheses from the LLM's follow-up suggestions
+                    followup_hyps = followup.get("followup_hypotheses", [])
+                    if followup_hyps:
+                        hypotheses = self._build_followup_hypotheses(followup_hyps)
+                        self.logger.info(
+                            f"{iter_label} LLM requested follow-up: "
+                            f"{followup.get('reasoning', '')[:120]}"
+                        )
+                        fire_agent_activity("coordinator", "stage", {
+                            "message": (
+                                f"{iter_label} Follow-up requested: "
+                                f"{len(hypotheses)} new hypotheses"
+                            ),
+                            "stage": 4.8,
+                            "followup_reasoning": followup.get("reasoning", ""),
+                        })
+                        continue  # Next iteration
+                # LLM says stop, or no follow-up hypotheses — break out
+                if followup:
+                    self.logger.info(
+                        f"{iter_label} LLM stopping: {followup.get('reasoning', '')[:120]}"
+                    )
+                break
+
+        agent_outputs = all_agent_outputs
+
+        # Stage 4.6: Deduplicate findings across all iterations
         agent_outputs = self._deduplicate_findings(agent_outputs)
 
         # Stage 5: Confidence Aggregation & Decision Making
@@ -319,13 +387,18 @@ class MetaLearnerCoordinator:
         # Stage 8: Autonomous case generation
         assessment = self._generate_cases(assessment, data)
 
+        # Record how many iterations this hunt used
+        assessment["hunt_iterations"] = iteration
+        assessment["agents_activated"] = list(set(agents_run_so_far))
+
         # Persist learning state so it survives restarts
         if self._db_manager:
             self.adaptive_learner.save_state(self._db_manager)
 
         self.logger.info(
             f"Hunt complete: confidence={assessment['final_confidence']:.2f}, "
-            f"severity={assessment['severity'].value if hasattr(assessment['severity'], 'value') else assessment['severity']}"
+            f"severity={assessment['severity'].value if hasattr(assessment['severity'], 'value') else assessment['severity']}, "
+            f"iterations={iteration}, agents={len(set(agents_run_so_far))}"
         )
         self.logger.info("=" * 80)
 
@@ -368,6 +441,31 @@ class MetaLearnerCoordinator:
             )
 
         self.logger.info(f"Generated {len(hypotheses)} threat hypotheses")
+        return hypotheses
+
+    def _build_followup_hypotheses(
+        self,
+        followup_hyps: List[Dict[str, Any]],
+    ) -> List[ThreatHypothesis]:
+        """Convert LLM follow-up suggestions into ThreatHypothesis objects."""
+        hypotheses = []
+        for idx, fh in enumerate(followup_hyps):
+            priority = float(fh.get("priority", 0.6))
+            if priority < self.followup_confidence_threshold:
+                continue
+            hyp = ThreatHypothesis(
+                hypothesis_id=f"followup_{idx}_{datetime.utcnow().strftime('%H%M%S')}",
+                hypothesis_type=HypothesisType.ANOMALY_INVESTIGATION,
+                description=fh.get("hypothesis", "Follow-up investigation"),
+                initial_indicators=fh.get("relevant_findings", []),
+                suggested_agents=fh.get("target_agents", []),
+                priority=priority,
+                confidence=priority,
+            )
+            hypotheses.append(hyp)
+        self.logger.info(
+            f"Built {len(hypotheses)} follow-up hypotheses from LLM evaluation"
+        )
         return hypotheses
 
     # Map bandit arms 0-2 to deployment modes for learned strategy selection
