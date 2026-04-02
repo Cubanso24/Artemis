@@ -68,10 +68,18 @@ def crewai_available() -> bool:
 # RAG-backed tools (created at runtime with a bound RAGStore)
 # ---------------------------------------------------------------------------
 
-def _make_tools(rag_store, detectors, hunting_data, network_state):
+def _make_tools(rag_store, detectors, hunting_data, network_state,
+                 splunk_config=None):
     """Build CrewAI tool functions bound to the current hunt context.
 
     Returns a list of tool callables decorated with ``@crewai_tool``.
+
+    Parameters
+    ----------
+    splunk_config : dict, optional
+        Keys: host, port, token, username, password.  When provided a
+        ``query_splunk`` tool is built so the LLM can run ad-hoc SPL
+        queries for deeper investigation.
     """
     tools = []
 
@@ -205,6 +213,239 @@ def _make_tools(rag_store, detectors, hunting_data, network_state):
         return format_network_state(network_state)
 
     tools.append(get_network_state)
+
+    # 7. Live Splunk query (with circuit breaker) --------------------------
+    #
+    # Safeguards:
+    #   - READ-ONLY: blocks mutating SPL commands
+    #   - TIME-BOUNDED: max 1-hour lookback, enforced server-side
+    #   - ROW-LIMITED: max 500 results per query
+    #   - TIMEOUT: 120s per query so a bad search can't hang the pipeline
+    #   - CIRCUIT BREAKER: after 2 consecutive failures the tool disables
+    #     itself for the rest of this hunt cycle and tells the LLM to
+    #     continue without it
+    #   - If Splunk config is missing the tool is simply not registered
+
+    _SPLUNK_MAX_ROWS = 500
+    _SPLUNK_MAX_LOOKBACK = "-1h"
+    _SPLUNK_QUERY_TIMEOUT = 120  # seconds
+    _SPLUNK_CB_THRESHOLD = 2     # failures before circuit opens
+
+    # Mutable state shared by closure — reset per _make_tools() call
+    _splunk_failures = [0]       # list so closure can mutate
+    _splunk_disabled = [False]
+
+    # SPL commands that mutate data or Splunk config — block all of them
+    _DANGEROUS_SPL = {
+        "delete", "collect", "outputlookup", "outputcsv", "outputtext",
+        "sendemail", "sendalert", "input", "crawl", "dump",
+        "rest", "mcollect", "meventcollect", "outputtelemetry",
+    }
+
+    if splunk_config and splunk_config.get("host"):
+        @crewai_tool
+        def query_splunk(spl_query: str, earliest: str = "-20m",
+                         latest: str = "now") -> str:
+            """Run a READ-ONLY Splunk SPL query for deeper investigation.
+
+            Use this when ML detectors found something suspicious and you
+            need raw log data to confirm or investigate further.  Good for
+            things like:
+              - Checking all DNS queries from a specific host
+              - Looking at authentication events around a suspicious time
+              - Examining network connections to a flagged IP
+
+            Parameters:
+              spl_query: A Splunk SPL search string (must start with
+                         'search' or '|').  ONLY read operations allowed.
+              earliest: Start time (default "-20m"). Max allowed is "-1h".
+              latest: End time (default "now").
+
+            Returns up to 500 results.  If this tool is unavailable or
+            Splunk is down, continue hunting with the data you already
+            have — do NOT retry repeatedly.
+            """
+            # --- Circuit breaker check ---
+            if _splunk_disabled[0]:
+                return (
+                    "SPLUNK TOOL DISABLED: Splunk queries failed multiple "
+                    "times this cycle.  An alert has been raised.  Continue "
+                    "your analysis using the data already collected by the "
+                    "ML detectors — do NOT call this tool again."
+                )
+
+            # --- Validate: block dangerous commands ---
+            spl_lower = spl_query.lower().strip()
+            for cmd in _DANGEROUS_SPL:
+                # Check for command at start, after pipe, or after whitespace
+                if (spl_lower.startswith(cmd + " ") or
+                        spl_lower.startswith(cmd + "(") or
+                        f"| {cmd} " in spl_lower or
+                        f"| {cmd}\n" in spl_lower or
+                        f"|{cmd} " in spl_lower):
+                    return (
+                        f"BLOCKED: '{cmd}' is a mutating command and is not "
+                        f"allowed.  Only read-only searches are permitted.  "
+                        f"Rephrase your query using 'search', 'stats', "
+                        f"'table', 'where', 'eval', etc."
+                    )
+
+            # --- Validate: must start with search or pipe ---
+            if not (spl_lower.startswith("search ") or
+                    spl_lower.startswith("|")):
+                spl_query = f"search {spl_query}"
+
+            # --- Enforce time bounds ---
+            # Parse earliest and clamp to max 1 hour
+            import re as _re
+            _time_match = _re.match(r'^-(\d+)(m|h|d|s)$', earliest.strip())
+            if _time_match:
+                _val, _unit = int(_time_match.group(1)), _time_match.group(2)
+                _minutes = {'s': _val / 60, 'm': _val, 'h': _val * 60,
+                            'd': _val * 1440}[_unit]
+                if _minutes > 60:
+                    earliest = _SPLUNK_MAX_LOOKBACK
+                    logger.warning(
+                        f"Splunk tool: clamped earliest from "
+                        f"{earliest} to {_SPLUNK_MAX_LOOKBACK}")
+            else:
+                # Absolute time or unrecognised format — allow but cap
+                earliest = _SPLUNK_MAX_LOOKBACK
+
+            # --- Build connector and execute ---
+            try:
+                from artemis.integrations.splunk_connector import (
+                    SplunkConnector,
+                )
+                connector = SplunkConnector(
+                    host=splunk_config["host"],
+                    port=splunk_config.get("port", 8089),
+                    token=splunk_config.get("token"),
+                    username=splunk_config.get("username", ""),
+                    password=splunk_config.get("password", ""),
+                )
+
+                import signal as _signal
+
+                # Timeout wrapper
+                class _QueryTimeout(Exception):
+                    pass
+
+                def _timeout_handler(*_a):
+                    raise _QueryTimeout("Splunk query timed out")
+
+                old_handler = _signal.signal(
+                    _signal.SIGALRM, _timeout_handler)
+                _signal.alarm(_SPLUNK_QUERY_TIMEOUT)
+                try:
+                    results = connector.query(
+                        search_query=spl_query,
+                        earliest_time=earliest,
+                        latest_time=latest,
+                        max_results=_SPLUNK_MAX_ROWS,
+                    )
+                finally:
+                    _signal.alarm(0)
+                    _signal.signal(_signal.SIGALRM, old_handler)
+
+                # Reset failure counter on success
+                _splunk_failures[0] = 0
+
+                if not results:
+                    return "Query returned 0 results."
+
+                # Format results for the LLM — compact but readable
+                import json as _json
+                _truncated = len(results) >= _SPLUNK_MAX_ROWS
+                header = (
+                    f"Returned {len(results)} results"
+                    + (" (TRUNCATED — more results exist, narrow your "
+                       "query)" if _truncated else "")
+                    + ":\n\n"
+                )
+
+                lines = []
+                for i, evt in enumerate(results[:_SPLUNK_MAX_ROWS]):
+                    # Keep only the most useful fields, skip internal ones
+                    clean = {k: v for k, v in evt.items()
+                             if not k.startswith("_") or
+                             k in ("_time", "_raw")}
+                    lines.append(_json.dumps(clean, default=str)[:1000])
+
+                return header + "\n".join(lines)
+
+            except _QueryTimeout:
+                _splunk_failures[0] += 1
+                logger.warning(
+                    f"Splunk tool: query timed out after "
+                    f"{_SPLUNK_QUERY_TIMEOUT}s "
+                    f"(failure {_splunk_failures[0]}/{_SPLUNK_CB_THRESHOLD})")
+                if _splunk_failures[0] >= _SPLUNK_CB_THRESHOLD:
+                    _splunk_disabled[0] = True
+                    logger.error(
+                        "ALERT: Splunk query tool circuit breaker OPEN — "
+                        "disabled for remainder of this hunt cycle")
+                    fire_agent_activity("splunk_tool", "alert", {
+                        "message": "Splunk query tool disabled — "
+                                   "multiple timeouts",
+                        "failures": _splunk_failures[0],
+                    })
+                    return (
+                        "SPLUNK TOOL DISABLED: Query timed out and the "
+                        "circuit breaker has tripped.  An alert has been "
+                        "raised.  Continue hunting with existing data — "
+                        "do NOT call this tool again."
+                    )
+                return (
+                    f"Query timed out after {_SPLUNK_QUERY_TIMEOUT}s.  "
+                    f"Try a narrower time range or simpler query.  "
+                    f"({_SPLUNK_CB_THRESHOLD - _splunk_failures[0]} "
+                    f"attempt(s) remaining before tool is disabled.)"
+                )
+
+            except ImportError:
+                _splunk_disabled[0] = True
+                logger.error(
+                    "ALERT: splunk-sdk not installed — Splunk tool disabled")
+                fire_agent_activity("splunk_tool", "alert", {
+                    "message": "splunk-sdk not installed — tool disabled",
+                })
+                return (
+                    "SPLUNK TOOL DISABLED: splunk-sdk is not installed.  "
+                    "Continue hunting with existing data."
+                )
+
+            except Exception as e:
+                _splunk_failures[0] += 1
+                logger.warning(
+                    f"Splunk tool error: {e} "
+                    f"(failure {_splunk_failures[0]}/{_SPLUNK_CB_THRESHOLD})")
+                if _splunk_failures[0] >= _SPLUNK_CB_THRESHOLD:
+                    _splunk_disabled[0] = True
+                    logger.error(
+                        f"ALERT: Splunk query tool circuit breaker OPEN — "
+                        f"disabled for remainder of this hunt cycle: {e}")
+                    fire_agent_activity("splunk_tool", "alert", {
+                        "message": f"Splunk query tool disabled: {e}",
+                        "failures": _splunk_failures[0],
+                    })
+                    return (
+                        f"SPLUNK TOOL DISABLED: {e}.  Circuit breaker "
+                        f"tripped.  An alert has been raised.  Continue "
+                        f"hunting with existing data — do NOT call this "
+                        f"tool again."
+                    )
+                return (
+                    f"Splunk query failed: {e}.  "
+                    f"({_SPLUNK_CB_THRESHOLD - _splunk_failures[0]} "
+                    f"attempt(s) remaining before tool is disabled.)"
+                )
+
+        tools.append(query_splunk)
+        logger.info("Splunk query tool registered (circuit breaker armed)")
+    else:
+        logger.info(
+            "Splunk query tool NOT registered — no splunk_config provided")
 
     return tools, _rag_has_data
 
@@ -562,6 +803,7 @@ class CrewOrchestrator:
         process: str = "sequential",
         verbose: bool = True,
         num_ctx: Optional[int] = None,
+        splunk_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -574,6 +816,9 @@ class CrewOrchestrator:
             verbose: Enable verbose CrewAI logging.
             num_ctx: Ollama context window size (default from OLLAMA_NUM_CTX
                      env var or 131072).
+            splunk_config: Optional dict with keys host, port, token,
+                          username, password.  Enables the ``query_splunk``
+                          tool for ad-hoc LLM-driven investigation.
         """
         if not _CREWAI_AVAILABLE:
             raise ImportError(
@@ -584,6 +829,7 @@ class CrewOrchestrator:
         self.detectors = detectors
         self.rag_store = rag_store
         self.llm_model = llm_model
+        self.splunk_config = splunk_config
 
         # Build a proper CrewAI LLM instance so LiteLLM knows the
         # Ollama base URL (passing a bare string fails silently).
@@ -768,7 +1014,8 @@ class CrewOrchestrator:
         logger.info("[DIAG] Building tools...")
         try:
             tools, rag_has_data = _make_tools(
-                self.rag_store, self.detectors, data, network_state
+                self.rag_store, self.detectors, data, network_state,
+                splunk_config=self.splunk_config,
             )
             logger.info(f"[DIAG] Tools built: {len(tools)} tools, rag_has_data={rag_has_data}")
         except Exception as e:

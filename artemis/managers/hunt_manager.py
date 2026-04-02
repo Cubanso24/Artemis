@@ -1046,12 +1046,25 @@ def _analysis_pipeline_process(job_id, db_path):
                         from artemis.llm.crew import CrewOrchestrator, crewai_available
                         if crewai_available():
                             _ollama_model = _llm_cfg.get('ollama_model') or os.environ.get('OLLAMA_MODEL', 'llama3.1')
+                            # Build Splunk config for the query_splunk tool
+                            _spl_host, _spl_token, _spl_user, _spl_pass = _read_splunk_credentials()
+                            _splunk_cfg = None
+                            if _spl_host:
+                                _splunk_cfg = {
+                                    'host': _spl_host,
+                                    'port': 8089,
+                                    'token': _spl_token,
+                                    'username': _spl_user or '',
+                                    'password': _spl_pass or '',
+                                }
+
                             _crew_orchestrator = CrewOrchestrator(
                                 detectors=coordinator.agents,
                                 rag_store=getattr(coordinator, 'rag_store', None),
                                 llm_model=f"ollama/{_ollama_model}",
                                 process=_llm_cfg.get('crewai_process', 'sequential'),
                                 num_ctx=int(os.environ.get('OLLAMA_NUM_CTX', '262144')),
+                                splunk_config=_splunk_cfg,
                             )
                             log.info('CrewAI orchestrator initialised')
                     except Exception as _ce:
