@@ -1090,33 +1090,18 @@ def _analysis_pipeline_process(job_id, db_path):
         _MAX_CONSECUTIVE_FAILURES = 3
 
         while not _stop:
-            # LLM health check — if we've had consecutive failures,
-            # back off to avoid burning CPU on a frozen Ollama instance
+            # LLM health alert — log warnings on consecutive failures
+            # but never stall the pipeline; always advance to the next cycle.
             if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                _backoff_s = min(300, 60 * _consecutive_failures)
                 log.warning(
                     f'{_consecutive_failures} consecutive hunt failures — '
-                    f'backing off {_backoff_s}s before retrying')
+                    f'LLM may be degraded (pipeline continues)')
                 send('running',
-                     f'LLM issues: {_consecutive_failures} failures, '
-                     f'backing off {_backoff_s}s...',
+                     f'ALERT: {_consecutive_failures} consecutive LLM failures '
+                     f'— pipeline continuing, check GPU server',
                      45, {'pipeline': 'analysis',
-                          'status': 'backoff',
+                          'status': 'llm_alert',
                           'consecutive_failures': _consecutive_failures})
-                for _ in range(int(_backoff_s)):
-                    if _stop:
-                        break
-                    time.sleep(1)
-                # Quick Ollama health check before resuming
-                try:
-                    _health_ok = coordinator.llm_client._check_ollama()
-                    if not _health_ok:
-                        log.warning('Ollama still not healthy — waiting...')
-                        continue
-                    log.info('Ollama health check passed — resuming')
-                    _consecutive_failures = 0  # Reset on health pass
-                except Exception:
-                    continue
 
             # Poll for pending analysis
             pending = db.get_pending_analysis()
@@ -1760,6 +1745,125 @@ def _profile_pipeline_process(job_id, db_path):
         log.error(traceback.format_exc())
         send('error', f'Profile pipeline failed: {str(e)}', 0,
              {'error_detail': traceback.format_exc(), 'pipeline': 'profile'})
+
+
+# ---------------------------------------------------------------------------
+# Standalone single-cycle hunt — used by HuntScheduler
+# ---------------------------------------------------------------------------
+
+def _run_hunt_cycle(host, token, username, password, lookback, mode,
+                    db_path, target_hosts=None):
+    """Run a single data-collection + analysis cycle.
+
+    This is the entry point used by ``HuntScheduler._run_hunt`` to execute
+    one hunt cycle synchronously in an executor thread.  It collects data
+    from Splunk, stores it, and runs the analysis pipeline on the collected
+    cycle.
+    """
+    import logging, traceback, time
+    from datetime import datetime
+    from artemis.managers.db_manager import DatabaseManager
+    from artemis.integrations.data_pipeline import DataPipeline, DataSourceConfig
+    from artemis.plugins.network_mapper import NetworkMapperPlugin
+
+    log = logging.getLogger('artemis.hunt_cycle')
+    db = DatabaseManager(db_path)
+
+    # --- Data collection phase ---
+    cfg = DataSourceConfig(
+        splunk_host=host, splunk_port=8089,
+        splunk_token=token or '',
+        splunk_username=username or '',
+        splunk_password=password or '',
+    )
+    pipeline = DataPipeline(cfg)
+    if not pipeline.splunk:
+        log.error('Cannot connect to Splunk — aborting hunt cycle')
+        return
+
+    nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
+    nm.initialize()
+
+    cycle = db.get_latest_event_cycle() + 1
+    log.info(f'Hunt cycle {cycle}: collecting data (lookback={lookback})')
+
+    try:
+        hunting_data = pipeline.collect_network_data(
+            earliest_time=lookback, latest_time='now')
+
+        has_data = False
+        for key, events in hunting_data.items():
+            if isinstance(events, list) and events:
+                has_data = True
+                nm.process_events(key, events)
+                db.store_events(cycle, key, events)
+
+        if has_data:
+            event_counts = db.get_event_counts_for_cycle(cycle)
+            db.queue_analysis(cycle, event_counts)
+            log.info(f'Hunt cycle {cycle}: queued {sum(event_counts.values()):,} '
+                     f'events for analysis')
+        else:
+            log.info(f'Hunt cycle {cycle}: no new data')
+            return
+    except Exception as e:
+        log.error(f'Hunt cycle {cycle} collection error: {e}')
+        log.error(traceback.format_exc())
+        return
+
+    # --- Analysis phase ---
+    try:
+        from artemis.llm.coordinator import ThreatHuntCoordinator
+        from artemis.models.network_state import NetworkState
+
+        coordinator = ThreatHuntCoordinator(db_path=db_path)
+        agent_data = db.get_events_for_cycle(cycle)
+        agent_data['_counts'] = db.get_event_counts_for_cycle(cycle)
+
+        nm2 = NetworkMapperPlugin({'output_dir': 'network_maps'})
+        nm2.initialize()
+        context = NetworkState.from_data_with_map(agent_data, nm2.nodes)
+
+        assessment = coordinator.hunt(data=agent_data, network_state=context)
+
+        # Save synthesis
+        llm_synth = assessment.get('llm_synthesis') if assessment else None
+        if llm_synth:
+            db.save_synthesis(cycle, llm_synth)
+
+        # Save findings
+        for ao in assessment.get('agent_outputs', []):
+            ao_dict = ao if isinstance(ao, dict) else ao.to_dict()
+            for f in ao_dict.get('findings', []):
+                db.save_finding(
+                    finding_id=f.get('fingerprint',
+                                     f.get('activity_type', '') + str(cycle)),
+                    agent_name=ao_dict.get('agent_name', 'unknown'),
+                    activity_type=f.get('activity_type', ''),
+                    severity=ao_dict.get('severity', 'medium'),
+                    confidence=ao_dict.get('confidence', 0.0),
+                    description=f.get('description', ''),
+                    indicators=f.get('indicators', []),
+                    affected_assets=f.get('affected_assets', []),
+                    mitre_tactics=ao_dict.get('mitre_tactics', []),
+                    mitre_techniques=f.get('mitre_techniques', []),
+                    evidence_count=len(f.get('evidence', [])),
+                    evidence=f.get('evidence', []),
+                    recommended_actions=ao_dict.get('recommended_actions', []),
+                    source_cycle=cycle,
+                )
+
+        db.mark_analysis_complete(cycle)
+        log.info(f'Hunt cycle {cycle}: analysis complete')
+
+    except Exception as e:
+        log.error(f'Hunt cycle {cycle} analysis error: {e}')
+        log.error(traceback.format_exc())
+        # Mark complete so the queue doesn't get stuck
+        try:
+            db.mark_analysis_complete(cycle)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
