@@ -525,9 +525,10 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
         nm = NetworkMapperPlugin({'output_dir': 'network_maps'})
         nm.initialize()
 
-        # When starting a backfill, force a clean map — don't carry over
-        # stale nodes from a previous run's map file.
-        # Auto-save a backup snapshot first so the user doesn't lose work.
+        # When starting a backfill, rebuild the topology from scratch but
+        # preserve existing device profiles (device_type, OS, vendor, etc.)
+        # so expensive profiling work isn't lost.
+        _saved_profiles = {}  # key -> {attr: value} for enrichment fields
         if backfill_from:
             if nm.nodes:
                 import shutil
@@ -539,13 +540,35 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                     backup_file = maps_dir / backup_name
                     shutil.copy2(current, backup_file)
                     log.info(f'Backed up existing map to {backup_name} before backfill')
+                # Save enrichment/profile data from all profiled nodes
+                for key, node in nm.nodes.items():
+                    if node.device_type:
+                        profile = {}
+                        for attr in nm._ENRICHMENT_FIELDS:
+                            val = getattr(node, attr, None)
+                            if val is not None:
+                                if isinstance(val, (set, list, dict)):
+                                    if val:
+                                        profile[attr] = val
+                                elif isinstance(val, str):
+                                    if val:
+                                        profile[attr] = val
+                                elif isinstance(val, bool):
+                                    if val:
+                                        profile[attr] = val
+                                else:
+                                    profile[attr] = val
+                        if profile:
+                            _saved_profiles[key] = profile
+                log.info(f'Preserved {len(_saved_profiles)} device profiles '
+                         f'before map rebuild')
             nm.nodes.clear()
             nm.sensors.clear()
             nm.mac_history.clear()
             nm._dirty_nodes.clear()
             nm._stats_cache = None
             nm.save_map()
-            log.info('Backfill requested — cleared stale map data')
+            log.info('Backfill requested — cleared topology (profiles preserved in memory)')
 
         # Get the latest cycle number from DB to continue sequentially
         cycle = db.get_latest_event_cycle()
@@ -594,6 +617,23 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                 _rebuild_map_from_db(db, nm, cycle, send, log)
 
                 _backfill_pending = False  # skip the Splunk pull
+
+                # Restore preserved device profiles onto rebuilt nodes
+                if _saved_profiles:
+                    _restored = 0
+                    for key, profile in _saved_profiles.items():
+                        target = nm.nodes.get(key)
+                        if target is None:
+                            continue
+                        for attr, val in profile.items():
+                            setattr(target, attr, val)
+                        _restored += 1
+                    if _restored:
+                        nm.save_map()
+                        log.info(f'Restored {_restored}/{len(_saved_profiles)} '
+                                 f'device profiles after map rebuild')
+                    _saved_profiles.clear()
+
                 log.info(
                     f'Map rebuilt with {len(nm.nodes)} nodes — '
                     f'switching to live collection')
@@ -797,6 +837,22 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                     )
                     if _bf_windows_mapped[0] > 0:
                         nm.save_map()
+
+                    # Restore preserved device profiles after backfill
+                    if _saved_profiles:
+                        _restored = 0
+                        for key, profile in _saved_profiles.items():
+                            target = nm.nodes.get(key)
+                            if target is None:
+                                continue
+                            for attr, val in profile.items():
+                                setattr(target, attr, val)
+                            _restored += 1
+                        if _restored:
+                            nm.save_map()
+                            log.info(f'Restored {_restored}/{len(_saved_profiles)} '
+                                     f'device profiles after backfill')
+                        _saved_profiles.clear()
 
                     # Update cycle to the latest used during backfill
                     cycle = _bf_cycle[0]
