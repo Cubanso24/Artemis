@@ -1826,10 +1826,14 @@ def _run_hunt_cycle(host, token, username, password, lookback, mode,
 
     # --- Analysis phase ---
     try:
-        from artemis.llm.coordinator import ThreatHuntCoordinator
+        from artemis.meta_learner.coordinator import MetaLearnerCoordinator
         from artemis.models.network_state import NetworkState
 
-        coordinator = ThreatHuntCoordinator(db_path=db_path)
+        coordinator = MetaLearnerCoordinator(
+            deployment_mode='adaptive',
+            enable_parallel_execution=True,
+            max_workers=4,
+        )
         agent_data = db.get_events_for_cycle(cycle)
         agent_data['_counts'] = db.get_event_counts_for_cycle(cycle)
 
