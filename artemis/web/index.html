@@ -1262,81 +1262,35 @@
                             <span style="font-size:11px; color:var(--text-secondary);">Optional — first cycle pulls all data from this date to now, then switches to normal lookback</span>
                         </div>
                     </div>
-                    <div id="continuous-detail" style="display:none; margin-top:8px; font-size:12px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:8px;">
-                        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:8px;">
-                            <!-- Data Pipeline Card -->
-                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
-                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
-                                    <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:11px;"></i>
-                                    <span style="font-weight:600; color:var(--text-primary);">Data Pipeline</span>
-                                    <span id="pipe-data-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#388bfd33; color:#4fc3f7;">—</span>
-                                </div>
-                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
-                                    <span id="pipe-data-cycle-label" style="color:var(--text-secondary);">Cycle:</span>
-                                    <span id="pipe-data-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
-                                    <span style="color:var(--text-secondary);">Nodes:</span>
-                                    <span id="pipe-data-nodes" style="color:var(--text-primary); font-weight:500;">—</span>
-                                    <span style="color:var(--text-secondary);">Conns:</span>
-                                    <span id="pipe-data-conns" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">DNS:</span>
-                                    <span id="pipe-data-dns" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">NTLM:</span>
-                                    <span id="pipe-data-ntlm" style="color:var(--text-primary);">—</span>
-                                </div>
-                                <div id="pipe-data-backfill" style="display:none; margin-top:4px; font-size:10px; padding:3px 6px; border-radius:4px; background:rgba(88,166,255,0.08); border:1px solid rgba(88,166,255,0.2); color:var(--accent-primary);">
-                                    <i class="fa-solid fa-clock-rotate-left" id="pipe-data-backfill-icon"></i>
-                                    <span id="pipe-data-backfill-label">Backfill:</span> <span id="pipe-data-backfill-date">—</span>
-                                    <span id="pipe-data-backfill-progress" style="margin-left:4px; opacity:0.8;"></span>
-                                </div>
-                                <div id="pipe-data-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                    <div id="continuous-detail" style="display:none; margin-top:8px; font-size:11px; color:var(--text-secondary); border-top:1px solid var(--border-color); padding-top:6px;">
+                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                            <div style="display:flex; align-items:center; gap:5px;">
+                                <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:10px;"></i>
+                                <span style="color:var(--text-secondary);">Data:</span>
+                                <span id="pipe-data-status" style="font-size:10px; padding:1px 6px; border-radius:8px; background:#388bfd33; color:#4fc3f7;">—</span>
+                                <span id="pipe-data-cycle" style="color:var(--text-primary); font-weight:500; font-size:11px;">—</span>
+                                <span style="color:var(--text-secondary);">·</span>
+                                <span id="pipe-data-nodes" style="color:var(--text-primary); font-size:11px;">—</span>
+                                <span style="color:var(--text-secondary); font-size:10px;">nodes</span>
                             </div>
-                            <!-- Analysis Pipeline Card -->
-                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
-                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
-                                    <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:11px;"></i>
-                                    <span style="font-weight:600; color:var(--text-primary);">Analysis Pipeline</span>
-                                    <span id="pipe-analysis-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#ab47bc33; color:#ab47bc;">—</span>
-                                </div>
-                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
-                                    <span id="pipe-analysis-cycle-label" style="color:var(--text-secondary);">Cycle:</span>
-                                    <span id="pipe-analysis-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
-                                    <span style="color:var(--text-secondary);">Events:</span>
-                                    <span id="pipe-analysis-events" style="color:var(--text-primary); font-weight:500;">—</span>
-                                    <span style="color:var(--text-secondary);">Agents:</span>
-                                    <span id="pipe-analysis-agents" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">LLM:</span>
-                                    <span id="pipe-analysis-llm" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">Findings:</span>
-                                    <span id="pipe-analysis-findings" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">Completed:</span>
-                                    <span id="pipe-analysis-completed" style="color:var(--text-primary);">—</span>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
-                                    <span id="pipe-analysis-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:10px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM Active</span>
-                                    <span id="pipe-analysis-queue-badge" style="display:none; background:#ff9800; color:#fff; padding:0 6px; border-radius:8px; font-size:10px;"></span>
-                                </div>
+                            <span style="color:var(--border-color);">|</span>
+                            <div style="display:flex; align-items:center; gap:5px;">
+                                <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:10px;"></i>
+                                <span style="color:var(--text-secondary);">Analysis:</span>
+                                <span id="pipe-analysis-status" style="font-size:10px; padding:1px 6px; border-radius:8px; background:#ab47bc33; color:#ab47bc;">—</span>
+                                <span id="pipe-analysis-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:1px 7px; border-radius:8px; font-size:10px;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
                             </div>
-                            <!-- Profile Pipeline Card -->
-                            <div style="background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
-                                <div style="display:flex; align-items:center; gap:5px; margin-bottom:6px;">
-                                    <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:11px;"></i>
-                                    <span style="font-weight:600; color:var(--text-primary);">Profile Pipeline</span>
-                                    <span id="pipe-profile-status" style="margin-left:auto; font-size:10px; padding:1px 6px; border-radius:8px; background:#4caf5033; color:#4caf50;">—</span>
-                                </div>
-                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; font-size:11px;">
-                                    <span style="color:var(--text-secondary);">Unprofiled:</span>
-                                    <span id="pipe-profile-unprofiled" style="color:var(--text-primary); font-weight:500;">—</span>
-                                    <span style="color:var(--text-secondary);">Classified:</span>
-                                    <span id="pipe-profile-classified" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">Total Nodes:</span>
-                                    <span id="pipe-profile-total" style="color:var(--text-primary);">—</span>
-                                    <span style="color:var(--text-secondary);">Time Range:</span>
-                                    <span id="pipe-profile-timerange" style="color:var(--text-primary);">—</span>
-                                </div>
-                                <div id="pipe-profile-detail" style="margin-top:4px; font-size:10px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                            <span style="color:var(--border-color);">|</span>
+                            <div style="display:flex; align-items:center; gap:5px;">
+                                <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:10px;"></i>
+                                <span style="color:var(--text-secondary);">Profile:</span>
+                                <span id="pipe-profile-status" style="font-size:10px; padding:1px 6px; border-radius:8px; background:#4caf5033; color:#4caf50;">—</span>
                             </div>
+                            <a href="#" onclick="event.preventDefault(); showTab('agent-monitoring-tab');" style="margin-left:auto; font-size:10px; color:var(--accent-primary); text-decoration:none; opacity:0.7;">
+                                <i class="fa-solid fa-gauge-high"></i> Full Dashboard
+                            </a>
                         </div>
-                        <div id="continuous-msg" style="margin-top:6px; opacity:0.7; font-size:11px;"></div>
+                        <div id="continuous-msg" style="margin-top:4px; opacity:0.7; font-size:11px;"></div>
                     </div>
                 </div>
 
@@ -4966,91 +4920,15 @@
                         statusEl.style.color = '#4fc3f7';
                     }
 
-                    // During backfill/replay, show batch progress instead of raw cycle number
-                    const cycleLabel = document.getElementById('pipe-data-cycle-label');
+                    // Compact status — cycle & node count
+                    const totalCycles = result.total_cycles || 0;
                     if (isDbReplay || isBackfill || isBackfillQueue || isReuse) {
-                        cycleLabel.textContent = 'Batch:';
-                        const totalCycles = result.total_cycles || 0;
                         document.getElementById('pipe-data-cycle').textContent =
-                            totalCycles ? `${cycle} / ${Number(totalCycles).toLocaleString()}` : cycle;
+                            totalCycles ? `${cycle}/${totalCycles}` : cycle;
                     } else {
-                        cycleLabel.textContent = 'Cycle:';
                         document.getElementById('pipe-data-cycle').textContent = cycle;
                     }
-                    // Always update nodes if present; keep previous value if missing
                     if (totalNodes) document.getElementById('pipe-data-nodes').textContent = Number(totalNodes).toLocaleString();
-                    if (newConns != null) document.getElementById('pipe-data-conns').textContent = Number(newConns).toLocaleString();
-                    if (newDns != null) document.getElementById('pipe-data-dns').textContent = Number(newDns).toLocaleString();
-                    if (newNtlm != null) document.getElementById('pipe-data-ntlm').textContent = Number(newNtlm).toLocaleString();
-
-                    // Backfill progress (real-time)
-                    const rtBfFrom = result.backfill_from || '';
-                    const rtBfDiv = document.getElementById('pipe-data-backfill');
-                    if (rtBfFrom) {
-                        rtBfDiv.style.display = '';
-                        document.getElementById('pipe-data-backfill-label').textContent = 'Backfill:';
-                        document.getElementById('pipe-data-backfill-icon').className = 'fa-solid fa-clock-rotate-left';
-                        const rtBfDate = rtBfFrom.includes('T') ? rtBfFrom.split('T')[0] : rtBfFrom;
-                        document.getElementById('pipe-data-backfill-date').textContent = rtBfDate;
-                        const rtWE = result.window_earliest || '';
-                        const rtW = result.window || 0;
-                        const rtTW = result.total_windows || 0;
-                        let rtProg = '';
-                        if (rtWE) {
-                            const rtDay = rtWE.includes('T') ? rtWE.split('T')[0] : rtWE;
-                            const rtTime = rtWE.includes('T') ? rtWE.split('T')[1].slice(0,5) : '';
-                            rtProg = `→ currently at ${rtDay}` + (rtTime ? ` ${rtTime}` : '');
-                        }
-                        if (rtW && rtTW) rtProg += ` (window ${rtW}/${rtTW})`;
-                        document.getElementById('pipe-data-backfill-progress').textContent = rtProg;
-                    } else if (isDbReplay || isReuse) {
-                        // Show DB replay progress in the backfill area
-                        rtBfDiv.style.display = '';
-                        document.getElementById('pipe-data-backfill-label').textContent = 'Source:';
-                        document.getElementById('pipe-data-backfill-icon').className = 'fa-solid fa-database';
-                        document.getElementById('pipe-data-backfill-date').textContent = 'stored events';
-                        const rc = result.cycle || 0;
-                        const rtc = result.total_cycles || 0;
-                        const rte = result.total_events || 0;
-                        let rprog = '';
-                        if (isReuse && result.queued) {
-                            rprog = `Queued ${result.queued} batches for analysis`;
-                        } else if (rc && rtc) {
-                            rprog = `Replaying batch ${rc}/${rtc} (${Number(rte).toLocaleString()} events)`;
-                        } else if (rte) {
-                            rprog = `${Number(rte).toLocaleString()} events found`;
-                        }
-                        document.getElementById('pipe-data-backfill-progress').textContent = rprog;
-                    } else {
-                        rtBfDiv.style.display = 'none';
-                    }
-
-                    const detailEl = document.getElementById('pipe-data-detail');
-                    detailEl.style.color = '';  // reset
-                    if (isDbReplay) {
-                        const rte = result.total_events || 0;
-                        const rc = result.cycle || 0;
-                        const rtc = result.total_cycles || 0;
-                        detailEl.textContent = `Replaying stored events: batch ${rc}/${rtc} (${Number(rte).toLocaleString()} events → ${Number(totalNodes).toLocaleString()} nodes)`;
-                    } else if (isReuse) {
-                        const rte = result.total_events || 0;
-                        detailEl.textContent = `Using ${Number(rte).toLocaleString()} existing events from database (skipping Splunk)`;
-                    } else if (isRetention && result.retention_warning) {
-                        detailEl.textContent = result.retention_warning;
-                        detailEl.style.color = '#f85149';
-                    } else if (isRetention) {
-                        detailEl.textContent = 'Checking Splunk data availability...';
-                    } else if (isBackfillQueue) {
-                        const be = result.batch_events || 0;
-                        detailEl.textContent = `Queued ${Number(be).toLocaleString()} events for agent analysis (batch ${result.batches_queued || 0})`;
-                    } else if (result.total_events) {
-                        detailEl.textContent = `Backfill: ${Number(result.total_events).toLocaleString()} events processed`;
-                    } else if (result.error) {
-                        detailEl.textContent = `Error: ${result.error}`;
-                        detailEl.style.color = '#f85149';
-                    } else {
-                        detailEl.textContent = '';
-                    }
 
                     // Refresh graph data
                     if (!handleContinuousProgress._lastRefresh) handleContinuousProgress._lastRefresh = 0;
@@ -5064,109 +4942,57 @@
                     }
 
                 } else if (pipeline === 'analysis') {
-                    // --- Analysis Pipeline Card ---
-                    const totalEvents = result.total_events || 0;
-                    const nAgents = result.n_agents || 0;
-                    const llmBackend = result.llm_backend || '—';
+                    // --- Analysis Pipeline (compact status badge) ---
                     const findings = result.findings || 0;
-                    const completed = result.analyses_completed || 0;
                     const isLlmActive = result.stage_detail === 'llm_analysis';
                     const isLoadingEvents = result.stage_detail === 'loading_events';
                     const isIdle = (result.status === 'idle' || result.status === 'initializing') && !isLoadingEvents;
                     const isInit = result.status === 'initializing' && !isLoadingEvents;
-                    const orch = result.orchestration;
 
                     const statusEl = document.getElementById('pipe-analysis-status');
                     if (isInit) {
-                        statusEl.textContent = 'Initializing';
-                        statusEl.style.background = '#d2992233';
-                        statusEl.style.color = '#d29922';
+                        statusEl.textContent = 'Init';
+                        statusEl.style.background = '#d2992233'; statusEl.style.color = '#d29922';
                     } else if (isLoadingEvents) {
                         statusEl.textContent = 'Loading';
-                        statusEl.style.background = '#d2992233';
-                        statusEl.style.color = '#d29922';
+                        statusEl.style.background = '#d2992233'; statusEl.style.color = '#d29922';
                     } else if (isIdle) {
                         statusEl.textContent = 'Waiting';
-                        statusEl.style.background = '#8b949e33';
-                        statusEl.style.color = '#8b949e';
+                        statusEl.style.background = '#8b949e33'; statusEl.style.color = '#8b949e';
                     } else if (isLlmActive) {
                         statusEl.textContent = 'Analyzing';
-                        statusEl.style.background = '#ab47bc33';
-                        statusEl.style.color = '#ab47bc';
+                        statusEl.style.background = '#ab47bc33'; statusEl.style.color = '#ab47bc';
                     } else {
                         statusEl.textContent = 'Running';
-                        statusEl.style.background = '#ab47bc33';
-                        statusEl.style.color = '#ab47bc';
+                        statusEl.style.background = '#ab47bc33'; statusEl.style.color = '#ab47bc';
                     }
 
-                    const currentCycle = result.cycle || 0;
-                    const batchLabel = _dataInBackfillMode ? 'Batch:' : 'Cycle:';
-                    const batchPrefix = _dataInBackfillMode ? 'Batch' : '#';
-                    document.getElementById('pipe-analysis-cycle-label').textContent = batchLabel;
-                    document.getElementById('pipe-analysis-cycle').textContent = currentCycle ? `${batchPrefix}${_dataInBackfillMode ? ' ' : ''}${currentCycle}` : (isInit ? 'Init' : isIdle ? 'Waiting' : '—');
-                    document.getElementById('pipe-analysis-events').textContent = totalEvents ? Number(totalEvents).toLocaleString() : (isIdle ? '0' : '—');
-                    document.getElementById('pipe-analysis-agents').textContent = nAgents ? `${nAgents} agents` : '—';
-                    document.getElementById('pipe-analysis-llm').textContent = orch === 'crewai' ? `CrewAI (${llmBackend})` : (llmBackend !== '—' ? llmBackend : '—');
-                    document.getElementById('pipe-analysis-findings').textContent = findings > 0 ? findings : '0';
-                    document.getElementById('pipe-analysis-completed').textContent = `${completed} ${_dataInBackfillMode ? 'batches' : 'cycles'}`;
-
-                    // LLM active badge
                     document.getElementById('pipe-analysis-llm-badge').style.display = isLlmActive ? 'inline' : 'none';
 
-                    // Refresh findings
                     if (findings > 0) {
                         _refreshFindingsBadge();
                     }
 
                 } else if (pipeline === 'profile') {
-                    // --- Profile Pipeline Card ---
-                    const unprofiled = result.unprofiled != null ? result.unprofiled : null;
+                    // --- Profile Pipeline (compact status badge) ---
                     const classified = result.classified;
-                    const totalNodes = result.total_nodes || 0;
-                    const timeRange = result.time_range;
                     const isProfiling = result.stage_detail === 'profiling';
                     const isWaitingForData = result.stage_detail === 'waiting_for_data';
-                    const isWaiting = unprofiled === 0 && !isProfiling && !isWaitingForData;
+                    const isWaiting = (result.unprofiled === 0) && !isProfiling && !isWaitingForData;
 
                     const statusEl = document.getElementById('pipe-profile-status');
                     if (isWaitingForData) {
                         statusEl.textContent = 'Waiting';
-                        statusEl.style.background = '#8b949e33';
-                        statusEl.style.color = '#8b949e';
+                        statusEl.style.background = '#8b949e33'; statusEl.style.color = '#8b949e';
                     } else if (isProfiling) {
                         statusEl.textContent = 'Profiling';
-                        statusEl.style.background = '#4caf5033';
-                        statusEl.style.color = '#4caf50';
+                        statusEl.style.background = '#4caf5033'; statusEl.style.color = '#4caf50';
                     } else if (isWaiting) {
                         statusEl.textContent = 'All Profiled';
-                        statusEl.style.background = '#3fb95033';
-                        statusEl.style.color = '#3fb950';
+                        statusEl.style.background = '#3fb95033'; statusEl.style.color = '#3fb950';
                     } else {
                         statusEl.textContent = 'Running';
-                        statusEl.style.background = '#4caf5033';
-                        statusEl.style.color = '#4caf50';
-                    }
-
-                    // Only overwrite if value is present; retain previous otherwise
-                    if (unprofiled != null) document.getElementById('pipe-profile-unprofiled').textContent = Number(unprofiled).toLocaleString();
-                    if (classified != null && classified > 0) document.getElementById('pipe-profile-classified').textContent = Number(classified).toLocaleString();
-                    if (totalNodes) document.getElementById('pipe-profile-total').textContent = Number(totalNodes).toLocaleString();
-                    if (timeRange) document.getElementById('pipe-profile-timerange').textContent = timeRange;
-
-                    const detailEl = document.getElementById('pipe-profile-detail');
-                    detailEl.style.color = '';
-                    if (result.error) {
-                        detailEl.textContent = `Error: ${result.error}`;
-                        detailEl.style.color = '#f85149';
-                    } else if (isWaitingForData) {
-                        detailEl.textContent = 'Waiting for data pipeline to finish map rebuild before profiling...';
-                        detailEl.style.color = '#8b949e';
-                    } else if (isProfiling) {
-                        detailEl.textContent = `Running 23 parallel Splunk queries (${timeRange || '...'})...`;
-                    } else if (isWaiting) {
-                        detailEl.textContent = 'Waiting for new unclassified devices...';
-                    } else {
-                        detailEl.textContent = data.message || '';
+                        statusEl.style.background = '#4caf5033'; statusEl.style.color = '#4caf50';
                     }
 
                     // Refresh graph when profiling classifies devices
@@ -5197,193 +5023,74 @@
                     const dp = status.data_pipeline || {};
                     const ap = status.analysis_pipeline || {};
                     const pp = status.profile_pipeline || {};
-                    const queue = status.analysis_queue || {};
-
-                    // --- Data pipeline card ---
-                    const dpStatus = document.getElementById('pipe-data-status');
-                    // Check if data pipeline is in backfill mode
+                    const dpExtra = dp.last_progress || {};
                     const dpStageDetail = dpExtra.stage_detail || dp.stage_detail || '';
                     const dpIsBackfill = ['db_replay', 'map_rebuild', 'reuse_existing',
                         'requeue_existing', 'backfill_mapping', 'backfill_analysis_queued',
                         'retention_check', 'retention_ok', 'retention_warning'].includes(dpStageDetail);
                     _dataInBackfillMode = dpIsBackfill;
 
+                    // --- Compact data pipeline badge ---
+                    const dpStatus = document.getElementById('pipe-data-status');
                     if (dpIsBackfill) {
                         dpStatus.textContent = dpStageDetail === 'db_replay' ? 'DB Replay' : 'Backfill';
-                        dpStatus.style.background = '#d2992233';
-                        dpStatus.style.color = '#d29922';
+                        dpStatus.style.background = '#d2992233'; dpStatus.style.color = '#d29922';
                     } else {
                         dpStatus.textContent = dp.running ? 'Running' : 'Stopped';
                         dpStatus.style.background = dp.running ? '#388bfd33' : '#8b949e33';
                         dpStatus.style.color = dp.running ? '#4fc3f7' : '#8b949e';
                     }
-                    const dpCycleLabel = document.getElementById('pipe-data-cycle-label');
                     const dpCycleVal = status.cycle || dp.cycle || 0;
                     const dpTotalCycles = dpExtra.total_cycles || 0;
-                    if (dpIsBackfill) {
-                        dpCycleLabel.textContent = 'Batch:';
-                        document.getElementById('pipe-data-cycle').textContent =
-                            dpTotalCycles ? `${dpCycleVal} / ${Number(dpTotalCycles).toLocaleString()}` : (dpCycleVal || '—');
-                    } else {
-                        dpCycleLabel.textContent = 'Cycle:';
-                        document.getElementById('pipe-data-cycle').textContent = dpCycleVal || '—';
-                    }
+                    document.getElementById('pipe-data-cycle').textContent =
+                        dpIsBackfill && dpTotalCycles ? `${dpCycleVal}/${dpTotalCycles}` : (dpCycleVal || '—');
                     document.getElementById('pipe-data-nodes').textContent =
                         (status.total_nodes || dp.total_nodes) ? Number(status.total_nodes || dp.total_nodes).toLocaleString() : '—';
-                    document.getElementById('pipe-data-conns').textContent = '—';
-                    document.getElementById('pipe-data-dns').textContent = '—';
-                    document.getElementById('pipe-data-ntlm').textContent = '—';
 
-                    // --- Backfill progress ---
-                    const dpExtra = dp.last_progress || {};
-                    const bfFrom = dpExtra.backfill_from || '';
-                    const bfDiv = document.getElementById('pipe-data-backfill');
-                    if (bfFrom) {
-                        bfDiv.style.display = '';
-                        const bfDate = bfFrom.includes('T') ? bfFrom.split('T')[0] : bfFrom;
-                        document.getElementById('pipe-data-backfill-date').textContent = bfDate;
-                        const wE = dpExtra.window_earliest || '';
-                        const w = dpExtra.window || 0;
-                        const tw = dpExtra.total_windows || 0;
-                        let progressText = '';
-                        if (wE) {
-                            const wDay = wE.includes('T') ? wE.split('T')[0] : wE;
-                            const wTime = wE.includes('T') ? wE.split('T')[1].slice(0,5) : '';
-                            progressText = `→ currently at ${wDay}` + (wTime ? ` ${wTime}` : '');
-                        }
-                        if (w && tw) {
-                            progressText += ` (window ${w}/${tw})`;
-                        }
-                        document.getElementById('pipe-data-backfill-progress').textContent = progressText;
-                    } else {
-                        bfDiv.style.display = 'none';
-                    }
-
-                    // --- Analysis pipeline card ---
+                    // --- Compact analysis pipeline badge ---
                     const apStatus = document.getElementById('pipe-analysis-status');
                     const apData = ap.last_progress || {};
-                    const apIsLoading = apData.stage_detail === 'loading_events';
-                    const apIsInit = apData.status === 'initializing' && !apIsLoading;
-                    const apIsIdle = (apData.status === 'idle' || apIsInit) && !apIsLoading;
                     const apIsLlm = apData.stage_detail === 'llm_analysis' || apData.stage_detail === 'llm_synthesis';
+                    const apIsIdle = apData.status === 'idle' || apData.status === 'initializing';
                     if (ap.running) {
-                        if (apIsInit) {
-                            apStatus.textContent = 'Initializing';
-                            apStatus.style.background = '#d2992233';
-                            apStatus.style.color = '#d29922';
-                        } else if (apIsLoading) {
-                            apStatus.textContent = 'Loading';
-                            apStatus.style.background = '#d2992233';
-                            apStatus.style.color = '#d29922';
+                        if (apIsLlm) {
+                            apStatus.textContent = 'Analyzing';
+                            apStatus.style.background = '#ab47bc33'; apStatus.style.color = '#ab47bc';
                         } else if (apIsIdle) {
                             apStatus.textContent = 'Waiting';
-                            apStatus.style.background = '#8b949e33';
-                            apStatus.style.color = '#8b949e';
-                        } else if (apIsLlm) {
-                            apStatus.textContent = 'Analyzing';
-                            apStatus.style.background = '#ab47bc33';
-                            apStatus.style.color = '#ab47bc';
+                            apStatus.style.background = '#8b949e33'; apStatus.style.color = '#8b949e';
                         } else {
                             apStatus.textContent = 'Running';
-                            apStatus.style.background = '#ab47bc33';
-                            apStatus.style.color = '#ab47bc';
+                            apStatus.style.background = '#ab47bc33'; apStatus.style.color = '#ab47bc';
                         }
                     } else {
                         apStatus.textContent = 'Stopped';
-                        apStatus.style.background = '#8b949e33';
-                        apStatus.style.color = '#8b949e';
+                        apStatus.style.background = '#8b949e33'; apStatus.style.color = '#8b949e';
                     }
-                    const apCycle = apData.cycle || 0;
-                    const apBatchLabel = _dataInBackfillMode ? 'Batch:' : 'Cycle:';
-                    const apBatchPrefix = _dataInBackfillMode ? 'Batch' : '#';
-                    document.getElementById('pipe-analysis-cycle-label').textContent = apBatchLabel;
-                    document.getElementById('pipe-analysis-cycle').textContent =
-                        apCycle ? `${apBatchPrefix}${_dataInBackfillMode ? ' ' : ''}${apCycle}` : (apIsInit ? 'Init' : apIsIdle ? 'Waiting' : ap.running ? '—' : 'Idle');
-                    document.getElementById('pipe-analysis-events').textContent =
-                        apData.total_events ? Number(apData.total_events).toLocaleString() : (apIsIdle ? '0' : '—');
-                    document.getElementById('pipe-analysis-agents').textContent =
-                        apData.n_agents ? `${apData.n_agents} agents` : '—';
-                    const llmText = apData.llm_backend || '—';
-                    const elapsedSec = apData.elapsed_seconds;
-                    document.getElementById('pipe-analysis-llm').textContent =
-                        (apIsLlm && elapsedSec) ? `${llmText} (${Math.floor(elapsedSec / 60)}m${elapsedSec % 60}s)` : llmText;
-                    document.getElementById('pipe-analysis-findings').textContent = apData.findings || '0';
-                    document.getElementById('pipe-analysis-completed').textContent =
-                        `${apData.analyses_completed || 0} ${_dataInBackfillMode ? 'batches' : 'cycles'}`;
-                    const llmBadge = document.getElementById('pipe-analysis-llm-badge');
-                    if (apIsLlm) {
-                        llmBadge.style.display = 'inline';
-                        const orchLabel = apData.orchestration === 'crewai' ? 'CrewAI' : 'LLM';
-                        llmBadge.textContent = elapsedSec
-                            ? `${orchLabel} ${Math.floor(elapsedSec / 60)}m`
-                            : orchLabel;
-                    } else {
-                        llmBadge.style.display = 'none';
-                    }
+                    document.getElementById('pipe-analysis-llm-badge').style.display = apIsLlm ? 'inline' : 'none';
 
-                    // Queue badge
-                    const queueBadge = document.getElementById('pipe-analysis-queue-badge');
-                    const pending = queue.pending || 0;
-                    if (pending > 0) {
-                        queueBadge.textContent = `${pending} queued`;
-                        queueBadge.style.display = 'inline';
-                    } else {
-                        queueBadge.style.display = 'none';
-                    }
-
-                    // --- Profile pipeline card ---
+                    // --- Compact profile pipeline badge ---
                     const ppStatus = document.getElementById('pipe-profile-status');
                     const ppData = pp.last_progress || {};
                     if (pp.running) {
                         const isProfiling = ppData.stage_detail === 'profiling';
                         const ppWaitData = ppData.stage_detail === 'waiting_for_data';
-                        const ppWaiting = (ppData.unprofiled === 0) && !isProfiling && !ppWaitData;
                         if (ppWaitData) {
                             ppStatus.textContent = 'Waiting';
-                            ppStatus.style.background = '#8b949e33';
-                            ppStatus.style.color = '#8b949e';
+                            ppStatus.style.background = '#8b949e33'; ppStatus.style.color = '#8b949e';
                         } else if (isProfiling) {
                             ppStatus.textContent = 'Profiling';
-                            ppStatus.style.background = '#4caf5033';
-                            ppStatus.style.color = '#4caf50';
-                        } else if (ppWaiting) {
+                            ppStatus.style.background = '#4caf5033'; ppStatus.style.color = '#4caf50';
+                        } else if (ppData.unprofiled === 0) {
                             ppStatus.textContent = 'All Profiled';
-                            ppStatus.style.background = '#3fb95033';
-                            ppStatus.style.color = '#3fb950';
+                            ppStatus.style.background = '#3fb95033'; ppStatus.style.color = '#3fb950';
                         } else {
                             ppStatus.textContent = 'Running';
-                            ppStatus.style.background = '#4caf5033';
-                            ppStatus.style.color = '#4caf50';
+                            ppStatus.style.background = '#4caf5033'; ppStatus.style.color = '#4caf50';
                         }
                     } else {
                         ppStatus.textContent = 'Stopped';
-                        ppStatus.style.background = '#8b949e33';
-                        ppStatus.style.color = '#8b949e';
-                    }
-                    // Always show last known stats even when stopped
-                    if (ppData.unprofiled != null) document.getElementById('pipe-profile-unprofiled').textContent = Number(ppData.unprofiled).toLocaleString();
-                    if (ppData.classified) document.getElementById('pipe-profile-classified').textContent = Number(ppData.classified).toLocaleString();
-                    if (ppData.total_nodes) document.getElementById('pipe-profile-total').textContent = Number(ppData.total_nodes).toLocaleString();
-                    if (ppData.time_range) document.getElementById('pipe-profile-timerange').textContent = ppData.time_range;
-
-                    // Show per-device progress when profiling one-at-a-time
-                    const ppDetailEl = document.getElementById('pipe-profile-detail');
-                    if (ppData.current_ip && ppData.device_index && ppData.device_total) {
-                        let detailText = `Profiling ${ppData.current_ip} (${ppData.device_index}/${ppData.device_total})`;
-                        if (ppData.avg_device_time > 0) {
-                            detailText += ` · avg ${ppData.avg_device_time.toFixed(1)}s/device`;
-                        }
-                        if (ppData.eta_seconds > 0) {
-                            const etaM = Math.floor(ppData.eta_seconds / 60);
-                            const etaS = ppData.eta_seconds % 60;
-                            detailText += etaM > 0
-                                ? ` · ~${etaM}m ${etaS}s remaining`
-                                : ` · ~${etaS}s remaining`;
-                        }
-                        ppDetailEl.textContent = detailText;
-                        ppDetailEl.style.display = '';
-                    } else if (ppData.stage_detail !== 'profiling') {
-                        ppDetailEl.textContent = '';
+                        ppStatus.style.background = '#8b949e33'; ppStatus.style.color = '#8b949e';
                     }
 
                     document.getElementById('continuous-interval').value = status.interval_minutes || 15;

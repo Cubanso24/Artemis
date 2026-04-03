@@ -1815,16 +1815,26 @@ class DatabaseManager:
 
     def requeue_analysis(self, cycle: int, event_counts: Dict[str, int] = None):
         """Re-queue a cycle for analysis, resetting it even if previously
-        completed.  Used on restart when stored events need fresh analysis."""
+        completed.  Used on restart when stored events need fresh analysis.
+
+        Does NOT reset cycles that are currently 'in_progress' to avoid a
+        race condition where the data pipeline's bulk requeue overwrites
+        the analysis pipeline's in-flight status.
+        """
         def _do(conn):
             conn.execute(
                 "INSERT INTO analysis_queue "
                 "(cycle, status, event_counts, created_at) "
                 "VALUES (?, 'pending', ?, ?) "
                 "ON CONFLICT(cycle) DO UPDATE SET "
-                "status='pending', event_counts=excluded.event_counts, "
-                "created_at=excluded.created_at, "
-                "started_at=NULL, completed_at=NULL",
+                "status = CASE WHEN analysis_queue.status = 'in_progress' "
+                "    THEN 'in_progress' ELSE 'pending' END, "
+                "event_counts = excluded.event_counts, "
+                "created_at = CASE WHEN analysis_queue.status = 'in_progress' "
+                "    THEN analysis_queue.created_at ELSE excluded.created_at END, "
+                "started_at = CASE WHEN analysis_queue.status = 'in_progress' "
+                "    THEN analysis_queue.started_at ELSE NULL END, "
+                "completed_at = NULL",
                 (cycle, _dumps(event_counts or {}),
                  datetime.now().isoformat()),
             )
