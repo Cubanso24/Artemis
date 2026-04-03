@@ -1834,8 +1834,11 @@
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
                     <h2 style="margin:0;"><i class="fa-solid fa-gauge-high" style="margin-right:8px;"></i> AGENT MONITORING DASHBOARD</h2>
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn btn-secondary" onclick="loadAgentMonitoringStats()" style="padding:6px 12px; font-size:12px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; color:var(--text-secondary);">
+                            <input type="checkbox" id="agent-mon-auto-refresh" checked> Auto-refresh
+                        </label>
+                        <button class="btn btn-secondary" onclick="refreshAgentMonitoringAll()" style="padding:6px 12px; font-size:12px;">
                             <i class="fa-solid fa-rotate"></i> Refresh
                         </button>
                         <span id="agent-mon-last-refresh" style="font-size:11px; opacity:0.5; align-self:center;">--</span>
@@ -1863,11 +1866,123 @@
                 </div>
             </div>
 
+            <!-- Pipeline Status Section -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:15px;"><i class="fa-solid fa-network-wired" style="margin-right:8px; color:var(--accent-primary);"></i> PIPELINE STATUS</h3>
+                    <span id="mon-pipeline-overall-status" style="font-size:11px; padding:2px 10px; border-radius:10px; background:#8b949e33; color:#8b949e; font-weight:600;">Unknown</span>
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-bottom:14px;">
+                    <!-- Data Pipeline Card -->
+                    <div id="mon-pipe-data-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; position:relative; overflow:hidden;">
+                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+                            <i class="fa-solid fa-database" style="color:#4fc3f7; font-size:14px;"></i>
+                            <span style="font-weight:600; font-size:13px;">Data Pipeline</span>
+                            <span id="mon-pipe-data-status" style="margin-left:auto; font-size:10px; padding:2px 8px; border-radius:8px; background:#8b949e33; color:#8b949e; font-weight:600;">—</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-size:12px;">
+                            <span style="color:var(--text-secondary);">Cycle:</span>
+                            <span id="mon-pipe-data-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Nodes:</span>
+                            <span id="mon-pipe-data-nodes" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Events:</span>
+                            <span id="mon-pipe-data-events" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Batches:</span>
+                            <span id="mon-pipe-data-batches" style="color:var(--text-primary); font-weight:500;">—</span>
+                        </div>
+                        <div id="mon-pipe-data-backfill" style="display:none; margin-top:8px; font-size:11px; padding:4px 8px; border-radius:4px; background:rgba(88,166,255,0.08); border:1px solid rgba(88,166,255,0.15); color:#58a6ff;">
+                            <i class="fa-solid fa-clock-rotate-left"></i> Backfill from: <span id="mon-pipe-data-backfill-date">—</span>
+                        </div>
+                        <div id="mon-pipe-data-msg" style="margin-top:6px; font-size:11px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                    </div>
+                    <!-- Analysis Pipeline Card -->
+                    <div id="mon-pipe-analysis-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; position:relative; overflow:hidden;">
+                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+                            <i class="fa-solid fa-brain" style="color:#ab47bc; font-size:14px;"></i>
+                            <span style="font-weight:600; font-size:13px;">Analysis Pipeline</span>
+                            <span id="mon-pipe-analysis-status" style="margin-left:auto; font-size:10px; padding:2px 8px; border-radius:8px; background:#8b949e33; color:#8b949e; font-weight:600;">—</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-size:12px;">
+                            <span style="color:var(--text-secondary);">Cycle:</span>
+                            <span id="mon-pipe-analysis-cycle" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Findings:</span>
+                            <span id="mon-pipe-analysis-findings" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Agents:</span>
+                            <span id="mon-pipe-analysis-agents" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">LLM:</span>
+                            <span id="mon-pipe-analysis-llm" style="color:var(--text-primary); font-weight:500;">—</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+                            <span id="mon-pipe-analysis-llm-badge" style="display:none; background:#7c4dff; color:#fff; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;"><i class="fa-solid fa-brain fa-beat-fade"></i> LLM</span>
+                            <span id="mon-pipe-analysis-orch-badge" style="display:none; background:#00897b; color:#fff; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;"></span>
+                        </div>
+                        <div id="mon-pipe-analysis-msg" style="margin-top:6px; font-size:11px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                    </div>
+                    <!-- Profile Pipeline Card -->
+                    <div id="mon-pipe-profile-card" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; position:relative; overflow:hidden;">
+                        <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+                            <i class="fa-solid fa-fingerprint" style="color:#4caf50; font-size:14px;"></i>
+                            <span style="font-weight:600; font-size:13px;">Profile Pipeline</span>
+                            <span id="mon-pipe-profile-status" style="margin-left:auto; font-size:10px; padding:2px 8px; border-radius:8px; background:#8b949e33; color:#8b949e; font-weight:600;">—</span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-size:12px;">
+                            <span style="color:var(--text-secondary);">Unprofiled:</span>
+                            <span id="mon-pipe-profile-unprofiled" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Classified:</span>
+                            <span id="mon-pipe-profile-classified" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Total Nodes:</span>
+                            <span id="mon-pipe-profile-total" style="color:var(--text-primary); font-weight:500;">—</span>
+                            <span style="color:var(--text-secondary);">Time Range:</span>
+                            <span id="mon-pipe-profile-timerange" style="color:var(--text-primary); font-weight:500;">—</span>
+                        </div>
+                        <div id="mon-pipe-profile-device" style="display:none; margin-top:8px; font-size:11px; padding:4px 8px; border-radius:4px; background:rgba(76,175,80,0.08); border:1px solid rgba(76,175,80,0.15); color:#4caf50;">
+                            <i class="fa-solid fa-spinner fa-spin"></i> Profiling: <span id="mon-pipe-profile-current-ip">—</span>
+                            <span id="mon-pipe-profile-progress" style="margin-left:4px; opacity:0.8;"></span>
+                        </div>
+                        <div id="mon-pipe-profile-msg" style="margin-top:6px; font-size:11px; color:var(--text-secondary); opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+                    </div>
+                </div>
+
+                <!-- Analysis Queue -->
+                <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:12px 16px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                        <i class="fa-solid fa-list-check" style="color:#ff9800; font-size:12px;"></i>
+                        <span style="font-weight:600; font-size:12px;">Analysis Queue</span>
+                    </div>
+                    <div style="display:flex; gap:20px; font-size:12px;">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="width:8px; height:8px; border-radius:50%; background:#ff9800; display:inline-block;"></span>
+                            <span style="color:var(--text-secondary);">Pending:</span>
+                            <span id="mon-queue-pending" style="font-weight:600;">0</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="width:8px; height:8px; border-radius:50%; background:#4fc3f7; display:inline-block;"></span>
+                            <span style="color:var(--text-secondary);">In Progress:</span>
+                            <span id="mon-queue-inprogress" style="font-weight:600;">0</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="width:8px; height:8px; border-radius:50%; background:#4caf50; display:inline-block;"></span>
+                            <span style="color:var(--text-secondary);">Complete:</span>
+                            <span id="mon-queue-complete" style="font-weight:600;">0</span>
+                        </div>
+                        <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+                            <span style="color:var(--text-secondary);">Interval:</span>
+                            <span id="mon-queue-interval" style="font-weight:600;">—</span>
+                            <span style="color:var(--text-secondary); margin-left:8px;">Lookback:</span>
+                            <span id="mon-queue-lookback" style="font-weight:600;">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Per-Agent Performance Cards -->
-            <div id="agent-mon-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
-                <div class="card" style="text-align:center; opacity:0.5; padding:40px;">
-                    <i class="fa-solid fa-gauge-high" style="font-size:36px; margin-bottom:12px; display:block;"></i>
-                    Agent performance data will appear here after hunts run.
+            <div class="card" style="margin-bottom:20px;">
+                <h3 style="margin:0 0 14px 0; font-size:15px;"><i class="fa-solid fa-users-gear" style="margin-right:8px; color:var(--accent-primary);"></i> AGENT PERFORMANCE</h3>
+                <div id="agent-mon-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:16px;">
+                    <div style="text-align:center; opacity:0.5; padding:40px;">
+                        <i class="fa-solid fa-gauge-high" style="font-size:36px; margin-bottom:12px; display:block;"></i>
+                        Agent performance data will appear here after hunts run.
+                    </div>
                 </div>
             </div>
         </div>
@@ -2121,6 +2236,19 @@
 
             // Setup keyboard shortcuts
             document.addEventListener('keydown', handleKeyboardShortcut);
+
+            // Agent monitoring auto-refresh toggle
+            const arCheckbox = document.getElementById('agent-mon-auto-refresh');
+            if (arCheckbox) {
+                arCheckbox.addEventListener('change', () => {
+                    if (arCheckbox.checked) {
+                        const tab = document.getElementById('agent-monitoring-tab');
+                        if (tab && tab.classList.contains('active')) _startAgentMonAutoRefresh();
+                    } else {
+                        _stopAgentMonAutoRefresh();
+                    }
+                });
+            }
         });
 
         // Theme management
@@ -5797,6 +5925,11 @@
         }
 
         function showTab(tabName) {
+            // Stop auto-refresh when leaving agent monitoring tab
+            if (tabName !== 'agent-monitoring-tab') {
+                _stopAgentMonAutoRefresh();
+            }
+
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -5842,7 +5975,8 @@
                 loadPlugins();
                 loadLLMSettings();
             } else if (tabName === 'agent-monitoring-tab') {
-                loadAgentMonitoringStats();
+                refreshAgentMonitoringAll();
+                _startAgentMonAutoRefresh();
             } else if (tabName === 'analyst-tab') {
                 // Focus the chat input when switching to analyst tab
                 setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
@@ -7823,6 +7957,199 @@
 
             } catch(e) {
                 console.error('Failed to load agent monitoring stats:', e);
+            }
+        }
+
+        // --- Pipeline Monitoring (Agent Monitoring tab) ---
+
+        let _agentMonAutoRefreshTimer = null;
+
+        function _setStatusBadge(el, text, bgColor, fgColor) {
+            el.textContent = text;
+            el.style.background = bgColor;
+            el.style.color = fgColor;
+        }
+
+        async function loadAgentMonitoringPipelines() {
+            try {
+                const resp = await fetch('/api/network-graph/continuous/status');
+                const status = await resp.json();
+
+                const overallEl = document.getElementById('mon-pipeline-overall-status');
+                if (!status.running) {
+                    _setStatusBadge(overallEl, 'Stopped', '#8b949e33', '#8b949e');
+                    ['mon-pipe-data-status', 'mon-pipe-analysis-status', 'mon-pipe-profile-status'].forEach(id => {
+                        _setStatusBadge(document.getElementById(id), 'Stopped', '#8b949e33', '#8b949e');
+                    });
+                    return;
+                }
+                _setStatusBadge(overallEl, 'Running', '#388bfd33', '#4fc3f7');
+
+                const dp = status.data_pipeline || {};
+                const ap = status.analysis_pipeline || {};
+                const pp = status.profile_pipeline || {};
+                const queue = status.analysis_queue || {};
+
+                // --- Data Pipeline ---
+                const dpEl = document.getElementById('mon-pipe-data-status');
+                const dpExtra = dp.last_progress || {};
+                const dpStageDetail = dpExtra.stage_detail || dp.stage_detail || '';
+                const dpIsBackfill = ['db_replay', 'map_rebuild', 'reuse_existing',
+                    'requeue_existing', 'backfill_mapping', 'backfill_analysis_queued',
+                    'retention_check', 'retention_ok', 'retention_warning'].includes(dpStageDetail);
+
+                if (dpIsBackfill) {
+                    _setStatusBadge(dpEl, dpStageDetail === 'db_replay' ? 'DB Replay' : 'Backfill', '#d2992233', '#d29922');
+                } else {
+                    _setStatusBadge(dpEl, dp.running ? 'Running' : 'Stopped',
+                        dp.running ? '#388bfd33' : '#8b949e33',
+                        dp.running ? '#4fc3f7' : '#8b949e');
+                }
+
+                const dpCycle = status.cycle || dp.cycle || 0;
+                document.getElementById('mon-pipe-data-cycle').textContent = dpCycle || '—';
+                document.getElementById('mon-pipe-data-nodes').textContent =
+                    (status.total_nodes || dp.total_nodes) ? Number(status.total_nodes || dp.total_nodes).toLocaleString() : '—';
+                document.getElementById('mon-pipe-data-events').textContent =
+                    dpExtra.batch_events ? Number(dpExtra.batch_events).toLocaleString() :
+                    (dpExtra.total_events ? Number(dpExtra.total_events).toLocaleString() : '—');
+                document.getElementById('mon-pipe-data-batches').textContent =
+                    dpExtra.batches_queued ? dpExtra.batches_queued : '—';
+
+                const bfFrom = dpExtra.backfill_from || '';
+                const bfDiv = document.getElementById('mon-pipe-data-backfill');
+                if (bfFrom) {
+                    bfDiv.style.display = '';
+                    document.getElementById('mon-pipe-data-backfill-date').textContent =
+                        bfFrom.includes('T') ? bfFrom.split('T')[0] : bfFrom;
+                } else {
+                    bfDiv.style.display = 'none';
+                }
+                document.getElementById('mon-pipe-data-msg').textContent = dp.message || '';
+
+                // --- Analysis Pipeline ---
+                const apEl = document.getElementById('mon-pipe-analysis-status');
+                const apData = ap.last_progress || {};
+                const apStage = apData.stage_detail || '';
+                const apIsLlm = apStage === 'llm_analysis' || apStage === 'llm_synthesis';
+                const apIsIdle = apData.status === 'idle' || apData.status === 'initializing';
+
+                if (ap.running) {
+                    if (apIsLlm) {
+                        _setStatusBadge(apEl, 'Analyzing', '#ab47bc33', '#ab47bc');
+                    } else if (apIsIdle) {
+                        _setStatusBadge(apEl, 'Waiting', '#8b949e33', '#8b949e');
+                    } else {
+                        _setStatusBadge(apEl, 'Running', '#ab47bc33', '#ab47bc');
+                    }
+                } else {
+                    _setStatusBadge(apEl, 'Stopped', '#8b949e33', '#8b949e');
+                }
+
+                document.getElementById('mon-pipe-analysis-cycle').textContent = apData.cycle || ap.cycle || '—';
+                document.getElementById('mon-pipe-analysis-findings').textContent = apData.findings || ap.findings || '0';
+                document.getElementById('mon-pipe-analysis-agents').textContent =
+                    apData.n_agents ? `${apData.n_agents} agents` : '—';
+                const llmText = apData.llm_backend || '—';
+                const elapsed = apData.elapsed_seconds;
+                document.getElementById('mon-pipe-analysis-llm').textContent =
+                    (apIsLlm && elapsed) ? `${llmText} (${Math.floor(elapsed / 60)}m${elapsed % 60}s)` : llmText;
+
+                const llmBadge = document.getElementById('mon-pipe-analysis-llm-badge');
+                const orchBadge = document.getElementById('mon-pipe-analysis-orch-badge');
+                if (apIsLlm) {
+                    llmBadge.style.display = 'inline';
+                    llmBadge.innerHTML = elapsed
+                        ? `<i class="fa-solid fa-brain fa-beat-fade"></i> ${Math.floor(elapsed / 60)}m`
+                        : '<i class="fa-solid fa-brain fa-beat-fade"></i> LLM';
+                } else {
+                    llmBadge.style.display = 'none';
+                }
+                if (apData.orchestration) {
+                    orchBadge.textContent = apData.orchestration === 'crewai' ? 'CrewAI' : apData.orchestration;
+                    orchBadge.style.display = 'inline';
+                } else {
+                    orchBadge.style.display = 'none';
+                }
+                document.getElementById('mon-pipe-analysis-msg').textContent = ap.message || '';
+
+                // --- Profile Pipeline ---
+                const ppEl = document.getElementById('mon-pipe-profile-status');
+                const ppData = pp.last_progress || {};
+                const isProfiling = ppData.stage_detail === 'profiling';
+                const ppWaitData = ppData.stage_detail === 'waiting_for_data';
+
+                if (pp.running) {
+                    if (ppWaitData) {
+                        _setStatusBadge(ppEl, 'Waiting', '#8b949e33', '#8b949e');
+                    } else if (isProfiling) {
+                        _setStatusBadge(ppEl, 'Profiling', '#4caf5033', '#4caf50');
+                    } else if (ppData.unprofiled === 0) {
+                        _setStatusBadge(ppEl, 'All Profiled', '#3fb95033', '#3fb950');
+                    } else {
+                        _setStatusBadge(ppEl, 'Running', '#4caf5033', '#4caf50');
+                    }
+                } else {
+                    _setStatusBadge(ppEl, 'Stopped', '#8b949e33', '#8b949e');
+                }
+
+                document.getElementById('mon-pipe-profile-unprofiled').textContent =
+                    ppData.unprofiled != null ? ppData.unprofiled : '—';
+                document.getElementById('mon-pipe-profile-classified').textContent =
+                    ppData.classified != null ? ppData.classified : '—';
+                document.getElementById('mon-pipe-profile-total').textContent =
+                    (ppData.total_nodes || pp.total_nodes) ? Number(ppData.total_nodes || pp.total_nodes).toLocaleString() : '—';
+                document.getElementById('mon-pipe-profile-timerange').textContent =
+                    ppData.time_range || '—';
+
+                const profileDeviceDiv = document.getElementById('mon-pipe-profile-device');
+                if (isProfiling && ppData.current_ip) {
+                    profileDeviceDiv.style.display = '';
+                    document.getElementById('mon-pipe-profile-current-ip').textContent = ppData.current_ip;
+                    document.getElementById('mon-pipe-profile-progress').textContent =
+                        ppData.device_total ? `(${ppData.device_index || 0}/${ppData.device_total})` : '';
+                } else {
+                    profileDeviceDiv.style.display = 'none';
+                }
+                document.getElementById('mon-pipe-profile-msg').textContent = pp.message || '';
+
+                // --- Analysis Queue ---
+                document.getElementById('mon-queue-pending').textContent = queue.pending || 0;
+                document.getElementById('mon-queue-inprogress').textContent = queue.in_progress || 0;
+                document.getElementById('mon-queue-complete').textContent = queue.complete || 0;
+                document.getElementById('mon-queue-interval').textContent =
+                    status.interval_minutes ? `${status.interval_minutes}m` : '—';
+                document.getElementById('mon-queue-lookback').textContent =
+                    status.lookback_minutes ? `${status.lookback_minutes}m` : '—';
+
+            } catch(e) {
+                console.error('Failed to load pipeline status for monitoring:', e);
+            }
+        }
+
+        async function refreshAgentMonitoringAll() {
+            await Promise.all([
+                loadAgentMonitoringStats(),
+                loadAgentMonitoringPipelines(),
+            ]);
+        }
+
+        function _startAgentMonAutoRefresh() {
+            _stopAgentMonAutoRefresh();
+            if (document.getElementById('agent-mon-auto-refresh')?.checked) {
+                _agentMonAutoRefreshTimer = setInterval(() => {
+                    const tab = document.getElementById('agent-monitoring-tab');
+                    if (tab && tab.classList.contains('active')) {
+                        refreshAgentMonitoringAll();
+                    }
+                }, 10000);
+            }
+        }
+
+        function _stopAgentMonAutoRefresh() {
+            if (_agentMonAutoRefreshTimer) {
+                clearInterval(_agentMonAutoRefreshTimer);
+                _agentMonAutoRefreshTimer = null;
             }
         }
 
