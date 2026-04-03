@@ -1062,6 +1062,22 @@ class CrewOrchestrator:
             "agents": agent_names,
         })
 
+        # --- Track crew run in DB ---
+        _crew_run_id = None
+        try:
+            from artemis.managers.db_manager import DatabaseManager
+            _crew_db = DatabaseManager(db_path or "artemis.db")
+            _cycle = kwargs.get("cycle", 0)
+            _crew_run_id = _crew_db.start_crew_run(
+                cycle=_cycle,
+                process_type=str(self.process),
+                num_agents=len(agent_names),
+                num_tasks=len(tasks),
+            )
+            logger.info(f"[DIAG] Crew run #{_crew_run_id} started (cycle={_cycle})")
+        except Exception as _cre:
+            logger.warning(f"[DIAG] Failed to start crew run tracking: {_cre}")
+
         # --- Diagnostic: test LLM connectivity before crew kickoff ---
         logger.info("[DIAG] Running Ollama test call before crew kickoff...")
         llm_ok = self._test_llm_call()
@@ -1120,8 +1136,21 @@ class CrewOrchestrator:
                     "thought": thought,
                     "action": action,
                 })
+
+                # Update current agent in crew run
+                if _crew_run_id and agent_name != "unknown":
+                    try:
+                        _crew_db.update_crew_run(
+                            _crew_run_id,
+                            current_agent=agent_name,
+                            elapsed_seconds=round(time.time() - start, 1),
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+        _tasks_completed_count = [0]  # mutable counter for closure
 
         def _task_callback(task_output):
             """Fires after each CrewAI task completes (non-blocking)."""
@@ -1138,6 +1167,20 @@ class CrewOrchestrator:
                     "message": f"Task complete: {desc}",
                     "output_preview": raw,
                 })
+
+                # Update crew run progress
+                _tasks_completed_count[0] += 1
+                if _crew_run_id:
+                    try:
+                        _crew_db.update_crew_run(
+                            _crew_run_id,
+                            tasks_completed=_tasks_completed_count[0],
+                            current_agent=agent_role or "crew",
+                            current_task=desc[:200],
+                            elapsed_seconds=round(time.time() - start, 1),
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1224,14 +1267,27 @@ class CrewOrchestrator:
                         f"[DIAG] Heartbeat #{tick}: crew.kickoff() "
                         f"still running ({elapsed_hb:.0f}s elapsed)"
                     )
+                    # Update elapsed time in crew run record
+                    if _crew_run_id:
+                        try:
+                            _crew_db.update_crew_run(
+                                _crew_run_id,
+                                elapsed_seconds=round(elapsed_hb, 1),
+                            )
+                        except Exception:
+                            pass
 
         hb_thread = _heartbeat_threading.Thread(
             target=_heartbeat, daemon=True
         )
         hb_thread.start()
 
+        _crew_error = ""
         try:
             result = crew.kickoff()
+        except Exception as _kickoff_exc:
+            _crew_error = str(_kickoff_exc)
+            raise
         finally:
             _kickoff_done.set()
             # Restore stdout/stderr
@@ -1239,6 +1295,17 @@ class CrewOrchestrator:
             _sys.stderr = _orig_stderr
             # Restore original Ollama embedding flag
             _rag_mod._OLLAMA_EMBED_FAILED = _prev_embed_flag
+            # Mark crew run complete/failed
+            if _crew_run_id:
+                try:
+                    _crew_db.complete_crew_run(
+                        _crew_run_id,
+                        elapsed=round(time.time() - start, 1),
+                        error=_crew_error,
+                        result_summary=f"Tasks completed: {_tasks_completed_count[0]}/{len(tasks)}",
+                    )
+                except Exception:
+                    pass
 
         kickoff_elapsed = time.time() - kickoff_start
         elapsed = time.time() - start

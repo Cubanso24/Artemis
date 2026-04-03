@@ -885,6 +885,11 @@
         }
 
         /* Mobile responsive */
+        @keyframes crewPulse {
+            0%, 100% { opacity: 0.3; transform: translateX(-100%); }
+            50% { opacity: 1; transform: translateX(100%); }
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 0 10px 10px;
@@ -1820,6 +1825,66 @@
                 </div>
             </div>
 
+            <!-- Crew Run Status Section -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:15px;"><i class="fa-solid fa-robot" style="margin-right:8px; color:#7c4dff;"></i> CREW RUN STATUS</h3>
+                    <span id="crew-run-live-status" style="font-size:11px; padding:2px 10px; border-radius:10px; background:#8b949e33; color:#8b949e; font-weight:600;">Idle</span>
+                </div>
+
+                <!-- Active run panel -->
+                <div id="crew-run-active-panel" style="display:none; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:16px; margin-bottom:14px; position:relative; overflow:hidden;">
+                    <div id="crew-run-active-pulse" style="position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg, transparent, #7c4dff, transparent); animation: crewPulse 2s ease-in-out infinite;"></div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:14px; margin-bottom:12px;">
+                        <div style="text-align:center;">
+                            <div style="font-size:24px; font-weight:700; color:#7c4dff;" id="crew-run-elapsed">0s</div>
+                            <div style="font-size:10px; text-transform:uppercase; opacity:0.6;">Elapsed</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:24px; font-weight:700;" id="crew-run-tasks-progress">0/0</div>
+                            <div style="font-size:10px; text-transform:uppercase; opacity:0.6;">Tasks Done</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:24px; font-weight:700;" id="crew-run-agent-count">0</div>
+                            <div style="font-size:10px; text-transform:uppercase; opacity:0.6;">Agents</div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:14px; font-weight:600; color:var(--accent-primary); margin-top:4px;" id="crew-run-process-type">—</div>
+                            <div style="font-size:10px; text-transform:uppercase; opacity:0.6;">Process</div>
+                        </div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px; font-size:12px;">
+                        <span style="color:var(--text-secondary);">Current Agent:</span>
+                        <span id="crew-run-current-agent" style="font-weight:600; color:var(--accent-primary);">—</span>
+                    </div>
+                    <div id="crew-run-current-task-row" style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:4px;">
+                        <span style="color:var(--text-secondary);">Current Task:</span>
+                        <span id="crew-run-current-task" style="font-weight:500; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:500px;">—</span>
+                    </div>
+                    <!-- Progress bar -->
+                    <div style="margin-top:10px; height:6px; background:var(--bg-tertiary); border-radius:3px; overflow:hidden;">
+                        <div id="crew-run-progress-bar" style="height:100%; background:linear-gradient(90deg, #7c4dff, #b388ff); width:0%; transition:width 0.5s ease;"></div>
+                    </div>
+                </div>
+
+                <!-- No active run placeholder -->
+                <div id="crew-run-idle-panel" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:20px; text-align:center; margin-bottom:14px;">
+                    <i class="fa-solid fa-moon" style="font-size:24px; opacity:0.3; margin-bottom:8px; display:block;"></i>
+                    <div style="opacity:0.5; font-size:12px;">No crew run currently active. Runs start automatically during hunt cycles.</div>
+                </div>
+
+                <!-- Recent runs history -->
+                <div>
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                        <i class="fa-solid fa-clock-rotate-left" style="color:var(--text-secondary); font-size:12px;"></i>
+                        <span style="font-weight:600; font-size:12px;">Recent Runs</span>
+                    </div>
+                    <div id="crew-run-history" style="max-height:200px; overflow-y:auto;">
+                        <div style="text-align:center; opacity:0.4; font-size:12px; padding:12px;">No crew runs recorded yet.</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Pipeline Status Section -->
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
@@ -1936,6 +2001,30 @@
                     <div style="text-align:center; opacity:0.5; padding:40px;">
                         <i class="fa-solid fa-gauge-high" style="font-size:36px; margin-bottom:12px; display:block;"></i>
                         Agent performance data will appear here after hunts run.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent Activity Feed -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:15px;"><i class="fa-solid fa-stream" style="margin-right:8px; color:#56d4dd;"></i> AGENT ACTIVITY FEED</h3>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="agent-mon-feed-filter" onchange="filterAgentMonFeed()" style="background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); padding:4px 8px; border-radius:4px; font-size:11px;">
+                            <option value="all">All Agents</option>
+                        </select>
+                        <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; color:var(--text-secondary);">
+                            <input type="checkbox" id="agent-mon-feed-autoscroll" checked> Auto-scroll
+                        </label>
+                        <button onclick="clearAgentMonFeed()" style="background:none; border:1px solid var(--border-color); color:var(--text-secondary); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">
+                            <i class="fa-solid fa-trash-can"></i> Clear
+                        </button>
+                    </div>
+                </div>
+                <div id="agent-mon-activity-feed" style="height:350px; overflow-y:auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:8px; font-family:'SF Mono', 'Fira Code', monospace; font-size:12px;">
+                    <div style="text-align:center; opacity:0.4; padding:40px;">
+                        <i class="fa-solid fa-stream" style="font-size:28px; margin-bottom:8px; display:block;"></i>
+                        Agent activity events will stream here during crew runs.
                     </div>
                 </div>
             </div>
@@ -7838,7 +7927,212 @@
             await Promise.all([
                 loadAgentMonitoringStats(),
                 loadAgentMonitoringPipelines(),
+                loadCrewRunStatus(),
+                loadAgentMonFeedData(),
             ]);
+        }
+
+        // ========================================
+        // Crew Run Status
+        // ========================================
+
+        function _formatElapsed(seconds) {
+            if (!seconds || seconds < 0) return '0s';
+            if (seconds < 60) return Math.round(seconds) + 's';
+            if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            return h + 'h ' + m + 'm';
+        }
+
+        function _crewStatusBadge(status) {
+            const map = {
+                'running': { bg: 'rgba(124,77,255,0.2)', fg: '#b388ff', text: 'Running' },
+                'starting': { bg: 'rgba(88,166,255,0.2)', fg: '#58a6ff', text: 'Starting' },
+                'completed': { bg: 'rgba(63,185,80,0.2)', fg: '#3fb950', text: 'Completed' },
+                'failed': { bg: 'rgba(248,81,73,0.2)', fg: '#f85149', text: 'Failed' },
+            };
+            return map[status] || { bg: '#8b949e33', fg: '#8b949e', text: status || 'Unknown' };
+        }
+
+        async function loadCrewRunStatus() {
+            try {
+                // Fetch active run and history in parallel
+                const [activeResp, histResp] = await Promise.all([
+                    fetch('/api/agent-monitoring/crew-runs/active'),
+                    fetch('/api/agent-monitoring/crew-runs?limit=10'),
+                ]);
+                const active = await activeResp.json();
+                const history = await histResp.json();
+
+                const statusEl = document.getElementById('crew-run-live-status');
+                const activePanel = document.getElementById('crew-run-active-panel');
+                const idlePanel = document.getElementById('crew-run-idle-panel');
+
+                if (active && active.id) {
+                    // Active run exists
+                    const badge = _crewStatusBadge(active.status);
+                    statusEl.textContent = badge.text;
+                    statusEl.style.background = badge.bg;
+                    statusEl.style.color = badge.fg;
+
+                    activePanel.style.display = '';
+                    idlePanel.style.display = 'none';
+
+                    // Calculate live elapsed from started_at
+                    let elapsed = active.elapsed_seconds || 0;
+                    if (active.started_at) {
+                        const startMs = new Date(active.started_at + (active.started_at.endsWith('Z') ? '' : 'Z')).getTime();
+                        if (!isNaN(startMs)) {
+                            elapsed = Math.max(elapsed, (Date.now() - startMs) / 1000);
+                        }
+                    }
+
+                    document.getElementById('crew-run-elapsed').textContent = _formatElapsed(elapsed);
+                    document.getElementById('crew-run-tasks-progress').textContent =
+                        `${active.tasks_completed || 0}/${active.num_tasks || 0}`;
+                    document.getElementById('crew-run-agent-count').textContent = active.num_agents || 0;
+                    document.getElementById('crew-run-process-type').textContent =
+                        (active.process_type || '—').replace('Process.', '');
+                    document.getElementById('crew-run-current-agent').textContent =
+                        active.current_agent || '—';
+                    document.getElementById('crew-run-current-task').textContent =
+                        active.current_task || '—';
+
+                    // Progress bar
+                    const pct = active.num_tasks > 0
+                        ? Math.round((active.tasks_completed || 0) / active.num_tasks * 100)
+                        : 0;
+                    document.getElementById('crew-run-progress-bar').style.width = pct + '%';
+                } else {
+                    // No active run
+                    const badge = _crewStatusBadge('idle');
+                    statusEl.textContent = 'Idle';
+                    statusEl.style.background = '#8b949e33';
+                    statusEl.style.color = '#8b949e';
+
+                    activePanel.style.display = 'none';
+                    idlePanel.style.display = '';
+                }
+
+                // Render history
+                const histDiv = document.getElementById('crew-run-history');
+                if (!history || history.length === 0) {
+                    histDiv.innerHTML = '<div style="text-align:center; opacity:0.4; font-size:12px; padding:12px;">No crew runs recorded yet.</div>';
+                    return;
+                }
+
+                histDiv.innerHTML = history.map(run => {
+                    const badge = _crewStatusBadge(run.status);
+                    const elapsed = run.elapsed_seconds ? _formatElapsed(run.elapsed_seconds) : '—';
+                    const started = run.started_at ? new Date(run.started_at).toLocaleString() : '—';
+                    const tasks = `${run.tasks_completed || 0}/${run.num_tasks || 0}`;
+                    const errorSnip = run.error_message
+                        ? `<span style="color:#f85149; font-size:10px; margin-left:8px;" title="${run.error_message.replace(/"/g, '&quot;')}"><i class="fa-solid fa-triangle-exclamation"></i> error</span>`
+                        : '';
+
+                    return `<div style="display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--border-color); font-size:12px;">
+                        <span style="background:${badge.bg}; color:${badge.fg}; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600; min-width:70px; text-align:center;">${badge.text}</span>
+                        <span style="color:var(--text-secondary); min-width:55px;">Cycle ${run.cycle || '?'}</span>
+                        <span style="min-width:80px;">${elapsed}</span>
+                        <span style="opacity:0.6;">${tasks} tasks</span>
+                        <span style="opacity:0.5; font-size:11px;">${run.num_agents || 0} agents</span>
+                        ${errorSnip}
+                        <span style="margin-left:auto; opacity:0.4; font-size:11px;">${started}</span>
+                    </div>`;
+                }).join('');
+
+            } catch(e) {
+                console.error('Failed to load crew run status:', e);
+            }
+        }
+
+        // ========================================
+        // Agent Activity Feed (in Monitoring tab)
+        // ========================================
+
+        let _monFeedSinceId = 0;
+        let _monFeedAgents = new Set();
+
+        async function loadAgentMonFeedData() {
+            try {
+                const resp = await fetch(`/api/agent-activity?since_id=${_monFeedSinceId}`);
+                if (!resp.ok) return;
+                const events = await resp.json();
+                if (events.length === 0) return;
+
+                const feed = document.getElementById('agent-mon-activity-feed');
+                // Clear placeholder on first data
+                if (_monFeedSinceId === 0 && events.length > 0) {
+                    feed.innerHTML = '';
+                }
+
+                events.forEach(ev => {
+                    _monFeedAgents.add(ev.agent);
+                    _appendMonFeedEvent(feed, ev);
+                });
+
+                _monFeedSinceId = events[events.length - 1].id;
+
+                // Update filter dropdown
+                _updateMonFeedFilter();
+
+                // Auto-scroll
+                if (document.getElementById('agent-mon-feed-autoscroll')?.checked) {
+                    feed.scrollTop = feed.scrollHeight;
+                }
+            } catch(e) { /* ignore */ }
+        }
+
+        function _appendMonFeedEvent(feed, ev) {
+            const color = _agentColors[ev.agent] || '#8b949e';
+            const icon = _activityIcons[ev.activity] || 'fa-circle';
+            const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
+            const msg = ev.detail?.message || ev.activity;
+
+            const filter = document.getElementById('agent-mon-feed-filter')?.value || 'all';
+            const visible = (filter === 'all' || filter === ev.agent);
+
+            const line = document.createElement('div');
+            line.setAttribute('data-agent-feed', ev.agent);
+            line.style.cssText = `padding:3px 8px; border-left:3px solid ${color}; margin-bottom:3px; border-radius:0 3px 3px 0; background:rgba(${ev.activity === 'error' ? '248,81,73,0.08' : '255,255,255,0.02'});${visible ? '' : ' display:none;'}`;
+            line.innerHTML = `<span style="opacity:0.4; font-size:10px; margin-right:6px;">${ts}</span>`
+                + `<i class="fa-solid ${icon}" style="color:${color}; font-size:10px; margin-right:4px;"></i>`
+                + `<span style="color:${color}; font-weight:600; font-size:11px; margin-right:6px;">${ev.agent}</span>`
+                + `<span style="opacity:0.85;">${msg}</span>`;
+            feed.appendChild(line);
+        }
+
+        function _updateMonFeedFilter() {
+            const select = document.getElementById('agent-mon-feed-filter');
+            const current = select.value;
+            const existing = new Set(Array.from(select.options).map(o => o.value));
+            _monFeedAgents.forEach(a => {
+                if (!existing.has(a)) {
+                    const opt = document.createElement('option');
+                    opt.value = a;
+                    opt.textContent = a;
+                    select.appendChild(opt);
+                }
+            });
+            select.value = current;
+        }
+
+        function filterAgentMonFeed() {
+            const filter = document.getElementById('agent-mon-feed-filter').value;
+            document.querySelectorAll('#agent-mon-activity-feed [data-agent-feed]').forEach(el => {
+                el.style.display = (filter === 'all' || el.getAttribute('data-agent-feed') === filter) ? '' : 'none';
+            });
+        }
+
+        async function clearAgentMonFeed() {
+            try { await fetch('/api/agent-activity', { method: 'DELETE' }); } catch(e) {}
+            _monFeedSinceId = 0;
+            _monFeedAgents.clear();
+            const feed = document.getElementById('agent-mon-activity-feed');
+            feed.innerHTML = '<div style="text-align:center; opacity:0.4; padding:40px;"><i class="fa-solid fa-stream" style="font-size:28px; margin-bottom:8px; display:block;"></i>Agent activity events will stream here during crew runs.</div>';
+            const select = document.getElementById('agent-mon-feed-filter');
+            select.innerHTML = '<option value="all">All Agents</option>';
         }
 
         function _startAgentMonAutoRefresh() {

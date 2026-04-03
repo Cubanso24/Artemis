@@ -72,6 +72,23 @@ async def get_agent_monitoring_stats():
     return db.get_agent_monitoring_stats()
 
 
+@router.get("/api/agent-monitoring/crew-runs")
+async def get_crew_runs(limit: int = 20):
+    """Return recent crew run history."""
+    from artemis.managers.db_manager import DatabaseManager
+    db = DatabaseManager()
+    return db.get_crew_runs(limit=limit)
+
+
+@router.get("/api/agent-monitoring/crew-runs/active")
+async def get_active_crew_run():
+    """Return the currently active crew run, or null."""
+    from artemis.managers.db_manager import DatabaseManager
+    db = DatabaseManager()
+    run = db.get_active_crew_run()
+    return run or {}
+
+
 @router.get("/static/{path:path}")
 async def serve_static(path: str):
     """Serve static files."""

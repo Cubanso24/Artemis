@@ -5,7 +5,7 @@ import sqlite3
 import logging
 import time as _time
 from datetime import datetime, date
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger("artemis.db")
 
@@ -238,6 +238,27 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_agent_activity_created "
             "ON agent_activity(created_at)"
         )
+
+        # Crew run tracking — tracks each CrewAI kickoff lifecycle
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS crew_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle INTEGER,
+                status TEXT NOT NULL DEFAULT 'starting',
+                process_type TEXT,
+                num_agents INTEGER DEFAULT 0,
+                num_tasks INTEGER DEFAULT 0,
+                started_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                completed_at TIMESTAMP,
+                elapsed_seconds REAL,
+                current_task TEXT,
+                current_agent TEXT,
+                tasks_completed INTEGER DEFAULT 0,
+                error_message TEXT,
+                result_summary TEXT
+            )
+        """)
 
         # ------------------------------------------------------------------
         # Interactive map: layout positions + annotations
@@ -1016,6 +1037,96 @@ class DatabaseManager:
                     'total_high': total_high,
                 },
             }
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Crew run tracking
+    # ------------------------------------------------------------------
+
+    def start_crew_run(self, cycle: int, process_type: str,
+                       num_agents: int, num_tasks: int) -> int:
+        """Record the start of a CrewAI run and return its row id."""
+        now = datetime.now().isoformat()
+        def _do(conn):
+            cur = conn.execute(
+                "INSERT INTO crew_runs "
+                "(cycle, status, process_type, num_agents, num_tasks, "
+                " started_at, updated_at) "
+                "VALUES (?, 'running', ?, ?, ?, ?, ?)",
+                (cycle, process_type, num_agents, num_tasks, now, now),
+            )
+            return cur.lastrowid
+        return self._exec_with_retry(_do)
+
+    def update_crew_run(self, run_id: int, **kwargs):
+        """Update fields on a crew run (current_task, current_agent, etc.)."""
+        kwargs['updated_at'] = datetime.now().isoformat()
+        sets = ", ".join(f"{k} = ?" for k in kwargs)
+        vals = list(kwargs.values()) + [run_id]
+        def _do(conn):
+            conn.execute(
+                f"UPDATE crew_runs SET {sets} WHERE id = ?", vals
+            )
+        self._exec_with_retry(_do)
+
+    def complete_crew_run(self, run_id: int, elapsed: float,
+                          result_summary: str = "", error: str = ""):
+        """Mark a crew run as completed or failed."""
+        now = datetime.now().isoformat()
+        status = "failed" if error else "completed"
+        def _do(conn):
+            conn.execute(
+                "UPDATE crew_runs SET status=?, completed_at=?, "
+                "updated_at=?, elapsed_seconds=?, result_summary=?, "
+                "error_message=? WHERE id=?",
+                (status, now, now, elapsed, result_summary, error, run_id),
+            )
+        self._exec_with_retry(_do)
+
+    def get_crew_runs(self, limit: int = 20) -> List[Dict]:
+        """Return recent crew runs, newest first."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, cycle, status, process_type, num_agents, "
+                "num_tasks, started_at, updated_at, completed_at, "
+                "elapsed_seconds, current_task, current_agent, "
+                "tasks_completed, error_message, result_summary "
+                "FROM crew_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            cols = [
+                'id', 'cycle', 'status', 'process_type', 'num_agents',
+                'num_tasks', 'started_at', 'updated_at', 'completed_at',
+                'elapsed_seconds', 'current_task', 'current_agent',
+                'tasks_completed', 'error_message', 'result_summary',
+            ]
+            return [dict(zip(cols, r)) for r in rows]
+        finally:
+            conn.close()
+
+    def get_active_crew_run(self) -> Optional[Dict]:
+        """Return the currently running crew run, or None."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT id, cycle, status, process_type, num_agents, "
+                "num_tasks, started_at, updated_at, completed_at, "
+                "elapsed_seconds, current_task, current_agent, "
+                "tasks_completed, error_message, result_summary "
+                "FROM crew_runs WHERE status IN ('starting', 'running') "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            cols = [
+                'id', 'cycle', 'status', 'process_type', 'num_agents',
+                'num_tasks', 'started_at', 'updated_at', 'completed_at',
+                'elapsed_seconds', 'current_task', 'current_agent',
+                'tasks_completed', 'error_message', 'result_summary',
+            ]
+            return dict(zip(cols, row))
         finally:
             conn.close()
 
