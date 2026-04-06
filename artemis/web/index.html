@@ -1825,6 +1825,50 @@
                 </div>
             </div>
 
+            <!-- Crew Run Health Summary -->
+            <div id="crew-run-health-alert" class="card" style="margin-bottom:20px; display:none; border-left:4px solid #f85149;">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                    <i class="fa-solid fa-triangle-exclamation" style="font-size:18px; color:#f85149;"></i>
+                    <h3 style="margin:0; font-size:15px; color:#f85149;">CREW RUN HEALTH ALERT</h3>
+                    <span id="crew-health-streak-badge" style="margin-left:auto; background:rgba(248,81,73,0.15); color:#f85149; padding:3px 10px; border-radius:10px; font-size:11px; font-weight:700;"></span>
+                </div>
+                <div id="crew-health-summary" style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;"></div>
+                <div id="crew-health-top-error" style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px; font-family:'Courier New',monospace; font-size:11px; color:#f85149; white-space:pre-wrap; word-break:break-all; max-height:80px; overflow-y:auto;"></div>
+            </div>
+
+            <!-- Crew Run Statistics -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                    <h3 style="margin:0; font-size:15px;"><i class="fa-solid fa-chart-line" style="margin-right:8px; color:#7c4dff;"></i> CREW RUN STATISTICS</h3>
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(5, 1fr); gap:14px;">
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; text-align:center;">
+                        <div style="font-size:24px; font-weight:700;" id="crew-stats-success-rate">—</div>
+                        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.6; margin-top:4px;">Success Rate</div>
+                    </div>
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; text-align:center;">
+                        <div style="font-size:24px; font-weight:700; color:#3fb950;" id="crew-stats-completed">0</div>
+                        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.6; margin-top:4px;">Completed</div>
+                    </div>
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; text-align:center;">
+                        <div style="font-size:24px; font-weight:700; color:#f85149;" id="crew-stats-failed">0</div>
+                        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.6; margin-top:4px;">Failed</div>
+                    </div>
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; text-align:center;">
+                        <div style="font-size:24px; font-weight:700;" id="crew-stats-avg-elapsed">—</div>
+                        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.6; margin-top:4px;">Avg Duration</div>
+                    </div>
+                    <div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:8px; padding:14px; text-align:center;">
+                        <div style="font-size:24px; font-weight:700;" id="crew-stats-tasks-ratio">—</div>
+                        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.05em; opacity:0.6; margin-top:4px;">Tasks Done</div>
+                    </div>
+                </div>
+                <!-- Last success info -->
+                <div id="crew-stats-last-success-row" style="display:none; margin-top:10px; font-size:11px; color:var(--text-secondary); text-align:center;">
+                    Last successful run: <span id="crew-stats-last-success" style="font-weight:600; color:#3fb950;"></span>
+                </div>
+            </div>
+
             <!-- Crew Run Status Section -->
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
@@ -1878,8 +1922,13 @@
                     <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
                         <i class="fa-solid fa-clock-rotate-left" style="color:var(--text-secondary); font-size:12px;"></i>
                         <span style="font-weight:600; font-size:12px;">Recent Runs</span>
+                        <select id="crew-run-history-filter" onchange="filterCrewRunHistory()" style="margin-left:auto; background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-primary); padding:2px 8px; border-radius:4px; font-size:11px;">
+                            <option value="all">All</option>
+                            <option value="failed">Failed Only</option>
+                            <option value="completed">Completed Only</option>
+                        </select>
                     </div>
-                    <div id="crew-run-history" style="max-height:200px; overflow-y:auto;">
+                    <div id="crew-run-history" style="max-height:400px; overflow-y:auto;">
                         <div style="text-align:center; opacity:0.4; font-size:12px; padding:12px;">No crew runs recorded yet.</div>
                     </div>
                 </div>
@@ -7939,8 +7988,79 @@
                 loadAgentMonitoringStats(),
                 loadAgentMonitoringPipelines(),
                 loadCrewRunStatus(),
+                loadCrewRunStats(),
                 loadAgentMonFeedData(),
             ]);
+        }
+
+        async function loadCrewRunStats() {
+            try {
+                const resp = await fetch('/api/agent-monitoring/crew-runs/stats');
+                if (!resp.ok) return;
+                const s = await resp.json();
+                if (!s.total_runs) {
+                    document.getElementById('crew-run-health-alert').style.display = 'none';
+                    return;
+                }
+
+                // Update stat cards
+                const rateEl = document.getElementById('crew-stats-success-rate');
+                rateEl.textContent = s.success_rate + '%';
+                rateEl.style.color = s.success_rate >= 80 ? '#3fb950' : s.success_rate >= 50 ? '#d29922' : '#f85149';
+
+                document.getElementById('crew-stats-completed').textContent = s.completed;
+                document.getElementById('crew-stats-failed').textContent = s.failed;
+                document.getElementById('crew-stats-avg-elapsed').textContent = _formatElapsed(s.avg_elapsed_seconds);
+                document.getElementById('crew-stats-tasks-ratio').textContent =
+                    s.total_tasks_possible > 0
+                        ? Math.round(s.total_tasks_completed / s.total_tasks_possible * 100) + '%'
+                        : '—';
+
+                // Last success
+                const lsRow = document.getElementById('crew-stats-last-success-row');
+                if (s.last_success) {
+                    lsRow.style.display = '';
+                    document.getElementById('crew-stats-last-success').textContent =
+                        new Date(s.last_success).toLocaleString();
+                } else if (s.failed > 0) {
+                    lsRow.style.display = '';
+                    document.getElementById('crew-stats-last-success').textContent = 'Never (in last ' + s.total_runs + ' runs)';
+                    document.getElementById('crew-stats-last-success').style.color = '#f85149';
+                } else {
+                    lsRow.style.display = 'none';
+                }
+
+                // Health alert (show if 3+ consecutive failures)
+                const alertEl = document.getElementById('crew-run-health-alert');
+                if (s.failure_streak >= 3) {
+                    alertEl.style.display = '';
+                    document.getElementById('crew-health-streak-badge').textContent =
+                        s.failure_streak + ' consecutive failures';
+                    document.getElementById('crew-health-summary').textContent =
+                        `${s.failure_streak} crew runs have failed in a row. Success rate: ${s.success_rate}% over the last ${s.total_runs} runs. Average run duration: ${_formatElapsed(s.avg_elapsed_seconds)}.`;
+
+                    const topErr = s.top_errors && s.top_errors.length > 0 ? s.top_errors[0] : null;
+                    const errEl = document.getElementById('crew-health-top-error');
+                    if (topErr) {
+                        errEl.style.display = '';
+                        errEl.textContent = topErr.error + (topErr.count > 1 ? ` (${topErr.count}x)` : '');
+                    } else {
+                        errEl.style.display = 'none';
+                    }
+                } else {
+                    alertEl.style.display = 'none';
+                }
+            } catch(e) {
+                console.error('Failed to load crew run stats:', e);
+            }
+        }
+
+        function filterCrewRunHistory() {
+            const filter = document.getElementById('crew-run-history-filter').value;
+            document.querySelectorAll('#crew-run-history [data-crew-status]').forEach(el => {
+                const status = el.getAttribute('data-crew-status');
+                el.style.display = (filter === 'all' || filter === status) ? '' : 'none';
+            });
         }
 
         // ========================================
@@ -7971,7 +8091,7 @@
                 // Fetch active run and history in parallel
                 const [activeResp, histResp] = await Promise.all([
                     fetch('/api/agent-monitoring/crew-runs/active'),
-                    fetch('/api/agent-monitoring/crew-runs?limit=10'),
+                    fetch('/api/agent-monitoring/crew-runs?limit=30'),
                 ]);
                 const active = await activeResp.json();
                 const history = await histResp.json();
@@ -8038,18 +8158,25 @@
                     const elapsed = run.elapsed_seconds ? _formatElapsed(run.elapsed_seconds) : '—';
                     const started = run.started_at ? new Date(run.started_at).toLocaleString() : '—';
                     const tasks = `${run.tasks_completed || 0}/${run.num_tasks || 0}`;
+                    const runId = 'crew-err-' + run.id;
                     const errorSnip = run.error_message
-                        ? `<span style="color:#f85149; font-size:10px; margin-left:8px;" title="${run.error_message.replace(/"/g, '&quot;')}"><i class="fa-solid fa-triangle-exclamation"></i> error</span>`
+                        ? `<span style="color:#f85149; font-size:10px; margin-left:8px; cursor:pointer; text-decoration:underline dotted;" onclick="document.getElementById('${runId}').style.display = document.getElementById('${runId}').style.display === 'none' ? '' : 'none'"><i class="fa-solid fa-triangle-exclamation"></i> error (click to expand)</span>`
+                        : '';
+                    const errorBlock = run.error_message
+                        ? `<div id="${runId}" style="display:none; margin-top:6px; padding:8px; background:rgba(248,81,73,0.05); border:1px solid rgba(248,81,73,0.15); border-radius:4px; font-family:'Courier New',monospace; font-size:10px; color:#f85149; white-space:pre-wrap; word-break:break-all; max-height:120px; overflow-y:auto;">${run.error_message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
                         : '';
 
-                    return `<div style="display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--border-color); font-size:12px;">
-                        <span style="background:${badge.bg}; color:${badge.fg}; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600; min-width:70px; text-align:center;">${badge.text}</span>
-                        <span style="color:var(--text-secondary); min-width:55px;">Cycle ${run.cycle || '?'}</span>
-                        <span style="min-width:80px;">${elapsed}</span>
-                        <span style="opacity:0.6;">${tasks} tasks</span>
-                        <span style="opacity:0.5; font-size:11px;">${run.num_agents || 0} agents</span>
-                        ${errorSnip}
-                        <span style="margin-left:auto; opacity:0.4; font-size:11px;">${started}</span>
+                    return `<div data-crew-status="${run.status}" style="padding:6px 10px; border-bottom:1px solid var(--border-color); font-size:12px;">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="background:${badge.bg}; color:${badge.fg}; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600; min-width:70px; text-align:center;">${badge.text}</span>
+                            <span style="color:var(--text-secondary); min-width:55px;">Cycle ${run.cycle || '?'}</span>
+                            <span style="min-width:80px;">${elapsed}</span>
+                            <span style="opacity:0.6;">${tasks} tasks</span>
+                            <span style="opacity:0.5; font-size:11px;">${run.num_agents || 0} agents</span>
+                            ${errorSnip}
+                            <span style="margin-left:auto; opacity:0.4; font-size:11px;">${started}</span>
+                        </div>
+                        ${errorBlock}
                     </div>`;
                 }).join('');
 

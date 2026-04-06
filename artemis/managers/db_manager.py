@@ -1161,6 +1161,69 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_crew_run_stats(self, limit: int = 50) -> Dict:
+        """Return aggregate statistics over recent crew runs."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT status, elapsed_seconds, tasks_completed, num_tasks, "
+                "error_message, started_at "
+                "FROM crew_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            if not rows:
+                return {"total_runs": 0}
+
+            total = len(rows)
+            completed = sum(1 for r in rows if r[0] == 'completed')
+            failed = sum(1 for r in rows if r[0] == 'failed')
+            success_rate = round(completed / total * 100, 1) if total else 0
+
+            elapsed_vals = [r[1] for r in rows if r[1] is not None]
+            avg_elapsed = round(sum(elapsed_vals) / len(elapsed_vals), 1) if elapsed_vals else 0
+
+            total_tasks_done = sum(r[2] or 0 for r in rows)
+            total_tasks_all = sum(r[3] or 0 for r in rows)
+
+            # Consecutive failure streak from most recent
+            streak = 0
+            for r in rows:
+                if r[0] == 'failed':
+                    streak += 1
+                else:
+                    break
+
+            # Error pattern aggregation
+            error_counts: Dict[str, int] = {}
+            for r in rows:
+                if r[4]:
+                    # Extract the core error type (first line, truncated)
+                    err_key = r[4].split('\n')[0][:120]
+                    error_counts[err_key] = error_counts.get(err_key, 0) + 1
+            top_errors = sorted(error_counts.items(), key=lambda x: -x[1])[:5]
+
+            # Last success time
+            last_success = None
+            for r in rows:
+                if r[0] == 'completed' and r[5]:
+                    last_success = r[5]
+                    break
+
+            return {
+                "total_runs": total,
+                "completed": completed,
+                "failed": failed,
+                "success_rate": success_rate,
+                "avg_elapsed_seconds": avg_elapsed,
+                "total_tasks_completed": total_tasks_done,
+                "total_tasks_possible": total_tasks_all,
+                "failure_streak": streak,
+                "last_success": last_success,
+                "top_errors": [{"error": e, "count": c} for e, c in top_errors],
+            }
+        finally:
+            conn.close()
+
     def clear_findings(self) -> int:
         """Delete all findings and LLM syntheses, and re-queue any
         analysis cycles that still have events so they get re-analyzed.
