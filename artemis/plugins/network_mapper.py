@@ -4252,6 +4252,102 @@ class NetworkMapperPlugin(ArtemisPlugin):
         'host_id',
     )
 
+    def save_map_preserving_enrichment(self) -> str:
+        """Save map while preserving enrichment data written by the profiler.
+
+        Used by the data pipeline so it doesn't clobber device_type,
+        OS, vendor, and other enrichment fields that the concurrent
+        background profiler has written to disk.  Reads enrichment
+        fields from the existing disk file and applies them to
+        in-memory nodes before saving.
+        """
+        map_file = self.output_dir / "current_map.json"
+        lock_file = self.output_dir / "current_map.json.lock"
+
+        # Read enrichment fields from the current disk file
+        disk_enrichment = {}  # key -> {attr: value}
+        if map_file.exists():
+            try:
+                with open(lock_file, 'w') as lf:
+                    fcntl.flock(lf, fcntl.LOCK_SH)
+                    try:
+                        with open(map_file) as f:
+                            first_line = f.readline().strip()
+                            if first_line:
+                                first_obj = json.loads(first_line)
+                                if 'nodes' in first_obj:
+                                    # Legacy format
+                                    for nd in first_obj.get('nodes', []):
+                                        ip = nd.get('ip', '')
+                                        sid = nd.get('sensor_id', 'default')
+                                        vlan = nd.get('vlan', '0')
+                                        k = self._node_key(sid, vlan, ip)
+                                        if nd.get('device_type'):
+                                            disk_enrichment[k] = nd
+                                else:
+                                    # NDJSON format
+                                    for line in f:
+                                        line = line.strip()
+                                        if not line:
+                                            continue
+                                        nd = json.loads(line)
+                                        if nd.get('device_type'):
+                                            ip = nd.get('ip', '')
+                                            sid = nd.get('sensor_id', 'default')
+                                            vlan = nd.get('vlan', '0')
+                                            k = self._node_key(sid, vlan, ip)
+                                            disk_enrichment[k] = nd
+                    finally:
+                        fcntl.flock(lf, fcntl.LOCK_UN)
+            except Exception as e:
+                logger.warning(f"Could not read enrichment from disk: {e}")
+
+        # Apply disk enrichment to in-memory nodes
+        if disk_enrichment:
+            restored = 0
+            for key, nd in disk_enrichment.items():
+                target = self.nodes.get(key)
+                if target is None:
+                    continue
+                for attr in self._ENRICHMENT_FIELDS:
+                    # Only restore from disk if the in-memory node lacks the value
+                    mem_val = getattr(target, attr, None)
+                    if isinstance(mem_val, (set, list, dict)):
+                        if mem_val:
+                            continue
+                    elif isinstance(mem_val, str):
+                        if mem_val:
+                            continue
+                    elif isinstance(mem_val, bool):
+                        if mem_val:
+                            continue
+                    elif mem_val is not None:
+                        continue
+
+                    disk_val = nd.get(attr)
+                    if disk_val is None:
+                        continue
+                    # Convert lists back to sets where needed
+                    if attr in ('roles', 'hostnames', 'netbios_names'):
+                        if isinstance(disk_val, list):
+                            disk_val = set(disk_val)
+                    if isinstance(disk_val, (set, list, dict)):
+                        if disk_val:
+                            setattr(target, attr, disk_val)
+                    elif isinstance(disk_val, str):
+                        if disk_val:
+                            setattr(target, attr, disk_val)
+                    elif isinstance(disk_val, bool):
+                        if disk_val:
+                            setattr(target, attr, disk_val)
+                    else:
+                        setattr(target, attr, disk_val)
+                restored += 1
+            if restored:
+                logger.info(f"Preserved enrichment for {restored} nodes from disk")
+
+        return self.save_map()
+
     def merge_enrichment_and_save(self) -> str:
         """Reload the latest map from disk, merge enrichment data, and save.
 

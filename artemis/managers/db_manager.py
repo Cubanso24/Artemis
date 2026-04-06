@@ -1340,9 +1340,9 @@ class DatabaseManager:
             conn.close()
 
     def clear_findings(self) -> int:
-        """Delete all findings and LLM syntheses, and re-queue any
-        analysis cycles that still have events so they get re-analyzed.
-        Returns count of findings deleted."""
+        """Delete all findings, LLM syntheses, hunt events, analysis queue,
+        crew runs, and effectiveness history so the next hunt starts fresh
+        from cycle 1.  Returns count of findings deleted."""
         conn = self._connect()
         try:
             count = conn.execute(
@@ -1350,19 +1350,11 @@ class DatabaseManager:
             ).fetchone()[0]
             conn.execute("DELETE FROM agent_findings")
             conn.execute("DELETE FROM llm_syntheses")
-
-            # Reset completed analysis cycles back to 'pending' so the
-            # analysis pipeline will re-process them and regenerate
-            # findings.  Only reset cycles whose events still exist —
-            # stale cycles (events cleaned up) will be skipped by the
-            # analysis pipeline automatically.
-            conn.execute(
-                "UPDATE analysis_queue SET "
-                "status = 'pending', "
-                "started_at = NULL, "
-                "completed_at = NULL "
-                "WHERE status = 'complete'"
-            )
+            conn.execute("DELETE FROM hunt_events")
+            conn.execute("DELETE FROM analysis_queue")
+            conn.execute("DELETE FROM crew_runs")
+            conn.execute("DELETE FROM hunt_effectiveness")
+            conn.execute("DELETE FROM agent_activity")
 
             conn.commit()
             return count
@@ -1370,26 +1362,20 @@ class DatabaseManager:
             conn.close()
 
     def clear_llm_syntheses(self) -> int:
-        """Delete all LLM synthesis reports and reset the analysis queue
-        so completed cycles are re-analyzed from cycle 1. Returns count deleted."""
+        """Delete all LLM synthesis reports, hunt events, analysis queue,
+        crew runs, and effectiveness history so the next hunt starts fresh
+        from cycle 1. Returns count of syntheses deleted."""
         conn = self._connect()
         try:
             count = conn.execute(
                 "SELECT COUNT(*) FROM llm_syntheses"
             ).fetchone()[0]
             conn.execute("DELETE FROM llm_syntheses")
-
-            # Reset completed analysis cycles back to 'pending' so the
-            # analysis pipeline will re-process them and regenerate
-            # LLM reports starting from cycle 1 instead of continuing
-            # from the old cycle count.
-            conn.execute(
-                "UPDATE analysis_queue SET "
-                "status = 'pending', "
-                "started_at = NULL, "
-                "completed_at = NULL "
-                "WHERE status = 'complete'"
-            )
+            conn.execute("DELETE FROM hunt_events")
+            conn.execute("DELETE FROM analysis_queue")
+            conn.execute("DELETE FROM crew_runs")
+            conn.execute("DELETE FROM hunt_effectiveness")
+            conn.execute("DELETE FROM agent_activity")
 
             conn.commit()
             return count

@@ -443,7 +443,7 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
 
         # Report per-cycle or every 3 cycles for speed
         if c % 3 == 0 or c == max_cycle or c == 1:
-            nm.save_map()
+            nm.save_map_preserving_enrichment()
             pct = 10 + int(35 * c / max(max_cycle, 1))
             send('running',
                  f'Replaying stored data: batch {c}/{max_cycle} '
@@ -456,7 +456,7 @@ def _rebuild_map_from_db(db, nm, max_cycle, send, log):
             log.info(f'Map rebuild: {c}/{max_cycle} cycles, '
                      f'{total_mapped:,} events, {len(nm.nodes)} nodes')
 
-    nm.save_map()
+    nm.save_map_preserving_enrichment()
 
 
 # ---------------------------------------------------------------------------
@@ -792,7 +792,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                             # analysis so hunting starts while backfill
                             # continues.
                             if _bf_cycle_events[0] >= _BF_ANALYSIS_THRESHOLD:
-                                nm.save_map()
+                                nm.save_map_preserving_enrichment()
                                 evt_counts = db.get_event_counts_for_cycle(cur)
                                 db.queue_analysis(cur, evt_counts)
                                 _bf_batches_queued[0] += 1
@@ -816,7 +816,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                                 _bf_cycle_events[0] = 0
 
                             elif _bf_windows_mapped[0] % 3 == 0:
-                                nm.save_map()
+                                nm.save_map_preserving_enrichment()
                                 send('running',
                                      f'Cycle {cur}: backfill — mapped '
                                      f'{_bf_windows_mapped[0]} windows '
@@ -836,7 +836,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                         per_window_callback=_map_window,
                     )
                     if _bf_windows_mapped[0] > 0:
-                        nm.save_map()
+                        nm.save_map_preserving_enrichment()
 
                     # Restore preserved device profiles after backfill
                     if _saved_profiles:
@@ -892,7 +892,7 @@ def _data_pipeline_process(job_id, interval_minutes, lookback_minutes,
                             dns_queries=dns,
                             ntlm_logs=ntlm,
                         )
-                        nm.save_map()
+                        nm.save_map_preserving_enrichment()
 
                         # Store events in persistent store
                         for key, events in hunting_data.items():
