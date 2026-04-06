@@ -214,25 +214,32 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
 
     tools.append(get_network_state)
 
-    # 7. Live Splunk query (with circuit breaker) --------------------------
+    # 7. Live Splunk query (with SPL learning) -----------------------------
     #
     # Safeguards:
     #   - READ-ONLY: blocks mutating SPL commands
     #   - TIME-BOUNDED: max 1-hour lookback, enforced server-side
     #   - ROW-LIMITED: max 500 results per query
-    #   - TIMEOUT: 120s per query so a bad search can't hang the pipeline
-    #   - CIRCUIT BREAKER: after 2 consecutive failures the tool disables
-    #     itself for the rest of this hunt cycle and tells the LLM to
-    #     continue without it
+    #   - TIMEOUT: 10 min default (configurable via SPLUNK_QUERY_TIMEOUT)
+    #     Real Splunk queries often take several minutes.
+    #   - CIRCUIT BREAKER: after 3 consecutive hard errors (connection
+    #     failures, import errors) the tool disables itself.
+    #     Timeouts do NOT trip the circuit breaker — slow queries are
+    #     normal and the LLM should keep investigating.
+    #   - SPL LEARNING: Every query outcome (success, no results, timeout,
+    #     error) is indexed to the RAG spl_queries collection.  Before
+    #     executing, past successful queries for similar intents are
+    #     retrieved and shown to the LLM as examples.
     #   - If Splunk config is missing the tool is simply not registered
 
     _SPLUNK_MAX_ROWS = 500
     _SPLUNK_MAX_LOOKBACK = "-1h"
-    _SPLUNK_QUERY_TIMEOUT = 120  # seconds
-    _SPLUNK_CB_THRESHOLD = 2     # failures before circuit opens
+    _SPLUNK_QUERY_TIMEOUT = int(
+        os.environ.get('SPLUNK_QUERY_TIMEOUT', '600'))  # 10 min default
+    _SPLUNK_CB_THRESHOLD = 3     # hard errors before circuit opens
 
     # Mutable state shared by closure — reset per _make_tools() call
-    _splunk_failures = [0]       # list so closure can mutate
+    _splunk_hard_errors = [0]    # connection/import failures (NOT timeouts)
     _splunk_disabled = [False]
 
     # SPL commands that mutate data or Splunk config — block all of them
@@ -244,35 +251,72 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
 
     if splunk_config and splunk_config.get("host"):
         @crewai_tool
-        def query_splunk(spl_query: str, earliest: str = "-20m",
+        def query_splunk(spl_query: str, intent: str = "",
+                         earliest: str = "-20m",
                          latest: str = "now") -> str:
             """Run a READ-ONLY Splunk SPL query for deeper investigation.
 
             Use this when ML detectors found something suspicious and you
-            need raw log data to confirm or investigate further.  Good for
-            things like:
-              - Checking all DNS queries from a specific host
-              - Looking at authentication events around a suspicious time
-              - Examining network connections to a flagged IP
+            need raw log data to confirm or investigate further.
+
+            IMPORTANT — Writing good SPL:
+              - Always filter early: put index, sourcetype, and host
+                constraints BEFORE pipes to reduce the dataset.
+              - Use 'stats' or 'table' to aggregate — avoid returning
+                raw events when a count or summary will do.
+              - Narrow the time window: use the 'earliest' parameter
+                to limit to the relevant period (e.g. "-5m", "-15m").
+              - Prefer specific field searches over wildcards.
+              - If a query times out, simplify it — fewer pipes, narrower
+                time, or add an early 'where' clause.
+
+            Examples of GOOD queries:
+              search index=main sourcetype=WinEventLog EventCode=4625
+                | stats count by src_ip, user | where count > 5
+              search index=network sourcetype=firewall dest_ip="10.0.0.5"
+                | stats count by src_ip, dest_port
+              search index=dns query="*.evil.com" | table _time, src_ip, query
+
+            Examples of BAD queries (too broad, will timeout):
+              search * | stats count by src_ip
+              search index=main | head 1000
 
             Parameters:
               spl_query: A Splunk SPL search string (must start with
                          'search' or '|').  ONLY read operations allowed.
+              intent: Brief description of what you're trying to find
+                      (e.g. "Check for brute force against 10.0.0.5").
+                      This helps learn which queries work best.
               earliest: Start time (default "-20m"). Max allowed is "-1h".
               latest: End time (default "now").
 
-            Returns up to 500 results.  If this tool is unavailable or
-            Splunk is down, continue hunting with the data you already
-            have — do NOT retry repeatedly.
+            Returns up to 500 results.  Queries may take several minutes
+            for large datasets — this is normal.
             """
             # --- Circuit breaker check ---
             if _splunk_disabled[0]:
                 return (
-                    "SPLUNK TOOL DISABLED: Splunk queries failed multiple "
-                    "times this cycle.  An alert has been raised.  Continue "
-                    "your analysis using the data already collected by the "
-                    "ML detectors — do NOT call this tool again."
+                    "SPLUNK TOOL DISABLED: Splunk connection failed multiple "
+                    "times this cycle.  Continue your analysis using the "
+                    "data already collected by the ML detectors."
                 )
+
+            # --- RAG: retrieve past successful queries for this intent ---
+            _spl_examples = ""
+            if intent and rag_store and rag_store.available:
+                try:
+                    past = rag_store.query_similar_spl(intent, n_results=3)
+                    if past:
+                        examples = []
+                        for p in past:
+                            examples.append(
+                                f"  {p['text'][:300]}")
+                        _spl_examples = (
+                            "Past successful queries for similar intents:\n"
+                            + "\n".join(examples) + "\n\n"
+                        )
+                except Exception as _re:
+                    logger.debug(f"SPL RAG lookup failed: {_re}")
 
             # --- Validate: block dangerous commands ---
             spl_lower = spl_query.lower().strip()
@@ -312,7 +356,26 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                 # Absolute time or unrecognised format — allow but cap
                 earliest = _SPLUNK_MAX_LOOKBACK
 
+            # --- Helper to log query outcome to RAG ---
+            def _log_spl_outcome(outcome, result_count=0, elapsed=0,
+                                 useful=True, error_msg=""):
+                if rag_store and rag_store.available:
+                    try:
+                        rag_store.index_spl_query({
+                            "spl_query": spl_query,
+                            "intent": intent or "unspecified",
+                            "outcome": outcome,
+                            "result_count": result_count,
+                            "elapsed_seconds": elapsed,
+                            "useful": useful,
+                            "error": error_msg,
+                        })
+                    except Exception as _le:
+                        logger.debug(f"SPL RAG index failed: {_le}")
+
             # --- Build connector and execute ---
+            import time as _time
+            _query_start = _time.monotonic()
             try:
                 from artemis.integrations.splunk_connector import (
                     SplunkConnector,
@@ -348,17 +411,30 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                     _signal.alarm(0)
                     _signal.signal(_signal.SIGALRM, old_handler)
 
-                # Reset failure counter on success
-                _splunk_failures[0] = 0
+                _elapsed = _time.monotonic() - _query_start
+
+                # Reset hard-error counter on success
+                _splunk_hard_errors[0] = 0
 
                 if not results:
-                    return "Query returned 0 results."
+                    _log_spl_outcome("no_results", 0, _elapsed,
+                                     useful=False)
+                    return (
+                        _spl_examples +
+                        "Query returned 0 results.  Consider broadening "
+                        "the time range, checking the index/sourcetype, "
+                        "or using different field names."
+                    )
+
+                # Log success to RAG
+                _log_spl_outcome("success", len(results), _elapsed)
 
                 # Format results for the LLM — compact but readable
                 import json as _json
                 _truncated = len(results) >= _SPLUNK_MAX_ROWS
                 header = (
-                    f"Returned {len(results)} results"
+                    f"Returned {len(results)} results "
+                    f"({_elapsed:.0f}s)"
                     + (" (TRUNCATED — more results exist, narrow your "
                        "query)" if _truncated else "")
                     + ":\n\n"
@@ -375,32 +451,29 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                 return header + "\n".join(lines)
 
             except _QueryTimeout:
-                _splunk_failures[0] += 1
+                _elapsed = _time.monotonic() - _query_start
                 logger.warning(
                     f"Splunk tool: query timed out after "
-                    f"{_SPLUNK_QUERY_TIMEOUT}s "
-                    f"(failure {_splunk_failures[0]}/{_SPLUNK_CB_THRESHOLD})")
-                if _splunk_failures[0] >= _SPLUNK_CB_THRESHOLD:
-                    _splunk_disabled[0] = True
-                    logger.error(
-                        "ALERT: Splunk query tool circuit breaker OPEN — "
-                        "disabled for remainder of this hunt cycle")
-                    fire_agent_activity("splunk_tool", "alert", {
-                        "message": "Splunk query tool disabled — "
-                                   "multiple timeouts",
-                        "failures": _splunk_failures[0],
-                    })
-                    return (
-                        "SPLUNK TOOL DISABLED: Query timed out and the "
-                        "circuit breaker has tripped.  An alert has been "
-                        "raised.  Continue hunting with existing data — "
-                        "do NOT call this tool again."
-                    )
+                    f"{_SPLUNK_QUERY_TIMEOUT}s")
+                _log_spl_outcome("timeout", 0, _elapsed, useful=False)
+                # Timeouts do NOT trip the circuit breaker — the LLM
+                # should learn to write better queries, not be shut down.
+                fire_agent_activity("splunk_tool", "warning", {
+                    "message": (f"Splunk query timed out after "
+                                f"{_SPLUNK_QUERY_TIMEOUT}s — "
+                                f"LLM should simplify the query"),
+                    "spl_query": spl_query[:200],
+                })
                 return (
+                    _spl_examples +
                     f"Query timed out after {_SPLUNK_QUERY_TIMEOUT}s.  "
-                    f"Try a narrower time range or simpler query.  "
-                    f"({_SPLUNK_CB_THRESHOLD - _splunk_failures[0]} "
-                    f"attempt(s) remaining before tool is disabled.)"
+                    f"This usually means the query is too broad.  Tips:\n"
+                    f"  - Add index= and sourcetype= to filter early\n"
+                    f"  - Narrow the time range (earliest=\"-5m\")\n"
+                    f"  - Use 'stats' to aggregate instead of returning "
+                    f"raw events\n"
+                    f"  - Add a 'where' clause to filter specific hosts "
+                    f"or IPs before piping"
                 )
 
             except ImportError:
@@ -416,33 +489,39 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                 )
 
             except Exception as e:
-                _splunk_failures[0] += 1
+                _elapsed = _time.monotonic() - _query_start
+                _splunk_hard_errors[0] += 1
+                _log_spl_outcome("error", 0, _elapsed, useful=False,
+                                 error_msg=str(e))
                 logger.warning(
                     f"Splunk tool error: {e} "
-                    f"(failure {_splunk_failures[0]}/{_SPLUNK_CB_THRESHOLD})")
-                if _splunk_failures[0] >= _SPLUNK_CB_THRESHOLD:
+                    f"(hard error {_splunk_hard_errors[0]}/"
+                    f"{_SPLUNK_CB_THRESHOLD})")
+                if _splunk_hard_errors[0] >= _SPLUNK_CB_THRESHOLD:
                     _splunk_disabled[0] = True
                     logger.error(
                         f"ALERT: Splunk query tool circuit breaker OPEN — "
                         f"disabled for remainder of this hunt cycle: {e}")
                     fire_agent_activity("splunk_tool", "alert", {
-                        "message": f"Splunk query tool disabled: {e}",
-                        "failures": _splunk_failures[0],
+                        "message": f"Splunk tool disabled: {e}",
+                        "failures": _splunk_hard_errors[0],
                     })
                     return (
                         f"SPLUNK TOOL DISABLED: {e}.  Circuit breaker "
-                        f"tripped.  An alert has been raised.  Continue "
-                        f"hunting with existing data — do NOT call this "
-                        f"tool again."
+                        f"tripped after {_splunk_hard_errors[0]} connection "
+                        f"failures.  Continue hunting with existing data."
                     )
                 return (
                     f"Splunk query failed: {e}.  "
-                    f"({_SPLUNK_CB_THRESHOLD - _splunk_failures[0]} "
+                    f"({_SPLUNK_CB_THRESHOLD - _splunk_hard_errors[0]} "
                     f"attempt(s) remaining before tool is disabled.)"
                 )
 
         tools.append(query_splunk)
-        logger.info("Splunk query tool registered (circuit breaker armed)")
+        logger.info(
+            f"Splunk query tool registered "
+            f"(timeout={_SPLUNK_QUERY_TIMEOUT}s, "
+            f"circuit breaker={_SPLUNK_CB_THRESHOLD} hard errors)")
     else:
         logger.info(
             "Splunk query tool NOT registered — no splunk_config provided")

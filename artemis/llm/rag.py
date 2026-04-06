@@ -227,7 +227,7 @@ class RAGStore:
             return {"available": False}
 
         stats: Dict[str, Any] = {"available": True, "collections": {}}
-        for name in ("findings", "baselines", "threat_intel"):
+        for name in ("findings", "baselines", "threat_intel", "spl_queries"):
             col = self._get_collection(name)
             if col is not None:
                 try:
@@ -381,6 +381,67 @@ class RAGStore:
         except Exception as e:
             logger.error(f"Failed to index threat intel: {e}")
             return False
+
+    def index_spl_query(self, spl_entry: Dict[str, Any]) -> bool:
+        """Store an SPL query and its outcome so the LLM learns which
+        queries are effective.
+
+        *spl_entry* keys:
+          - ``spl_query``: the raw SPL string
+          - ``intent``: what the LLM was trying to find
+          - ``outcome``: "success" | "no_results" | "timeout" | "error"
+          - ``result_count``: number of rows returned (0 if failed)
+          - ``elapsed_seconds``: wall-clock time for the query
+          - ``useful``: bool — did the results help the investigation?
+          - ``error``: error message if any
+          - ``agent_name``: which hunting agent issued the query
+        """
+        col = self._get_collection("spl_queries")
+        if col is None:
+            return False
+
+        text = self._spl_to_text(spl_entry)
+        doc_id = self._doc_id(text)
+
+        vecs = embed([text])
+        if not vecs:
+            return False
+
+        try:
+            col.upsert(
+                ids=[doc_id],
+                embeddings=vecs,
+                documents=[text],
+                metadatas=[{
+                    "outcome": str(spl_entry.get("outcome", "")),
+                    "result_count": int(spl_entry.get("result_count", 0)),
+                    "elapsed_seconds": float(spl_entry.get("elapsed_seconds", 0)),
+                    "useful": str(spl_entry.get("useful", True)),
+                    "agent_name": str(spl_entry.get("agent_name", "")),
+                    "timestamp": spl_entry.get(
+                        "timestamp", datetime.utcnow().isoformat()
+                    ),
+                }],
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to index SPL query: {e}")
+            return False
+
+    def query_similar_spl(
+        self, intent: str, n_results: int = 5,
+        only_successful: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return past SPL queries similar to the given intent.
+
+        When *only_successful* is True (default), filters to queries that
+        returned results and were useful — giving the LLM proven examples
+        to learn from.
+        """
+        filter_meta = None
+        if only_successful:
+            filter_meta = {"outcome": "success"}
+        return self._query("spl_queries", intent, n_results, filter_meta)
 
     # ------------------------------------------------------------------
     # Batch indexing (for post-hunt persistence)
@@ -602,6 +663,28 @@ class RAGStore:
         ttps = i.get("ttps", [])
         if ttps:
             parts.append(f"TTPs: {', '.join(ttps[:5])}")
+        return " | ".join(p for p in parts if p)
+
+    @staticmethod
+    def _spl_to_text(s: Dict) -> str:
+        outcome = s.get("outcome", "?")
+        rows = s.get("result_count", 0)
+        elapsed = s.get("elapsed_seconds", 0)
+        useful = s.get("useful", True)
+        parts = [
+            f"[{outcome.upper()}] SPL query",
+            f"Intent: {s.get('intent', '?')}",
+            f"Query: {s.get('spl_query', '?')}",
+            f"Results: {rows} rows in {elapsed:.0f}s",
+        ]
+        if not useful:
+            parts.append("NOT USEFUL — results did not match intent")
+        err = s.get("error")
+        if err:
+            parts.append(f"Error: {err}")
+        agent = s.get("agent_name")
+        if agent:
+            parts.append(f"Agent: {agent}")
         return " | ".join(p for p in parts if p)
 
     @staticmethod
