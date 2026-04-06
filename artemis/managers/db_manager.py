@@ -176,7 +176,7 @@ class DatabaseManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS llm_syntheses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cycle INTEGER NOT NULL,
+                cycle INTEGER NOT NULL UNIQUE,
                 overall_severity TEXT NOT NULL DEFAULT 'low',
                 overall_confidence REAL NOT NULL DEFAULT 0.0,
                 reasoning TEXT DEFAULT '',
@@ -188,6 +188,14 @@ class DatabaseManager:
                 created_at TIMESTAMP NOT NULL
             )
         """)
+        # Ensure UNIQUE constraint on cycle for existing databases
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_syntheses_cycle "
+                "ON llm_syntheses(cycle)"
+            )
+        except Exception:
+            pass  # Index may conflict with existing duplicates; handled below
 
         # ------------------------------------------------------------------
         # Decoupled pipeline: persistent event store + analysis queue
@@ -384,6 +392,29 @@ class DatabaseManager:
             )
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        # ------------------------------------------------------------------
+        # Deduplicate existing llm_syntheses rows (keep newest per cycle)
+        # ------------------------------------------------------------------
+        try:
+            cursor.execute("""
+                DELETE FROM llm_syntheses WHERE id NOT IN (
+                    SELECT MAX(id) FROM llm_syntheses GROUP BY cycle
+                )
+            """)
+            deduped = cursor.rowcount
+            if deduped:
+                logger.info(f"Removed {deduped} duplicate LLM synthesis rows")
+        except Exception:
+            pass
+        # Now safe to create the unique index on existing DBs
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_syntheses_cycle "
+                "ON llm_syntheses(cycle)"
+            )
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -1190,14 +1221,14 @@ class DatabaseManager:
     # ------------------------------------------------------------------
 
     def save_synthesis(self, cycle: int, synthesis: Dict) -> Dict:
-        """Save an LLM synthesis report."""
+        """Save an LLM synthesis report (upsert — one report per cycle)."""
         logger.info(f"[DIAG] save_synthesis called for cycle {cycle}")
         now = datetime.now().isoformat()
 
         def _do(conn):
-            logger.info(f"[DIAG] save_synthesis _do executing INSERT for cycle {cycle}")
+            logger.info(f"[DIAG] save_synthesis _do executing INSERT OR REPLACE for cycle {cycle}")
             conn.execute(
-                "INSERT INTO llm_syntheses "
+                "INSERT OR REPLACE INTO llm_syntheses "
                 "(cycle, overall_severity, overall_confidence, reasoning, "
                 "kill_chain, correlations, false_positive_flags, "
                 "recommended_actions, full_synthesis, created_at) "
@@ -1213,7 +1244,7 @@ class DatabaseManager:
                  _dumps(synthesis),
                  now),
             )
-            logger.info(f"[DIAG] save_synthesis INSERT executed OK for cycle {cycle}")
+            logger.info(f"[DIAG] save_synthesis INSERT OR REPLACE executed OK for cycle {cycle}")
             return {'cycle': cycle, 'created_at': now}
         return self._exec_with_retry(_do)
 

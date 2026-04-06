@@ -1408,7 +1408,7 @@ def _analysis_pipeline_process(job_id, db_path):
                         _conn.execute("PRAGMA busy_timeout = 5000")
                         _conn.execute("PRAGMA journal_mode = WAL")
                         _conn.execute(
-                            "INSERT INTO llm_syntheses "
+                            "INSERT OR REPLACE INTO llm_syntheses "
                             "(cycle, overall_severity, overall_confidence, "
                             "reasoning, kill_chain, correlations, "
                             "false_positive_flags, recommended_actions, "

@@ -2270,12 +2270,23 @@
             // Start the hunt visualizer
             initHuntVisualizer();
 
-            // Refresh data every 10 seconds
-            setInterval(loadStats, 10000);
+            // Refresh data every 30 seconds (reduced from 10s for performance)
+            let _statsTimer = setInterval(loadStats, 30000);
 
             // Start background agent activity polling (slow rate)
             // so badge updates even before the monitor tab is opened.
             startAgentActivityPolling();
+
+            // Pause all polling when browser tab is hidden
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    clearInterval(_statsTimer);
+                    _statsTimer = null;
+                } else {
+                    loadStats();
+                    if (!_statsTimer) _statsTimer = setInterval(loadStats, 30000);
+                }
+            });
 
             // Setup keyboard shortcuts
             document.addEventListener('keydown', handleKeyboardShortcut);
@@ -7304,7 +7315,7 @@
                 }
             }
             refreshHuntStats();
-            setInterval(refreshHuntStats, 10000);
+            setInterval(refreshHuntStats, 30000);
 
             // --- Agent activity feed (left HUD) ---
             const agentLabels = {
@@ -7387,7 +7398,7 @@
                 }
             }
             refreshAgentActivity();
-            setInterval(refreshAgentActivity, 15000);
+            setInterval(refreshAgentActivity, 30000);
 
             // Rotate through real agent lines
             setInterval(() => {
@@ -8143,7 +8154,7 @@
                     if (tab && tab.classList.contains('active')) {
                         refreshAgentMonitoringAll();
                     }
-                }, 10000);
+                }, 15000);
             }
         }
 
@@ -8229,7 +8240,7 @@
             // Switch to background polling rate instead of stopping entirely,
             // so the badge counter keeps updating.
             if (_agentPollTimer) clearInterval(_agentPollTimer);
-            _agentPollTimer = setInterval(loadAgentActivityHistory, 10000);
+            _agentPollTimer = setInterval(loadAgentActivityHistory, 30000);
         }
 
         function handleAgentActivity(data) {
