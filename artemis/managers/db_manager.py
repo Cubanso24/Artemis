@@ -993,6 +993,53 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def concentrate_findings(self) -> Dict:
+        """Deduplicate ML findings by keeping only the highest-confidence
+        finding per (agent_name, activity_type, severity) group and
+        dismissing the rest.  Returns stats about what was concentrated."""
+        conn = self._connect()
+        try:
+            # Find duplicate groups (same agent + activity type + severity)
+            # and keep only the row with the highest confidence in each group.
+            # All others get dismissed.
+            before_count = conn.execute(
+                "SELECT COUNT(*) FROM agent_findings WHERE dismissed = 0"
+            ).fetchone()[0]
+
+            # Dismiss all findings that are NOT the best (highest confidence,
+            # most recent as tiebreaker) in their group.
+            conn.execute("""
+                UPDATE agent_findings SET dismissed = 1
+                WHERE dismissed = 0
+                AND id NOT IN (
+                    SELECT id FROM (
+                        SELECT id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY agent_name, activity_type, severity
+                                ORDER BY confidence DESC, created_at DESC
+                            ) as rn
+                        FROM agent_findings
+                        WHERE dismissed = 0
+                    )
+                    WHERE rn = 1
+                )
+            """)
+            conn.commit()
+
+            after_count = conn.execute(
+                "SELECT COUNT(*) FROM agent_findings WHERE dismissed = 0"
+            ).fetchone()[0]
+
+            dismissed = before_count - after_count
+
+            return {
+                'before': before_count,
+                'after': after_count,
+                'dismissed': dismissed,
+            }
+        finally:
+            conn.close()
+
     def get_agent_monitoring_stats(self) -> Dict:
         """Return per-agent performance metrics for the monitoring dashboard."""
         conn = self._connect()
@@ -1255,13 +1302,27 @@ class DatabaseManager:
             conn.close()
 
     def clear_llm_syntheses(self) -> int:
-        """Delete all LLM synthesis reports. Returns count deleted."""
+        """Delete all LLM synthesis reports and reset the analysis queue
+        so completed cycles are re-analyzed from cycle 1. Returns count deleted."""
         conn = self._connect()
         try:
             count = conn.execute(
                 "SELECT COUNT(*) FROM llm_syntheses"
             ).fetchone()[0]
             conn.execute("DELETE FROM llm_syntheses")
+
+            # Reset completed analysis cycles back to 'pending' so the
+            # analysis pipeline will re-process them and regenerate
+            # LLM reports starting from cycle 1 instead of continuing
+            # from the old cycle count.
+            conn.execute(
+                "UPDATE analysis_queue SET "
+                "status = 'pending', "
+                "started_at = NULL, "
+                "completed_at = NULL "
+                "WHERE status = 'complete'"
+            )
+
             conn.commit()
             return count
         finally:

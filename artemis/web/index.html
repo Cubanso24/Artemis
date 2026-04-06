@@ -1120,7 +1120,7 @@
             <button class="tab" onclick="showTab('threat-intel-tab')"><i class="fa-solid fa-binoculars"></i> Threat Intel</button>
             <button class="tab" onclick="showTab('llm-intel-tab')"><i class="fa-solid fa-brain"></i> LLM Intel <span id="llm-intel-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('settings-tab')"><i class="fa-solid fa-gear"></i> Settings</button>
-            <button class="tab" onclick="showTab('analyst-tab')"><i class="fa-solid fa-comments"></i> Analyst</button>
+
             <button class="tab" onclick="showTab('agent-monitoring-tab')"><i class="fa-solid fa-gauge-high"></i> Agent Monitoring <span id="agent-mon-tab-badge" style="display:none; background:#58a6ff; color:#fff; padding:1px 6px; border-radius:10px; font-size:11px; margin-left:4px; font-weight:700;">0</span></button>
             <button class="tab" onclick="showTab('logs')"><i class="fa-solid fa-terminal"></i> Live Logs</button>
         </div>
@@ -1426,6 +1426,7 @@
                         <option value="impact_hunter">Impact</option>
                     </select>
                     <button class="btn btn-secondary" onclick="loadFindings()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                    <button class="btn btn-secondary" onclick="concentrateFindings()" title="Deduplicate findings — keeps only the highest-confidence finding per agent/type/severity group"><i class="fa-solid fa-compress"></i> Concentrate</button>
                     <button class="btn" onclick="resetFindings()" style="background:var(--severity-high); margin-left:auto;"><i class="fa-solid fa-trash-can"></i> Clear All Findings</button>
                 </div>
 
@@ -2079,197 +2080,6 @@
             </div>
         </div>
 
-        <!-- ============================================ -->
-        <!-- Analyst Chat & PCAP Upload Tab              -->
-        <!-- ============================================ -->
-        <div id="analyst-tab" class="tab-content">
-            <!-- Sub-tabs: Chat vs Agent Monitor -->
-            <div style="display:flex; gap:4px; margin-bottom:14px; border-bottom:1px solid var(--border-color); padding-bottom:0;">
-                <button class="analyst-subtab active" id="analyst-subtab-chat" onclick="showAnalystSubTab('chat')" style="padding:8px 18px; background:none; border:none; border-bottom:2px solid var(--accent-primary); color:var(--text-primary); cursor:pointer; font-size:13px; font-weight:600;">
-                    <i class="fa-solid fa-comments" style="margin-right:5px;"></i> Chat
-                </button>
-                <button class="analyst-subtab" id="analyst-subtab-monitor" onclick="showAnalystSubTab('monitor')" style="padding:8px 18px; background:none; border:none; border-bottom:2px solid transparent; color:var(--text-secondary); cursor:pointer; font-size:13px; font-weight:600;">
-                    <i class="fa-solid fa-brain" style="margin-right:5px;"></i> Agent Monitor
-                    <span id="agent-monitor-badge" style="display:none; background:#f0883e; color:#fff; padding:1px 6px; border-radius:10px; font-size:10px; margin-left:4px; font-weight:700;">0</span>
-                </button>
-            </div>
-
-            <!-- SUB-TAB: Chat -->
-            <div id="analyst-subtab-chat-content">
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start;">
-
-                <!-- LEFT: Chat Panel -->
-                <div class="card" style="display:flex; flex-direction:column; height:calc(100vh - 250px); min-height:500px;">
-                    <h2 style="margin-bottom:4px;"><i class="fa-solid fa-robot" style="margin-right:6px;"></i> ARTEMIS ANALYST</h2>
-                    <p style="margin-bottom:12px; opacity:0.7; font-size:12px;">
-                        Ask questions about findings, IPs, techniques, or anything about your hunts.
-                    </p>
-
-                    <!-- Context toggles -->
-                    <div style="display:flex; gap:12px; margin-bottom:12px; font-size:12px;">
-                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
-                            <input type="checkbox" id="analyst-inc-findings" checked> Findings
-                        </label>
-                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
-                            <input type="checkbox" id="analyst-inc-cases" checked> Cases
-                        </label>
-                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
-                            <input type="checkbox" id="analyst-inc-rag" checked> RAG
-                        </label>
-                    </div>
-
-                    <!-- Chat messages -->
-                    <div id="analyst-chat-messages" style="flex:1; overflow-y:auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:14px; margin-bottom:12px; display:flex; flex-direction:column; gap:10px;">
-                        <div style="text-align:center; opacity:0.4; margin-top:40px;">
-                            <i class="fa-solid fa-shield-halved" style="font-size:40px; margin-bottom:12px; display:block;"></i>
-                            Ask Artemis anything about your network, findings, or threat landscape.
-                        </div>
-                    </div>
-
-                    <!-- Input -->
-                    <div style="display:flex; gap:8px;">
-                        <input type="text" id="analyst-chat-input" placeholder="Ask Artemis a question..."
-                            style="flex:1; padding:10px 14px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary); font-size:13px;"
-                            onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault(); analystSendMessage();}">
-                        <button class="btn" onclick="analystSendMessage()" id="analyst-send-btn">
-                            <i class="fa-solid fa-paper-plane"></i> Send
-                        </button>
-                    </div>
-                </div>
-
-                <!-- RIGHT: PCAP Upload + Chat Context -->
-                <div style="display:flex; flex-direction:column; gap:20px;">
-
-                    <!-- PCAP Upload -->
-                    <div class="card">
-                        <h2 style="margin-bottom:4px;"><i class="fa-solid fa-file-import" style="margin-right:6px;"></i> PCAP UPLOAD</h2>
-                        <p style="margin-bottom:14px; opacity:0.7; font-size:12px;">
-                            Upload packet captures (.pcap, .pcapng, .cap) for automated threat analysis.
-                        </p>
-
-                        <!-- Drop zone -->
-                        <div id="pcap-drop-zone" style="border:2px dashed var(--border-color); border-radius:8px; padding:30px; text-align:center; cursor:pointer; transition:all 0.2s; margin-bottom:14px;"
-                            onclick="document.getElementById('pcap-file-input').click()"
-                            ondragover="event.preventDefault(); this.style.borderColor='var(--accent-primary)'; this.style.background='rgba(88,166,255,0.05)';"
-                            ondragleave="this.style.borderColor='var(--border-color)'; this.style.background='transparent';"
-                            ondrop="event.preventDefault(); this.style.borderColor='var(--border-color)'; this.style.background='transparent'; pcapHandleDrop(event);">
-                            <i class="fa-solid fa-cloud-arrow-up" style="font-size:32px; color:var(--accent-primary); margin-bottom:8px; display:block;"></i>
-                            <div style="font-size:13px; margin-bottom:4px;">Drag & drop a PCAP file here or click to browse</div>
-                            <div style="font-size:11px; opacity:0.5;">Supports .pcap, .pcapng, .cap</div>
-                        </div>
-                        <input type="file" id="pcap-file-input" accept=".pcap,.pcapng,.cap" style="display:none;" onchange="pcapFileSelected(this)">
-
-                        <!-- Selected file info -->
-                        <div id="pcap-file-info" style="display:none; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
-                            <div style="display:flex; align-items:center; justify-content:space-between;">
-                                <span><i class="fa-solid fa-file" style="margin-right:6px; color:var(--accent-primary);"></i> <span id="pcap-file-name">--</span></span>
-                                <span id="pcap-file-size" style="opacity:0.6;">--</span>
-                            </div>
-                        </div>
-
-                        <!-- Options -->
-                        <div style="display:flex; gap:12px; align-items:center; margin-bottom:14px;">
-                            <div class="form-group" style="margin:0; flex:1;">
-                                <label style="font-size:12px;">Max Packets (optional)</label>
-                                <input type="number" id="pcap-max-packets" placeholder="All"
-                                    style="width:100%; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:13px;">
-                            </div>
-                            <button class="btn" onclick="pcapUploadAndAnalyze()" id="pcap-upload-btn" style="margin-top:16px;" disabled>
-                                <i class="fa-solid fa-magnifying-glass-chart"></i> Analyze
-                            </button>
-                        </div>
-
-                        <!-- Progress -->
-                        <div id="pcap-progress" style="display:none; margin-bottom:14px;">
-                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
-                                <span id="pcap-progress-text">Uploading...</span>
-                                <span id="pcap-progress-pct">0%</span>
-                            </div>
-                            <div style="background:var(--bg-primary); border-radius:4px; overflow:hidden; height:6px;">
-                                <div id="pcap-progress-bar" style="height:100%; background:var(--accent-primary); border-radius:4px; transition:width 0.3s; width:0%;"></div>
-                            </div>
-                        </div>
-
-                        <!-- Results -->
-                        <div id="pcap-results" style="display:none;"></div>
-                    </div>
-
-                    <!-- Last query context info -->
-                    <div class="card" id="analyst-context-card" style="display:none;">
-                        <h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:10px;">
-                            <i class="fa-solid fa-circle-info"></i> Last Query Context
-                        </h3>
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:13px;">
-                            <div><span style="opacity:0.6;">Findings:</span> <span id="analyst-ctx-findings">0</span></div>
-                            <div><span style="opacity:0.6;">Cases:</span> <span id="analyst-ctx-cases">0</span></div>
-                            <div><span style="opacity:0.6;">Techniques:</span> <span id="analyst-ctx-techniques">0</span></div>
-                            <div><span style="opacity:0.6;">RAG:</span> <span id="analyst-ctx-rag">No</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            </div><!-- end analyst-subtab-chat-content -->
-
-            <!-- SUB-TAB: Agent Monitor -->
-            <div id="analyst-subtab-monitor-content" style="display:none;">
-                <div style="display:grid; grid-template-columns:1fr 300px; gap:20px; align-items:start;">
-                    <!-- LEFT: Agent Activity Feed -->
-                    <div class="card" style="display:flex; flex-direction:column; height:calc(100vh - 250px); min-height:500px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                            <h2 style="margin:0;"><i class="fa-solid fa-brain" style="margin-right:6px;"></i> AGENT ACTIVITY</h2>
-                            <div style="display:flex; gap:8px;">
-                                <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
-                                    <input type="checkbox" id="agent-monitor-autoscroll" checked> Auto-scroll
-                                </label>
-                                <button class="btn btn-secondary" onclick="clearAgentMonitor()" style="padding:4px 10px; font-size:11px;">
-                                    <i class="fa-solid fa-trash"></i> Clear
-                                </button>
-                            </div>
-                        </div>
-
-                        <div id="agent-monitor-feed" style="flex:1; overflow-y:auto; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px; font-family:'Courier New',monospace; font-size:12px; line-height:1.6;">
-                            <div style="text-align:center; opacity:0.4; margin-top:60px;">
-                                <i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>
-                                Agent activity will appear here in real time during hunts.<br>
-                                LLM prompts, responses, enrichment results, and coordinator stages are shown live.
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- RIGHT: Agent Status Panel -->
-                    <div style="display:flex; flex-direction:column; gap:14px;">
-                        <div class="card">
-                            <h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:10px;">
-                                <i class="fa-solid fa-circle-nodes"></i> Agent Status
-                            </h3>
-                            <div id="agent-status-list" style="font-size:12px; display:flex; flex-direction:column; gap:6px;">
-                                <div style="opacity:0.5; text-align:center; padding:10px;">No activity yet</div>
-                            </div>
-                        </div>
-                        <div class="card">
-                            <h3 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:10px;">
-                                <i class="fa-solid fa-filter"></i> Filter
-                            </h3>
-                            <select id="agent-monitor-filter" onchange="filterAgentMonitor()" style="width:100%; padding:6px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px; color:var(--text-primary); font-size:12px;">
-                                <option value="all">All Agents</option>
-                                <option value="coordinator">Coordinator</option>
-                                <option value="lead_analyst">Lead Analyst</option>
-                                <option value="crew">Crew (general)</option>
-                                <option value="c2_hunter">C2 Hunter</option>
-                                <option value="reconnaissance_hunter">Recon Hunter</option>
-                                <option value="defense_evasion_hunter">Defense Evasion</option>
-                                <option value="lateral_movement_hunter">Lateral Movement</option>
-                                <option value="credential_access_hunter">Credential Access</option>
-                                <option value="initial_access_hunter">Initial Access</option>
-                                <option value="execution_persistence_hunter">Exec/Persist</option>
-                                <option value="collection_exfiltration_hunter">Collection/Exfil</option>
-                                <option value="impact_hunter">Impact</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-            </div><!-- end analyst-subtab-monitor-content -->
-        </div>
 
         <div id="logs" class="tab-content">
             <div class="card">
@@ -5439,6 +5249,18 @@
             }
         }
 
+        async function concentrateFindings() {
+            if (!confirm('Concentrate findings?\n\nThis deduplicates by keeping only the highest-confidence finding per agent/type/severity group and dismissing the rest. Useful when you have tens of thousands of findings.')) return;
+            try {
+                const resp = await fetch('/api/findings/concentrate', { method: 'POST' });
+                const data = await resp.json();
+                addLog(`Concentrated findings: ${data.before} → ${data.after} (dismissed ${data.dismissed} duplicates)`, 'info');
+                loadFindings();
+            } catch(e) {
+                addLog(`Failed to concentrate findings: ${e.message}`, 'error');
+            }
+        }
+
         // -----------------------------------------------------------
         // LLM Threat Intelligence
         // -----------------------------------------------------------
@@ -5506,6 +5328,8 @@
             const badge = document.getElementById('llm-intel-badge');
             badge.style.display = 'none';
             badge.textContent = '0';
+            // Reset the history dropdown so stale report titles are cleared
+            document.getElementById('llm-history-select').innerHTML = '<option value="">Latest Report</option>';
             // Hide delete buttons when no reports
             document.getElementById('llm-delete-all-btn').style.display = 'none';
             document.getElementById('llm-delete-one-btn').style.display = 'none';
@@ -5833,9 +5657,6 @@
             } else if (tabName === 'agent-monitoring-tab') {
                 refreshAgentMonitoringAll();
                 _startAgentMonAutoRefresh();
-            } else if (tabName === 'analyst-tab') {
-                // Focus the chat input when switching to analyst tab
-                setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
             }
         }
 
@@ -7590,122 +7411,6 @@
         }
 
         // ========================================
-        // Analyst Chat & PCAP Upload
-        // ========================================
-
-        let _analystHistory = [];  // {role, content, timestamp}
-        let _pcapSelectedFile = null;
-
-        let _analystRetryTimer = null;
-
-        function analystSendMessage(retryBody) {
-            const input = document.getElementById('analyst-chat-input');
-            const btn = document.getElementById('analyst-send-btn');
-
-            let body;
-            if (retryBody) {
-                // Auto-retry — body already built, user message already displayed
-                body = retryBody;
-            } else {
-                const question = input.value.trim();
-                if (!question) return;
-                input.value = '';
-                _analystAddMessage('user', question);
-                body = {
-                    question: question,
-                    include_findings: document.getElementById('analyst-inc-findings').checked,
-                    include_cases: document.getElementById('analyst-inc-cases').checked,
-                    include_rag: document.getElementById('analyst-inc-rag').checked,
-                };
-            }
-
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Thinking...';
-            input.disabled = true;
-
-            fetch('/api/analyst/query', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body),
-            })
-            .then(resp => {
-                if (!resp.ok) {
-                    return resp.json().then(e => {
-                        if (e.busy) {
-                            // Hunt is using the LLM — show status and auto-retry
-                            btn.innerHTML = '<i class="fa-solid fa-hourglass-half fa-spin"></i> Queued — hunt active...';
-                            _analystRetryTimer = setTimeout(() => analystSendMessage(body), 5000);
-                            return null;  // Don't proceed to .then(data)
-                        }
-                        throw new Error(e.error || `HTTP ${resp.status}`);
-                    });
-                }
-                return resp.json();
-            })
-            .then(data => {
-                if (!data) return;  // Was a busy/retry — skip
-                _analystAddMessage('assistant', data.answer);
-
-                // Update context card
-                const ctx = data.context_summary || {};
-                document.getElementById('analyst-ctx-findings').textContent = ctx.findings_included || 0;
-                document.getElementById('analyst-ctx-cases').textContent = ctx.cases_included || 0;
-                document.getElementById('analyst-ctx-techniques').textContent = ctx.techniques_tracked || 0;
-                document.getElementById('analyst-ctx-rag').textContent = ctx.rag_available ? 'Yes' : 'No';
-                document.getElementById('analyst-context-card').style.display = '';
-
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
-                input.disabled = false;
-                input.focus();
-            })
-            .catch(err => {
-                _analystAddMessage('error', `Error: ${err.message}`);
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
-                input.disabled = false;
-                input.focus();
-            });
-        }
-
-        function _analystAddMessage(role, content) {
-            const container = document.getElementById('analyst-chat-messages');
-
-            // Remove placeholder if present
-            if (_analystHistory.length === 0) {
-                container.innerHTML = '';
-            }
-
-            _analystHistory.push({role, content, timestamp: new Date()});
-
-            const msg = document.createElement('div');
-            msg.style.cssText = 'max-width:85%; padding:10px 14px; border-radius:10px; font-size:13px; line-height:1.55; word-wrap:break-word; white-space:pre-wrap;';
-
-            if (role === 'user') {
-                msg.style.alignSelf = 'flex-end';
-                msg.style.background = 'var(--accent-primary)';
-                msg.style.color = '#fff';
-                msg.style.borderBottomRightRadius = '2px';
-            } else if (role === 'assistant') {
-                msg.style.alignSelf = 'flex-start';
-                msg.style.background = 'var(--bg-tertiary)';
-                msg.style.border = '1px solid var(--border-color)';
-                msg.style.borderBottomLeftRadius = '2px';
-            } else {
-                // error
-                msg.style.alignSelf = 'center';
-                msg.style.background = 'rgba(248,81,73,0.1)';
-                msg.style.border = '1px solid var(--danger)';
-                msg.style.color = 'var(--danger)';
-                msg.style.fontSize = '12px';
-            }
-
-            msg.textContent = content;
-            container.appendChild(msg);
-            container.scrollTop = container.scrollHeight;
-        }
-
-        // ========================================
         // Agent Monitoring Dashboard (top-level tab)
         // ========================================
 
@@ -8299,43 +8004,6 @@
         let _agentStatuses = {};
         let _agentMonitorNewCount = 0;
 
-        function showAnalystSubTab(which) {
-            const chatBtn = document.getElementById('analyst-subtab-chat');
-            const monBtn = document.getElementById('analyst-subtab-monitor');
-            const chatContent = document.getElementById('analyst-subtab-chat-content');
-            const monContent = document.getElementById('analyst-subtab-monitor-content');
-
-            if (which === 'chat') {
-                chatBtn.style.borderBottomColor = 'var(--accent-primary)';
-                chatBtn.style.color = 'var(--text-primary)';
-                chatBtn.classList.add('active');
-                monBtn.style.borderBottomColor = 'transparent';
-                monBtn.style.color = 'var(--text-secondary)';
-                monBtn.classList.remove('active');
-                chatContent.style.display = '';
-                monContent.style.display = 'none';
-                _agentMonitorActive = false;
-                stopAgentActivityPolling();
-                setTimeout(() => document.getElementById('analyst-chat-input').focus(), 100);
-            } else {
-                monBtn.style.borderBottomColor = 'var(--accent-primary)';
-                monBtn.style.color = 'var(--text-primary)';
-                monBtn.classList.add('active');
-                chatBtn.style.borderBottomColor = 'transparent';
-                chatBtn.style.color = 'var(--text-secondary)';
-                chatBtn.classList.remove('active');
-                chatContent.style.display = 'none';
-                monContent.style.display = '';
-                _agentMonitorActive = true;
-                // Reset badge
-                _agentMonitorNewCount = 0;
-                const badge = document.getElementById('agent-monitor-badge');
-                badge.style.display = 'none';
-                // Start polling for activity from DB
-                startAgentActivityPolling();
-            }
-        }
-
         let _agentPollSinceId = 0;
         let _agentPollTimer = null;
 
@@ -8550,179 +8218,6 @@
 
         // --- PCAP Upload ---
 
-        function pcapHandleDrop(event) {
-            const files = event.dataTransfer.files;
-            if (files.length > 0) {
-                _pcapSetFile(files[0]);
-            }
-        }
-
-        function pcapFileSelected(input) {
-            if (input.files.length > 0) {
-                _pcapSetFile(input.files[0]);
-            }
-        }
-
-        function _pcapSetFile(file) {
-            const validExts = ['.pcap', '.pcapng', '.cap'];
-            const name = file.name.toLowerCase();
-            if (!validExts.some(ext => name.endsWith(ext))) {
-                alert('Please select a valid PCAP file (.pcap, .pcapng, or .cap)');
-                return;
-            }
-            _pcapSelectedFile = file;
-            document.getElementById('pcap-file-info').style.display = '';
-            document.getElementById('pcap-file-name').textContent = file.name;
-            document.getElementById('pcap-file-size').textContent = _formatFileSize(file.size);
-            document.getElementById('pcap-upload-btn').disabled = false;
-        }
-
-        function _formatFileSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-            return (bytes / 1048576).toFixed(1) + ' MB';
-        }
-
-        function pcapUploadAndAnalyze() {
-            if (!_pcapSelectedFile) return;
-
-            const btn = document.getElementById('pcap-upload-btn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Analyzing...';
-
-            const progress = document.getElementById('pcap-progress');
-            progress.style.display = '';
-            document.getElementById('pcap-progress-text').textContent = 'Uploading & analyzing...';
-            document.getElementById('pcap-progress-bar').style.width = '30%';
-            document.getElementById('pcap-progress-pct').textContent = '30%';
-            document.getElementById('pcap-results').style.display = 'none';
-
-            const formData = new FormData();
-            formData.append('file', _pcapSelectedFile);
-            const maxPkts = document.getElementById('pcap-max-packets').value;
-            if (maxPkts) {
-                formData.append('max_packets', maxPkts);
-            }
-
-            // Simulate progress while waiting
-            let pct = 30;
-            const progInterval = setInterval(() => {
-                if (pct < 90) {
-                    pct += Math.random() * 8;
-                    pct = Math.min(pct, 90);
-                    document.getElementById('pcap-progress-bar').style.width = pct + '%';
-                    document.getElementById('pcap-progress-pct').textContent = Math.round(pct) + '%';
-                }
-            }, 800);
-
-            fetch('/api/analyst/upload-pcap' + (maxPkts ? `?max_packets=${maxPkts}` : ''), {
-                method: 'POST',
-                body: formData,
-            })
-            .then(resp => {
-                if (!resp.ok) return resp.json().then(e => { throw new Error(e.error || `HTTP ${resp.status}`); });
-                return resp.json();
-            })
-            .then(data => {
-                clearInterval(progInterval);
-                document.getElementById('pcap-progress-bar').style.width = '100%';
-                document.getElementById('pcap-progress-pct').textContent = '100%';
-                document.getElementById('pcap-progress-text').textContent = 'Analysis complete';
-
-                _pcapRenderResults(data);
-            })
-            .catch(err => {
-                clearInterval(progInterval);
-                document.getElementById('pcap-progress-text').textContent = 'Failed';
-                document.getElementById('pcap-progress-bar').style.width = '100%';
-                document.getElementById('pcap-progress-bar').style.background = 'var(--danger)';
-                document.getElementById('pcap-progress-pct').textContent = '';
-
-                const results = document.getElementById('pcap-results');
-                results.style.display = '';
-                results.innerHTML = `<div style="color:var(--danger); padding:12px; border:1px solid var(--danger); border-radius:6px; font-size:13px;">
-                    <i class="fa-solid fa-triangle-exclamation"></i> ${err.message}
-                </div>`;
-            })
-            .finally(() => {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-magnifying-glass-chart"></i> Analyze';
-            });
-        }
-
-        function _pcapRenderResults(data) {
-            const results = document.getElementById('pcap-results');
-            results.style.display = '';
-
-            const sevColor = {
-                'critical': 'var(--danger)',
-                'high': '#db6d28',
-                'medium': 'var(--warning)',
-                'low': 'var(--accent-primary)',
-                'informational': 'var(--text-secondary)',
-            };
-            const sColor = sevColor[(data.severity || '').toLowerCase()] || 'var(--text-secondary)';
-
-            let html = `
-                <div style="margin-bottom:14px;">
-                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr)); gap:8px;">
-                        <div class="stat-card" style="text-align:center; padding:12px;">
-                            <h3 style="font-size:1.3em; color:${sColor};">${data.severity || '--'}</h3>
-                            <p>Severity</p>
-                        </div>
-                        <div class="stat-card" style="text-align:center; padding:12px;">
-                            <h3 style="font-size:1.3em;">${((data.final_confidence || 0) * 100).toFixed(0)}%</h3>
-                            <p>Confidence</p>
-                        </div>
-                        <div class="stat-card" style="text-align:center; padding:12px;">
-                            <h3 style="font-size:1.3em;">${data.total_findings || 0}</h3>
-                            <p>Findings</p>
-                        </div>
-                        <div class="stat-card" style="text-align:center; padding:12px;">
-                            <h3 style="font-size:1.3em;">${data.packets_analyzed || 0}</h3>
-                            <p>Packets</p>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            // MITRE techniques
-            if (data.mitre_techniques && data.mitre_techniques.length > 0) {
-                html += `<div style="margin-bottom:12px;">
-                    <h4 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:6px;">MITRE ATT&CK</h4>
-                    <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                        ${data.mitre_techniques.map(t => `<span style="background:var(--bg-primary); border:1px solid var(--border-color); padding:2px 8px; border-radius:4px; font-size:11px; font-family:monospace;">${t}</span>`).join('')}
-                    </div>
-                </div>`;
-            }
-
-            // Findings list
-            if (data.findings && data.findings.length > 0) {
-                html += `<div style="margin-bottom:12px;">
-                    <h4 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:6px;">Findings</h4>`;
-                data.findings.forEach(f => {
-                    html += `<div style="background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:10px 12px; margin-bottom:6px; font-size:12px;">
-                        <div style="font-weight:600; margin-bottom:4px;">${f.activity_type || 'Unknown'}</div>
-                        <div style="opacity:0.8; line-height:1.4;">${f.description || ''}</div>
-                        ${f.indicators && f.indicators.length ? `<div style="margin-top:4px; opacity:0.6;">Indicators: ${f.indicators.slice(0,5).join(', ')}</div>` : ''}
-                        ${f.affected_assets && f.affected_assets.length ? `<div style="margin-top:2px; opacity:0.6;">Assets: ${f.affected_assets.slice(0,5).join(', ')}</div>` : ''}
-                    </div>`;
-                });
-                html += `</div>`;
-            }
-
-            // Recommendations
-            if (data.recommendations && data.recommendations.length > 0) {
-                html += `<div>
-                    <h4 style="font-size:12px; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); margin-bottom:6px;">Recommendations</h4>
-                    <ul style="padding-left:18px; font-size:12px; line-height:1.6;">
-                        ${data.recommendations.map(r => `<li>${r}</li>`).join('')}
-                    </ul>
-                </div>`;
-            }
-
-            results.innerHTML = html;
-        }
 
     </script>
 </body>

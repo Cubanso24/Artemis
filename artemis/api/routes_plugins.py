@@ -502,6 +502,14 @@ async def reset_findings():
     return {'status': 'cleared', 'deleted': count}
 
 
+@router.post("/api/findings/concentrate")
+async def concentrate_findings():
+    """Deduplicate findings by keeping only the highest-confidence finding
+    per (agent, activity_type, severity) group and dismissing the rest."""
+    result = db_manager.concentrate_findings()
+    return result
+
+
 # --- MAC-to-IP tracking ---------------------------------------------------
 
 @router.get("/api/network-graph/mac-tracking")
