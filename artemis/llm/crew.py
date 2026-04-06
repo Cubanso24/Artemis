@@ -69,7 +69,7 @@ def crewai_available() -> bool:
 # ---------------------------------------------------------------------------
 
 def _make_tools(rag_store, detectors, hunting_data, network_state,
-                 splunk_config=None):
+                 splunk_config=None, effectiveness_evaluator=None):
     """Build CrewAI tool functions bound to the current hunt context.
 
     Returns a list of tool callables decorated with ``@crewai_tool``.
@@ -80,6 +80,9 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
         Keys: host, port, token, username, password.  When provided a
         ``query_splunk`` tool is built so the LLM can run ad-hoc SPL
         queries for deeper investigation.
+    effectiveness_evaluator : HuntEffectivenessEvaluator, optional
+        When provided, tool calls are recorded for effectiveness tracking
+        and intervention guidance is injected when analysis stalls.
     """
     tools = []
 
@@ -356,7 +359,7 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                 # Absolute time or unrecognised format — allow but cap
                 earliest = _SPLUNK_MAX_LOOKBACK
 
-            # --- Helper to log query outcome to RAG ---
+            # --- Helper to log query outcome to RAG + evaluator ---
             def _log_spl_outcome(outcome, result_count=0, elapsed=0,
                                  useful=True, error_msg=""):
                 if rag_store and rag_store.available:
@@ -372,6 +375,18 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                         })
                     except Exception as _le:
                         logger.debug(f"SPL RAG index failed: {_le}")
+                # Record in effectiveness evaluator
+                if effectiveness_evaluator:
+                    effectiveness_evaluator.record_tool_call(
+                        "query_splunk", spl_query, outcome,
+                        result_count=result_count, elapsed=elapsed)
+
+            def _maybe_intervene(response):
+                """Prepend intervention guidance if analysis is stalling."""
+                if effectiveness_evaluator and effectiveness_evaluator.should_intervene():
+                    guidance = effectiveness_evaluator.get_intervention_guidance()
+                    return guidance + response
+                return response
 
             # --- Build connector and execute ---
             import time as _time
@@ -419,7 +434,7 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                 if not results:
                     _log_spl_outcome("no_results", 0, _elapsed,
                                      useful=False)
-                    return (
+                    return _maybe_intervene(
                         _spl_examples +
                         "Query returned 0 results.  Consider broadening "
                         "the time range, checking the index/sourcetype, "
@@ -448,7 +463,7 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                              k in ("_time", "_raw")}
                     lines.append(_json.dumps(clean, default=str)[:1000])
 
-                return header + "\n".join(lines)
+                return _maybe_intervene(header + "\n".join(lines))
 
             except _QueryTimeout:
                 _elapsed = _time.monotonic() - _query_start
@@ -464,7 +479,7 @@ def _make_tools(rag_store, detectors, hunting_data, network_state,
                                 f"LLM should simplify the query"),
                     "spl_query": spl_query[:200],
                 })
-                return (
+                return _maybe_intervene(
                     _spl_examples +
                     f"Query timed out after {_SPLUNK_QUERY_TIMEOUT}s.  "
                     f"This usually means the query is too broad.  Tips:\n"
@@ -1075,6 +1090,14 @@ class CrewOrchestrator:
                 "stage": 1.5,
             })
 
+        # --- Set up effectiveness evaluator ---
+        from artemis.llm.effectiveness import HuntEffectivenessEvaluator
+        _cycle = kwargs.get("cycle", 0)
+        self._evaluator = HuntEffectivenessEvaluator(
+            cycle=_cycle,
+            on_activity=lambda a, t, d: fire_agent_activity(a, t, d),
+        )
+
         # --- Force CPU-based embeddings BEFORE building tools -----------
         # _make_tools() → rag_store.get_stats() → _get_collection() →
         # embed("dimension probe") would call Ollama for embeddings,
@@ -1095,6 +1118,7 @@ class CrewOrchestrator:
             tools, rag_has_data = _make_tools(
                 self.rag_store, self.detectors, data, network_state,
                 splunk_config=self.splunk_config,
+                effectiveness_evaluator=self._evaluator,
             )
             logger.info(f"[DIAG] Tools built: {len(tools)} tools, rag_has_data={rag_has_data}")
         except Exception as e:
@@ -1215,6 +1239,9 @@ class CrewOrchestrator:
                     "thought": thought,
                     "action": action,
                 })
+
+                # Feed step to effectiveness evaluator
+                self._evaluator.record_step(text)
 
                 # Update current agent in crew run
                 if _crew_run_id and agent_name != "unknown":
@@ -1483,6 +1510,27 @@ class CrewOrchestrator:
             except Exception as _se:
                 print(f"[CREW] Synthesis save failed: {_se}",
                       flush=True, file=_save_sys.stderr)
+
+        # Save effectiveness summary into the assessment for persistence
+        try:
+            eff_summary = self._evaluator.get_summary()
+            assessment["effectiveness"] = eff_summary
+            logger.info(
+                f"[DIAG] Hunt effectiveness: "
+                f"avg={eff_summary['avg_effectiveness_score']:.2f}, "
+                f"interventions={eff_summary['intervention_count']}, "
+                f"splunk_queries={eff_summary['total_splunk_queries']}"
+            )
+            fire_agent_activity("effectiveness_evaluator", "stage", {
+                "message": (
+                    f"Hunt complete — effectiveness: "
+                    f"{eff_summary['avg_effectiveness_score']:.0%} avg, "
+                    f"{eff_summary['intervention_count']} interventions"
+                ),
+                "summary": eff_summary,
+            })
+        except Exception as _eff_err:
+            logger.debug(f"Effectiveness summary failed: {_eff_err}")
 
         # Return assessment immediately — RAG indexing is best-effort and
         # must NEVER block the return path.

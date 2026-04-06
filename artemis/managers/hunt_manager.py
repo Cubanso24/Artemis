@@ -1475,6 +1475,18 @@ def _analysis_pipeline_process(job_id, db_path):
                                 source_cycle=analysis_cycle,
                             )
 
+                # Persist effectiveness scores for RL feedback
+                eff_summary = assessment.get('effectiveness') if assessment else None
+                if eff_summary:
+                    try:
+                        db.save_effectiveness(analysis_cycle, eff_summary)
+                        log.info(
+                            f'Cycle {analysis_cycle}: effectiveness '
+                            f'avg={eff_summary.get("avg_effectiveness_score", "?")}, '
+                            f'interventions={eff_summary.get("intervention_count", 0)}')
+                    except Exception as _ee:
+                        log.warning(f'Effectiveness save failed (non-fatal): {_ee}')
+
                 log.info(f'Cycle {analysis_cycle}: marking analysis complete...')
                 db.mark_analysis_complete(analysis_cycle)
                 analyses_completed += 1

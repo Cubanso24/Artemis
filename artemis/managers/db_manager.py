@@ -268,6 +268,26 @@ class DatabaseManager:
             )
         """)
 
+        # Hunt effectiveness scores — RL-style reward signal per cycle
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hunt_effectiveness (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle INTEGER NOT NULL,
+                avg_score REAL NOT NULL DEFAULT 0.5,
+                min_score REAL,
+                max_score REAL,
+                final_score REAL,
+                total_steps INTEGER DEFAULT 0,
+                total_splunk_queries INTEGER DEFAULT 0,
+                unique_splunk_queries INTEGER DEFAULT 0,
+                successful_queries INTEGER DEFAULT 0,
+                intervention_count INTEGER DEFAULT 0,
+                total_elapsed_seconds REAL DEFAULT 0,
+                full_summary TEXT DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+
         # ------------------------------------------------------------------
         # Interactive map: layout positions + annotations
         # ------------------------------------------------------------------
@@ -1161,6 +1181,54 @@ class DatabaseManager:
                 (status, now, now, elapsed, result_summary, error, run_id),
             )
         self._exec_with_retry(_do)
+
+    def save_effectiveness(self, cycle: int, summary: Dict) -> int:
+        """Persist a hunt effectiveness summary (RL reward signal)."""
+        now = datetime.now().isoformat()
+
+        def _do(conn):
+            cur = conn.execute(
+                "INSERT INTO hunt_effectiveness "
+                "(cycle, avg_score, min_score, max_score, final_score, "
+                "total_steps, total_splunk_queries, unique_splunk_queries, "
+                "successful_queries, intervention_count, "
+                "total_elapsed_seconds, full_summary, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (cycle,
+                 summary.get("avg_effectiveness_score", 0.5),
+                 summary.get("min_effectiveness_score", 0.5),
+                 summary.get("max_effectiveness_score", 0.5),
+                 summary.get("final_score", 0.5),
+                 summary.get("total_steps", 0),
+                 summary.get("total_splunk_queries", 0),
+                 summary.get("unique_splunk_queries", 0),
+                 summary.get("successful_queries", 0),
+                 summary.get("intervention_count", 0),
+                 summary.get("total_elapsed_seconds", 0),
+                 _dumps(summary),
+                 now),
+            )
+            return cur.lastrowid
+        return self._exec_with_retry(_do)
+
+    def get_effectiveness_history(self, limit: int = 20) -> List[Dict]:
+        """Return recent effectiveness scores for RL trend analysis."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT cycle, avg_score, final_score, total_steps, "
+                "total_splunk_queries, successful_queries, "
+                "intervention_count, total_elapsed_seconds, created_at "
+                "FROM hunt_effectiveness ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            cols = ["cycle", "avg_score", "final_score", "total_steps",
+                    "total_splunk_queries", "successful_queries",
+                    "intervention_count", "total_elapsed_seconds",
+                    "created_at"]
+            return [dict(zip(cols, r)) for r in rows]
+        finally:
+            conn.close()
 
     def get_crew_runs(self, limit: int = 20) -> List[Dict]:
         """Return recent crew runs, newest first."""
