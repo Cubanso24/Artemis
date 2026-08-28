@@ -2319,16 +2319,20 @@
             };
 
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+                try {
+                    const data = JSON.parse(event.data);
 
-                if (data.type === 'server_log') {
-                    addLog(data.message, data.log_type);
-                } else if (data.type === 'agent_activity') {
-                    handleAgentActivity(data);
-                } else if (data.type === 'bg_profile_progress') {
-                    handleBgProfileProgress(data);
-                } else if (data.type === 'continuous_progress') {
-                    handleContinuousProgress(data);
+                    if (data.type === 'server_log') {
+                        addLog(data.message, data.log_type);
+                    } else if (data.type === 'agent_activity') {
+                        handleAgentActivity(data);
+                    } else if (data.type === 'bg_profile_progress') {
+                        handleBgProfileProgress(data);
+                    } else if (data.type === 'continuous_progress') {
+                        handleContinuousProgress(data);
+                    }
+                } catch(e) {
+                    console.error('Error handling WebSocket message:', e);
                 }
             };
 
@@ -2358,6 +2362,8 @@
                         addLog('Network mapper plugin not enabled', 'warning');
                         document.getElementById('network-graph').innerHTML =
                             '<p style="text-align:center; padding:50px;">Network mapper plugin not enabled. Enable it in the Plugins tab.</p>';
+                        document.getElementById('network-summary').innerHTML =
+                            '<p style="opacity:0.6;">Enable the Network Mapper plugin to see network statistics.</p>';
                     }
                     return;
                 }
@@ -2399,6 +2405,8 @@
                 if (!silent) {
                     console.error('Error loading network graph:', error);
                     addLog(`Error loading network graph: ${error.message}`, 'error');
+                    document.getElementById('network-summary').innerHTML =
+                        '<p style="opacity:0.6;">Could not load network data.</p>';
                 }
             }
         }
@@ -3875,6 +3883,8 @@
 
             } catch (error) {
                 console.error('Error loading network summary:', error);
+                document.getElementById('network-summary').innerHTML =
+                    '<p style="opacity:0.6;">Could not load network statistics.</p>';
             }
         }
 
@@ -7997,58 +8007,7 @@
             }
         }
 
-        // --- Agent Monitor ---
-
-        let _agentMonitorEvents = [];
-        let _agentMonitorActive = false;  // true when monitor sub-tab is visible
-        let _agentStatuses = {};
-        let _agentMonitorNewCount = 0;
-
-        let _agentPollSinceId = 0;
-        let _agentPollTimer = null;
-
-        async function loadAgentActivityHistory() {
-            try {
-                const resp = await fetch(`/api/agent-activity?since_id=${_agentPollSinceId}`);
-                if (!resp.ok) return;
-                const events = await resp.json();
-                if (events.length > 0) {
-                    events.forEach(ev => _appendAgentEvent(ev, _agentPollSinceId > 0));
-                    _agentPollSinceId = events[events.length - 1].id;
-                    const feed = document.getElementById('agent-monitor-feed');
-                    if (document.getElementById('agent-monitor-autoscroll').checked) {
-                        feed.scrollTop = feed.scrollHeight;
-                    }
-                }
-            } catch(e) { /* ignore */ }
-        }
-
-        function startAgentActivityPolling() {
-            if (_agentPollTimer) clearInterval(_agentPollTimer);
-            loadAgentActivityHistory();
-            // Poll faster (3s) when the monitor tab is active, slower (10s) in background
-            const interval = _agentMonitorActive ? 3000 : 10000;
-            _agentPollTimer = setInterval(loadAgentActivityHistory, interval);
-        }
-
-        function stopAgentActivityPolling() {
-            // Switch to background polling rate instead of stopping entirely,
-            // so the badge counter keeps updating.
-            if (_agentPollTimer) clearInterval(_agentPollTimer);
-            _agentPollTimer = setInterval(loadAgentActivityHistory, 30000);
-        }
-
-        function handleAgentActivity(data) {
-            // WS events still work for main-process activity;
-            // subprocess events come via polling above.
-            _appendAgentEvent(data, true);
-            if (!_agentMonitorActive) {
-                _agentMonitorNewCount++;
-                const badge = document.getElementById('agent-monitor-badge');
-                badge.textContent = _agentMonitorNewCount > 99 ? '99+' : _agentMonitorNewCount;
-                badge.style.display = 'inline';
-            }
-        }
+        // --- Agent Activity (WS + background polling) ---
 
         const _agentColors = {
             coordinator: '#58a6ff',
@@ -8083,137 +8042,31 @@
             enrichment: 'fa-wand-magic-sparkles',
         };
 
-        let _agentEventCounter = 0;
-
-        function _appendAgentEvent(ev, isLive) {
-            _agentMonitorEvents.push(ev);
-
-            // Update agent status
-            _agentStatuses[ev.agent] = { activity: ev.activity, message: ev.detail?.message || '', timestamp: ev.timestamp };
-            _updateAgentStatusPanel();
-
-            const feed = document.getElementById('agent-monitor-feed');
-            // Clear placeholder on first event
-            if (_agentMonitorEvents.length === 1) {
-                feed.innerHTML = '';
-            }
-
-            const filter = document.getElementById('agent-monitor-filter').value;
-            const visible = (filter === 'all' || filter === ev.agent);
-
-            const color = _agentColors[ev.agent] || '#8b949e';
-            const icon = _activityIcons[ev.activity] || 'fa-circle';
-            const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
-            const msg = ev.detail?.message || ev.activity;
-
-            // Check if this event has expandable content
-            const hasPrompt = ev.detail?.prompt_text;
-            const hasOutput = ev.detail?.output_preview;
-            const hasThought = ev.detail?.thought;
-            const hasExpected = ev.detail?.expected_output;
-            const hasExpandable = hasPrompt || hasOutput || hasThought;
-            const evtId = _agentEventCounter++;
-
-            const line = document.createElement('div');
-            line.setAttribute('data-agent', ev.agent);
-            line.style.cssText = `padding:4px 8px; border-left:3px solid ${color}; margin-bottom:4px; border-radius:0 4px 4px 0; background:rgba(${ev.activity === 'error' ? '248,81,73,0.08' : '255,255,255,0.02'});${visible ? '' : ' display:none;'}`;
-
-            let expandBtn = '';
-            if (hasExpandable) {
-                expandBtn = `<button onclick="document.getElementById('agent-ev-detail-${evtId}').style.display=document.getElementById('agent-ev-detail-${evtId}').style.display==='none'?'':'none'" style="background:none; border:1px solid var(--border-color); color:${color}; padding:0 5px; border-radius:3px; cursor:pointer; font-size:10px; margin-left:8px; opacity:0.7;"><i class="fa-solid fa-chevron-down"></i> detail</button>`;
-            }
-
-            let detailBlock = '';
-            if (hasExpandable) {
-                let sections = '';
-                if (hasPrompt) {
-                    sections += `<div style="margin-bottom:6px;">
-                        <div style="font-weight:600; color:${color}; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-arrow-right" style="margin-right:3px;"></i> LLM Prompt</div>
-                        <pre style="margin:0; padding:6px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto; font-size:11px; line-height:1.4; color:var(--text-primary);">${_escHtml(ev.detail.prompt_text)}</pre>
-                    </div>`;
-                }
-                if (hasExpected) {
-                    sections += `<div style="margin-bottom:6px;">
-                        <div style="font-weight:600; color:var(--text-secondary); font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-bullseye" style="margin-right:3px;"></i> Expected Output</div>
-                        <pre style="margin:0; padding:4px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; font-size:11px; color:var(--text-secondary);">${_escHtml(ev.detail.expected_output)}</pre>
-                    </div>`;
-                }
-                if (hasThought) {
-                    sections += `<div style="margin-bottom:6px;">
-                        <div style="font-weight:600; color:#d2a8ff; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-brain" style="margin-right:3px;"></i> Agent Thought</div>
-                        <pre style="margin:0; padding:4px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:200px; overflow-y:auto; font-size:11px; color:#d2a8ff;">${_escHtml(ev.detail.thought)}</pre>
-                    </div>`;
-                }
-                if (hasOutput) {
-                    sections += `<div style="margin-bottom:4px;">
-                        <div style="font-weight:600; color:#7ee787; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px;"><i class="fa-solid fa-arrow-left" style="margin-right:3px;"></i> LLM Response</div>
-                        <pre style="margin:0; padding:6px 8px; background:var(--bg-tertiary); border-radius:3px; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow-y:auto; font-size:11px; line-height:1.4; color:var(--text-primary);">${_escHtml(ev.detail.output_preview)}</pre>
-                    </div>`;
-                }
-                detailBlock = `<div id="agent-ev-detail-${evtId}" style="display:none; margin-top:6px; padding:8px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:4px;">${sections}</div>`;
-            }
-
-            line.innerHTML = `<div style="display:flex; align-items:center;">
-                <span style="opacity:0.5; margin-right:8px;">${ts}</span>
-                <i class="fa-solid ${icon}" style="color:${color}; margin-right:6px; width:14px; text-align:center;"></i>
-                <span style="color:${color}; font-weight:600; margin-right:8px;">${ev.agent}</span>
-                <span style="color:var(--text-primary); flex:1;">${_escHtml(msg)}</span>
-                ${expandBtn}
-            </div>${detailBlock}`;
-
-            feed.appendChild(line);
-
-            // Auto-scroll
-            if (isLive && document.getElementById('agent-monitor-autoscroll').checked) {
-                feed.scrollTop = feed.scrollHeight;
-            }
-        }
-
         function _escHtml(s) {
             const d = document.createElement('div');
             d.textContent = s;
             return d.innerHTML;
         }
 
-        function _updateAgentStatusPanel() {
-            const panel = document.getElementById('agent-status-list');
-            const agents = Object.keys(_agentStatuses).sort();
-            if (agents.length === 0) return;
-            panel.innerHTML = agents.map(name => {
-                const s = _agentStatuses[name];
-                const color = _agentColors[name] || '#8b949e';
-                const statusDot = s.activity === 'error'
-                    ? '<i class="fa-solid fa-circle" style="color:var(--danger); font-size:7px; margin-right:6px;"></i>'
-                    : s.activity === 'prompt'
-                    ? '<i class="fa-solid fa-circle fa-beat" style="color:#f0883e; font-size:7px; margin-right:6px;"></i>'
-                    : '<i class="fa-solid fa-circle" style="color:#7ee787; font-size:7px; margin-right:6px;"></i>';
-                return `<div style="display:flex; align-items:center; padding:4px 6px; border-radius:4px; background:var(--bg-primary);">`
-                    + statusDot
-                    + `<span style="color:${color}; font-weight:600; flex:1;">${name}</span>`
-                    + `<span style="opacity:0.5; font-size:10px;">${s.activity}</span></div>`;
-            }).join('');
+        function startAgentActivityPolling() {
+            // Activity polling is handled by the Agent Monitoring tab's
+            // own feed (loadAgentMonFeedData) and auto-refresh timer.
         }
 
-        function clearAgentMonitor() {
-            _agentMonitorEvents = [];
-            _agentStatuses = {};
-            // Reset poll ID so we start fresh after DB is cleared
-            _agentPollSinceId = 0;
-            document.getElementById('agent-monitor-feed').innerHTML =
-                '<div style="text-align:center; opacity:0.4; margin-top:60px;">'
-                + '<i class="fa-solid fa-brain" style="font-size:40px; margin-bottom:12px; display:block;"></i>'
-                + 'Agent activity will appear here in real time during hunts.</div>';
-            document.getElementById('agent-status-list').innerHTML =
-                '<div style="opacity:0.5; text-align:center; padding:10px;">No activity yet</div>';
-            // Delete all agent activity from the database
-            fetch('/api/agent-activity', { method: 'DELETE' }).catch(() => {});
-        }
-
-        function filterAgentMonitor() {
-            const filter = document.getElementById('agent-monitor-filter').value;
-            document.querySelectorAll('#agent-monitor-feed > div[data-agent]').forEach(el => {
-                el.style.display = (filter === 'all' || el.getAttribute('data-agent') === filter) ? '' : 'none';
-            });
+        function handleAgentActivity(data) {
+            // Forward WS agent_activity events to the monitoring tab feed
+            try {
+                const feed = document.getElementById('agent-mon-activity-feed');
+                if (!feed) return;
+                _appendMonFeedEvent(feed, data);
+                _monFeedAgents.add(data.agent);
+                _updateMonFeedFilter();
+                if (document.getElementById('agent-mon-feed-autoscroll')?.checked) {
+                    feed.scrollTop = feed.scrollHeight;
+                }
+            } catch(e) {
+                console.debug('Agent activity WS event ignored:', e);
+            }
         }
 
         // --- PCAP Upload ---
